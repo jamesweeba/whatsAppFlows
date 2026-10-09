@@ -1,0 +1,161 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum TenantStatus {
+  ACTIVE
+  INACTIVE
+  SUSPENDED
+  PENDING
+}
+
+enum WabaStatus {
+  PENDING_REGISTRATION
+  OTP_SENT
+  VERIFIED
+  FAILED
+}
+
+enum MessageSender {
+  BUYER
+  VENDOR
+  SYSTEM
+}
+
+enum MessageSource {
+  TEXT
+  FLOW_SELECTION
+  MEDIA
+}
+
+enum BuyerIntent {
+  GREETING
+  VIEW_CATALOG
+  PRODUCT_INQUIRY
+  STOCK_CHECK
+  ORDER_INTENT
+  HUMAN_SUPPORT
+  OUT_OF_BOUNDS
+}
+
+enum OrderStatus {
+  PENDING
+  AWAITING_PAYMENT
+  PAID
+  CONFIRMED
+  PROCESSING
+  OUT_FOR_DELIVERY
+  DELIVERED
+  COMPLETED
+  CANCELLED
+  REFUNDED
+}
+
+model Tenant {
+  id                    String        @id @default(uuid())
+  name                  String
+  slug                  String        @unique
+  whatsappNumber        String        @unique
+  countryCode           String        @default("233")
+  whatsappPhoneNumberId String?       @unique
+  wabaStatus            WabaStatus    @default(PENDING_REGISTRATION)
+  wabaRegisteredAt      DateTime?
+  description           String?
+  status                TenantStatus  @default(PENDING)
+  userId                String        @unique
+  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  products              Product[]
+  chatSessions          ChatSession[]
+  orders                Order[]
+  createdAt             DateTime      @default(now())
+  modifiedAt            DateTime      @updatedAt
+}
+
+model ChatSession {
+  id         String        @id @default(uuid())
+  tenantId   String
+  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  buyerPhone String
+  lastIntent BuyerIntent?
+  messages   ChatMessage[]
+  orders     Order[]
+  createdAt  DateTime      @default(now())
+  updatedAt  DateTime      @updatedAt
+
+  @@unique([tenantId, buyerPhone])
+}
+
+model ChatMessage {
+  id              String        @id @default(uuid())
+  sessionId       String
+  session         ChatSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sender          MessageSender
+  source          MessageSource @default(TEXT)
+  text            String
+  flowData        Json?
+  detectedIntent  BuyerIntent?
+  confidenceScore Float?
+  rawAiResponse   Json?
+  createdAt       DateTime      @default(now())
+}
+
+model Product {
+  id         String      @id @default(uuid())
+  name       String
+  image      String?
+  price      Float
+  inStock    Boolean     @default(true)
+  tenantId   String
+  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderItems OrderItem[]
+  createdAt  DateTime    @default(now())
+  modifiedAt DateTime    @updatedAt
+}
+
+model User {
+  id         String   @id @default(uuid())
+  email      String   @unique
+  password   String
+  firstName  String
+  lastName   String
+  tenant     Tenant?
+  createdAt  DateTime @default(now())
+  modifiedAt DateTime @updatedAt
+}
+
+model Order {
+  id          String      @id @default(uuid())
+  orderNumber String      @unique @default(uuid())
+  tenantId    String
+  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  buyerPhone  String
+  sessionId   String?
+  session     ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  status      OrderStatus @default(PENDING)
+  totalAmount Float
+  notes       String?
+  items       OrderItem[]
+  createdAt   DateTime    @default(now())
+  updatedAt   DateTime    @updatedAt
+}
+
+model OrderItem {
+  id          String   @id @default(uuid())
+  orderId     String
+  order       Order    @relation(fields: [orderId], references: [id], onDelete: Cascade)
+  productId   String?
+  product     Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
+  productName String
+  unitPrice   Float
+  quantity    Int
+  totalPrice  Float
+  createdAt   DateTime @default(now())
+}

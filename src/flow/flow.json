@@ -1,0 +1,1259 @@
+{
+  "version": "6.1",
+  "data_api_version": "3.0",
+  "routing_model": {
+    "PRODUCT_SELECT": [
+      "QUANTITIES"
+    ],
+    "QUANTITIES": [
+      "SUMMARY"
+    ],
+    "SUMMARY": [
+      "PAYMENT"
+    ],
+    "PAYMENT": [
+      "DONE"
+    ],
+    "DONE": []
+  },
+  "screens": [
+    {
+      "id": "PRODUCT_SELECT",
+      "title": "1 of 4 · Choose items",
+      "refresh_on_back": true,
+      "data": {
+        "categories": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "all",
+              "title": "🛒 All Products"
+            },
+            {
+              "id": "vegetables",
+              "title": "🥦 Vegetables"
+            },
+            {
+              "id": "grains",
+              "title": "🌾 Grains & Staples"
+            },
+            {
+              "id": "spices",
+              "title": "🌶️ Spices"
+            },
+            {
+              "id": "snacks",
+              "title": "🥜 Snacks"
+            }
+          ]
+        },
+        "category_prefill": {
+          "type": "string",
+          "__example__": "all"
+        },
+        "pages": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "Page 1 of 7"
+            },
+            {
+              "id": "2",
+              "title": "Page 2 of 7"
+            },
+            {
+              "id": "3",
+              "title": "Page 3 of 7"
+            }
+          ]
+        },
+        "page_prefill": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "products": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "prod-1",
+              "title": "🍅 Tomatoes",
+              "description": "₵2.00 · Per KG"
+            },
+            {
+              "id": "prod-2",
+              "title": "🧅 Onions",
+              "description": "₵1.50 · Per KG"
+            },
+            {
+              "id": "prod-3",
+              "title": "🌶️ Pepper",
+              "description": "₵3.00 · Olonka"
+            },
+            {
+              "id": "prod-4",
+              "title": "🥕 Carrots",
+              "description": "₵2.50 · Bunch"
+            },
+            {
+              "id": "prod-5",
+              "title": "🥬 Cabbage",
+              "description": "₵4.00 · Per Piece"
+            }
+          ]
+        },
+        "pre_selected": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "__example__": []
+        },
+        "page_label": {
+          "type": "string",
+          "__example__": "34 products"
+        },
+        "selection_note": {
+          "type": "string",
+          "__example__": "🛒 2 items · ₵7.00 so far"
+        },
+        "search_prefill": {
+          "type": "string",
+          "__example__": " "
+        },
+        "notice": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_notice": {
+          "type": "boolean",
+          "__example__": false
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "select_form",
+            "init-values": {
+              "search_query": "${data.search_prefill}",
+              "selected_products": "${data.pre_selected}",
+              "category_select": "${data.category_prefill}",
+              "page_select": "${data.page_prefill}"
+            },
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "🛍️ Marketix Groceries"
+              },
+              {
+                "type": "TextCaption",
+                "text": "Tick what you need, then tap Continue. Your ticks are kept when you change page."
+              },
+              {
+                "type": "Dropdown",
+                "label": "Category",
+                "name": "category_select",
+                "required": false,
+                "data-source": "${data.categories}",
+                "on-select-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "step": "set_category",
+                    "category": "${form.category_select}",
+                    "query": "${form.search_query}",
+                    "selected_on_page": "${form.selected_products}"
+                  }
+                }
+              },
+              {
+                "type": "TextInput",
+                "label": "Search",
+                "name": "search_query",
+                "input-type": "text",
+                "required": false
+              },
+              {
+                "type": "EmbeddedLink",
+                "text": "🔍 Search / Show All",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "step": "search",
+                    "query": "${form.search_query}",
+                    "category": "${form.category_select}",
+                    "selected_on_page": "${form.selected_products}"
+                  }
+                }
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.notice}",
+                "visible": "${data.show_notice}"
+              },
+              {
+                "type": "CheckboxGroup",
+                "label": "Products",
+                "name": "selected_products",
+                "required": false,
+                "max-selected-items": 10,
+                "data-source": "${data.products}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.selection_note}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.page_label}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "Page",
+                "name": "page_select",
+                "required": false,
+                "data-source": "${data.pages}",
+                "on-select-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "step": "go_page",
+                    "page": "${form.page_select}",
+                    "query": "${form.search_query}",
+                    "category": "${form.category_select}",
+                    "selected_on_page": "${form.selected_products}"
+                  }
+                }
+              },
+              {
+                "type": "Footer",
+                "label": "Set quantities ➜",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "step": "continue",
+                    "selected_on_page": "${form.selected_products}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "QUANTITIES",
+      "title": "2 of 4 · How much?",
+      "data": {
+        "item_0_id": {
+          "type": "string",
+          "__example__": "prod-1"
+        },
+        "item_0_label": {
+          "type": "string",
+          "__example__": "Tomatoes"
+        },
+        "item_0_helper": {
+          "type": "string",
+          "__example__": "₵2.00 per kg"
+        },
+        "show_0": {
+          "type": "boolean",
+          "__example__": true
+        },
+        "item_1_id": {
+          "type": "string",
+          "__example__": "prod-3"
+        },
+        "item_1_label": {
+          "type": "string",
+          "__example__": "Pepper"
+        },
+        "item_1_helper": {
+          "type": "string",
+          "__example__": "₵3.00 per olonka"
+        },
+        "show_1": {
+          "type": "boolean",
+          "__example__": true
+        },
+        "item_2_id": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_2_label": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_2_helper": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_2": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "item_3_id": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_3_label": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_3_helper": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_3": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "item_4_id": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_4_label": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_4_helper": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_4": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "item_5_id": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_5_label": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_5_helper": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_5": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "item_6_id": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_6_label": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_6_helper": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_6": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "item_7_id": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_7_label": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_7_helper": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_7": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "item_8_id": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_8_label": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_8_helper": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_8": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "item_9_id": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_9_label": {
+          "type": "string",
+          "__example__": " "
+        },
+        "item_9_helper": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_9": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "item_0_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "0.5",
+              "title": "0.5 kg"
+            },
+            {
+              "id": "1",
+              "title": "1 kg"
+            },
+            {
+              "id": "1.5",
+              "title": "1.5 kg"
+            },
+            {
+              "id": "2",
+              "title": "2 kg"
+            },
+            {
+              "id": "3",
+              "title": "3 kg"
+            },
+            {
+              "id": "5",
+              "title": "5 kg"
+            }
+          ]
+        },
+        "item_0_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_1_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            },
+            {
+              "id": "2",
+              "title": "2"
+            },
+            {
+              "id": "3",
+              "title": "3"
+            },
+            {
+              "id": "4",
+              "title": "4"
+            },
+            {
+              "id": "5",
+              "title": "5"
+            },
+            {
+              "id": "6",
+              "title": "6"
+            },
+            {
+              "id": "7",
+              "title": "7"
+            },
+            {
+              "id": "8",
+              "title": "8"
+            },
+            {
+              "id": "9",
+              "title": "9"
+            },
+            {
+              "id": "10",
+              "title": "10"
+            }
+          ]
+        },
+        "item_1_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_2_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            }
+          ]
+        },
+        "item_2_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_3_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            }
+          ]
+        },
+        "item_3_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_4_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            }
+          ]
+        },
+        "item_4_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_5_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            }
+          ]
+        },
+        "item_5_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_6_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            }
+          ]
+        },
+        "item_6_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_7_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            }
+          ]
+        },
+        "item_7_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_8_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            }
+          ]
+        },
+        "item_8_default": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "item_9_options": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "1",
+              "title": "1"
+            }
+          ]
+        },
+        "item_9_default": {
+          "type": "string",
+          "__example__": "1"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "qty_form",
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "🔢 How many of each?"
+              },
+              {
+                "type": "TextBody",
+                "text": "Pick an amount for each item. It starts at 1."
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_0_helper}",
+                "visible": "${data.show_0}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_0_label}",
+                "name": "qty_0",
+                "required": false,
+                "data-source": "${data.item_0_options}",
+                "visible": "${data.show_0}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_1_helper}",
+                "visible": "${data.show_1}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_1_label}",
+                "name": "qty_1",
+                "required": false,
+                "data-source": "${data.item_1_options}",
+                "visible": "${data.show_1}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_2_helper}",
+                "visible": "${data.show_2}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_2_label}",
+                "name": "qty_2",
+                "required": false,
+                "data-source": "${data.item_2_options}",
+                "visible": "${data.show_2}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_3_helper}",
+                "visible": "${data.show_3}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_3_label}",
+                "name": "qty_3",
+                "required": false,
+                "data-source": "${data.item_3_options}",
+                "visible": "${data.show_3}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_4_helper}",
+                "visible": "${data.show_4}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_4_label}",
+                "name": "qty_4",
+                "required": false,
+                "data-source": "${data.item_4_options}",
+                "visible": "${data.show_4}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_5_helper}",
+                "visible": "${data.show_5}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_5_label}",
+                "name": "qty_5",
+                "required": false,
+                "data-source": "${data.item_5_options}",
+                "visible": "${data.show_5}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_6_helper}",
+                "visible": "${data.show_6}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_6_label}",
+                "name": "qty_6",
+                "required": false,
+                "data-source": "${data.item_6_options}",
+                "visible": "${data.show_6}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_7_helper}",
+                "visible": "${data.show_7}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_7_label}",
+                "name": "qty_7",
+                "required": false,
+                "data-source": "${data.item_7_options}",
+                "visible": "${data.show_7}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_8_helper}",
+                "visible": "${data.show_8}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_8_label}",
+                "name": "qty_8",
+                "required": false,
+                "data-source": "${data.item_8_options}",
+                "visible": "${data.show_8}"
+              },
+              {
+                "type": "TextCaption",
+                "text": "${data.item_9_helper}",
+                "visible": "${data.show_9}"
+              },
+              {
+                "type": "Dropdown",
+                "label": "${data.item_9_label}",
+                "name": "qty_9",
+                "required": false,
+                "data-source": "${data.item_9_options}",
+                "visible": "${data.show_9}"
+              },
+              {
+                "type": "Footer",
+                "label": "Review Order ➜",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "step": "quantities",
+                    "i0_id": "${data.item_0_id}",
+                    "i0_qty": "${form.qty_0}",
+                    "i1_id": "${data.item_1_id}",
+                    "i1_qty": "${form.qty_1}",
+                    "i2_id": "${data.item_2_id}",
+                    "i2_qty": "${form.qty_2}",
+                    "i3_id": "${data.item_3_id}",
+                    "i3_qty": "${form.qty_3}",
+                    "i4_id": "${data.item_4_id}",
+                    "i4_qty": "${form.qty_4}",
+                    "i5_id": "${data.item_5_id}",
+                    "i5_qty": "${form.qty_5}",
+                    "i6_id": "${data.item_6_id}",
+                    "i6_qty": "${form.qty_6}",
+                    "i7_id": "${data.item_7_id}",
+                    "i7_qty": "${form.qty_7}",
+                    "i8_id": "${data.item_8_id}",
+                    "i8_qty": "${form.qty_8}",
+                    "i9_id": "${data.item_9_id}",
+                    "i9_qty": "${form.qty_9}"
+                  }
+                }
+              }
+            ],
+            "init-values": {
+              "qty_0": "${data.item_0_default}",
+              "qty_1": "${data.item_1_default}",
+              "qty_2": "${data.item_2_default}",
+              "qty_3": "${data.item_3_default}",
+              "qty_4": "${data.item_4_default}",
+              "qty_5": "${data.item_5_default}",
+              "qty_6": "${data.item_6_default}",
+              "qty_7": "${data.item_7_default}",
+              "qty_8": "${data.item_8_default}",
+              "qty_9": "${data.item_9_default}"
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "SUMMARY",
+      "title": "3 of 4 · Your order",
+      "data": {
+        "summary_lines": {
+          "type": "string",
+          "__example__": "🍅 2 × Tomatoes — ₵4.00\n🌶️ 1 × Pepper — ₵3.00"
+        },
+        "order_total": {
+          "type": "string",
+          "__example__": "💰 Total: ₵12.00 (incl. ₵5.00 delivery)"
+        },
+        "cart_json": {
+          "type": "string",
+          "__example__": "[{\"id\":\"prod-1\",\"qty\":2},{\"id\":\"prod-3\",\"qty\":1}]"
+        },
+        "error_message": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_error": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "fulfillment_prefill": {
+          "type": "string",
+          "__example__": "delivery"
+        },
+        "pickup_note": {
+          "type": "string",
+          "__example__": "Pick up at Marketix Store, Osu. Ready in about 30 minutes."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "confirm_form",
+            "init-values": {
+              "fulfillment": "${data.fulfillment_prefill}"
+            },
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "🧾 Review your order"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.summary_lines}"
+              },
+              {
+                "type": "TextSubheading",
+                "text": "${data.order_total}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.error_message}",
+                "visible": "${data.show_error}"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "label": "🚚 Get it by",
+                "name": "fulfillment",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "delivery",
+                    "title": "🛵 Delivery"
+                  },
+                  {
+                    "id": "pickup",
+                    "title": "🏪 Pickup"
+                  }
+                ]
+              },
+              {
+                "type": "If",
+                "condition": "${form.fulfillment} == 'delivery'",
+                "then": [
+                  {
+                    "type": "TextArea",
+                    "label": "Delivery address",
+                    "name": "address",
+                    "required": true,
+                    "helper-text": "Add a landmark so the rider finds you."
+                  }
+                ]
+              },
+              {
+                "type": "If",
+                "condition": "${form.fulfillment} == 'pickup'",
+                "then": [
+                  {
+                    "type": "TextCaption",
+                    "text": "${data.pickup_note}"
+                  }
+                ]
+              },
+              {
+                "type": "TextCaption",
+                "text": "Need to change something? Tap back."
+              },
+              {
+                "type": "Footer",
+                "label": "Continue to payment ➜",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "step": "to_payment",
+                    "cart": "${data.cart_json}",
+                    "fulfillment": "${form.fulfillment}",
+                    "address": "${form.address}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "PAYMENT",
+      "title": "4 of 4 · Payment",
+      "data": {
+        "order_total": {
+          "type": "string",
+          "__example__": "Total: ₵7.00"
+        },
+        "pay_label": {
+          "type": "string",
+          "__example__": "Pay ₵7.00"
+        },
+        "networks": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "mtn",
+              "title": "MTN MoMo"
+            },
+            {
+              "id": "telecel",
+              "title": "Telecel Cash"
+            },
+            {
+              "id": "airteltigo",
+              "title": "AirtelTigo Money"
+            }
+          ]
+        },
+        "error_message": {
+          "type": "string",
+          "__example__": " "
+        },
+        "show_error": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "network_prefill": {
+          "type": "string",
+          "__example__": "mtn"
+        },
+        "number_prefill": {
+          "type": "string",
+          "__example__": "0241234567"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "Form",
+            "name": "pay_form",
+            "init-values": {
+              "payment_method": "momo",
+              "momo_network": "${data.network_prefill}",
+              "momo_number": "${data.number_prefill}"
+            },
+            "children": [
+              {
+                "type": "TextHeading",
+                "text": "💳 Pay for your order"
+              },
+              {
+                "type": "TextSubheading",
+                "text": "${data.order_total}"
+              },
+              {
+                "type": "TextBody",
+                "text": "${data.error_message}",
+                "visible": "${data.show_error}"
+              },
+              {
+                "type": "RadioButtonsGroup",
+                "label": "Payment method",
+                "name": "payment_method",
+                "required": true,
+                "data-source": [
+                  {
+                    "id": "momo",
+                    "title": "📱 Mobile money"
+                  },
+                  {
+                    "id": "card",
+                    "title": "💳 Card"
+                  },
+                  {
+                    "id": "cod",
+                    "title": "💵 Pay on delivery or pickup"
+                  }
+                ]
+              },
+              {
+                "type": "If",
+                "condition": "${form.payment_method} == 'momo'",
+                "then": [
+                  {
+                    "type": "Dropdown",
+                    "label": "Network",
+                    "name": "momo_network",
+                    "required": true,
+                    "data-source": "${data.networks}"
+                  },
+                  {
+                    "type": "TextInput",
+                    "label": "Mobile money number",
+                    "name": "momo_number",
+                    "input-type": "phone",
+                    "required": true,
+                    "helper-text": "You'll get a prompt on this number. Enter your PIN to approve."
+                  }
+                ]
+              },
+              {
+                "type": "If",
+                "condition": "${form.payment_method} == 'card'",
+                "then": [
+                  {
+                    "type": "TextCaption",
+                    "text": "We'll send a secure payment link on WhatsApp after you place the order."
+                  }
+                ]
+              },
+              {
+                "type": "If",
+                "condition": "${form.payment_method} == 'cod'",
+                "then": [
+                  {
+                    "type": "TextCaption",
+                    "text": "Pay the rider or the store when you receive your order."
+                  }
+                ]
+              },
+              {
+                "type": "Footer",
+                "label": "${data.pay_label}",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "step": "pay",
+                    "payment_method": "${form.payment_method}",
+                    "momo_network": "${form.momo_network}",
+                    "momo_number": "${form.momo_number}"
+                  }
+                }
+              }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "DONE",
+      "title": "All done",
+      "terminal": true,
+      "success": true,
+      "data": {
+        "order_ref": {
+          "type": "string",
+          "__example__": "MX-1042"
+        },
+        "done_message": {
+          "type": "string",
+          "__example__": "Order placed. Approve the payment prompt on your phone. We'll message you on WhatsApp with updates."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "🎉 Order placed"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.done_message}"
+          },
+          {
+            "type": "TextCaption",
+            "text": "Order ref: ${data.order_ref}"
+          },
+          {
+            "type": "Footer",
+            "label": "Done",
+            "on-click-action": {
+              "name": "complete",
+              "payload": {
+                "order_ref": "${data.order_ref}"
+              }
+            }
+          }
+        ]
+      }
+    }
+  ]
+}
