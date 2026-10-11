@@ -62,3 +62,9 @@ report.[0-9]*.[0-9]*.[0-9]*.[0-9]*.json
 .env
 node_modules/
 dist/
+
+# Local env files without the leading dot (e.g. "env ")
+/env*
+
+# CI reports
+trivy-reports/
