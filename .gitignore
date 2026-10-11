@@ -65,6 +65,7 @@ dist/
 
 # Local env files without the leading dot (e.g. "env ")
 /env*
+.env\ 
 
 # CI reports
 trivy-reports/
