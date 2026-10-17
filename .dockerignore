@@ -1,0 +1,15 @@
+node_modules
+dist
+coverage
+.git
+*.log
+.env
+.env.*
+trivy-reports
+env*
+.vscode
+.idea
+test
+README.md
+Jenkinsfile
+docker-compose*.yml
