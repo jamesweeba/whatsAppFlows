@@ -184,11 +184,6 @@ export class FlowService {
         title: `Page ${index + 1} of ${totalPages}`,
       }));
 
-      const pageOptions = Array.from({ length: totalPages }, (_, index) => ({
-        id: String(index + 1),
-        title: `Page ${index + 1}`,
-      }));
-
       return {
         version: '3.0',
         screen: 'PRODUCT_SELECT',
@@ -196,22 +191,14 @@ export class FlowService {
           categories: this.flowCategories,
           category_prefill: activeCategory,
           pages,
-          page_options: pageOptions,
           page_prefill: String(page),
           products,
           pre_selected: pageSelected,
-          selected_products: pageSelected,
-          selected_on_page: pageSelected,
-          products_selected: pageSelected,
           page_label: `${total} products`,
           selection_note: selectedIds.length
             ? `🛒 ${selectedIds.length} item(s) selected`
             : '🛒 Your basket is empty — tap items to add',
           search_prefill: activeQuery || ' ',
-          selected_ids: selectedIds,
-          visible_product_ids: products.map(({ id }) => id),
-          has_previous_page: page > 1,
-          has_next_page: page < totalPages,
           notice,
           show_notice: showNotice,
         },
@@ -492,8 +479,6 @@ export class FlowService {
           if (item) {
             const itemIdKey = `item_${i}_id`;
             const itemLabelKey = `item_${i}_label`;
-            const itemPriceKey = `item_${i}_price`;
-            const itemSublabelKey = `item_${i}_sublabel`;
             const itemHelperKey = `item_${i}_helper`;
             const itemOptionsKey = `item_${i}_options`;
             const itemDefaultKey = `item_${i}_default`;
@@ -516,22 +501,14 @@ export class FlowService {
 
             quantitiesData[itemIdKey] = item.id;
             quantitiesData[itemLabelKey] = label;
-            quantitiesData[itemPriceKey] = formattedPrice;
-            quantitiesData[itemSublabelKey] = `💰 ${formattedPrice}`;
             quantitiesData[itemHelperKey] = `${formattedPrice} each`;
-            quantitiesData[`item_${i}_caption`] = `Price: ${formattedPrice}`;
-            quantitiesData[`item_${i}_unit_price`] = item.price;
             quantitiesData[itemOptionsKey] = defaultQtyOptions;
             quantitiesData[itemDefaultKey] = '1';
             quantitiesData[showKey] = true;
           } else {
             quantitiesData[`item_${i}_id`] = ' ';
             quantitiesData[`item_${i}_label`] = ' ';
-            quantitiesData[`item_${i}_price`] = ' ';
-            quantitiesData[`item_${i}_sublabel`] = ' ';
             quantitiesData[`item_${i}_helper`] = ' ';
-            quantitiesData[`item_${i}_caption`] = ' ';
-            quantitiesData[`item_${i}_unit_price`] = 0;
             quantitiesData[`item_${i}_options`] = [{ id: '1', title: '1' }];
             quantitiesData[`item_${i}_default`] = '1';
             quantitiesData[`show_${i}`] = false;
@@ -890,7 +867,6 @@ export class FlowService {
     categories: { id: string; title: string }[];
     category_prefill: string;
     pages: { id: string; title: string }[];
-    page_options: { id: string; title: string }[];
     page_prefill: string;
     products: { id: string; title: string; description: string }[];
     pre_selected: string[];
@@ -919,10 +895,6 @@ export class FlowService {
       categories: this.flowCategories,
       category_prefill: 'all',
       pages: pagesList,
-      page_options: Array.from({ length: totalPages }, (_, i) => ({
-        id: String(i + 1),
-        title: `Page ${i + 1}`,
-      })),
       page_prefill: '1',
       products: products.map((p) => ({
         id: p.id,

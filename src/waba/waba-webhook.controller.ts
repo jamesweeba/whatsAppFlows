@@ -72,56 +72,66 @@ export class WabaWebhookController {
         const phoneNumberId = value.metadata?.phone_number_id;
 
         // Find tenant by matching whatsappPhoneNumberId or fallback to first tenant
-        let tenant = await this.prisma.tenant.findFirst({
-          where: phoneNumberId ? { whatsappPhoneNumberId: phoneNumberId } : {},
-        });
+        let tenant = phoneNumberId
+          ? await this.prisma.tenant.findFirst({
+              where: { whatsappPhoneNumberId: phoneNumberId },
+            })
+          : null;
+
+        if (!tenant) {
+          tenant = await this.prisma.tenant.findFirst();
+          if (tenant) {
+            this.logger.warn(
+              `No tenant found matching WhatsApp Phone Number ID: ${phoneNumberId}. Falling back to tenant: ${tenant.name} (${tenant.id})`,
+            );
+          }
+        }
 
         if (!tenant) {
           this.logger.warn(
-            `No tenant found matching WhatsApp Phone Number ID: ${phoneNumberId}`,
+            `No tenant found in database to process incoming WhatsApp message for Phone Number ID: ${phoneNumberId}`,
           );
           continue;
         }
 
-          // Process all incoming messages in parallel for throughput
-          await Promise.all(
-            value.messages.map(async (message: any) => {
-              const rawPhone = message.from || '';
-              const buyerPhone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
+        // Process all incoming messages in parallel for throughput
+        await Promise.all(
+          value.messages.map(async (message: any) => {
+            const rawPhone = message.from || '';
+            const buyerPhone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
 
-              let messageText = '';
-              let flowData: Record<string, any> | undefined;
+            let messageText = '';
+            let flowData: Record<string, any> | undefined;
 
-              if (message.type === 'text' && message.text?.body) {
-                messageText = message.text.body;
-              } else if (message.type === 'interactive') {
-                if (message.interactive?.button_reply) {
-                  messageText =
-                    message.interactive.button_reply.id ||
-                    message.interactive.button_reply.title;
-                } else if (message.interactive?.nfm_reply?.response_json) {
-                  try {
-                    flowData = JSON.parse(message.interactive.nfm_reply.response_json);
-                    messageText = 'WhatsApp Flow Submitted';
-                  } catch { }
-                }
+            if (message.type === 'text' && message.text?.body) {
+              messageText = message.text.body;
+            } else if (message.type === 'interactive') {
+              if (message.interactive?.button_reply) {
+                messageText =
+                  message.interactive.button_reply.id ||
+                  message.interactive.button_reply.title;
+              } else if (message.interactive?.nfm_reply?.response_json) {
+                try {
+                  flowData = JSON.parse(message.interactive.nfm_reply.response_json);
+                  messageText = 'WhatsApp Flow Submitted';
+                } catch { }
               }
+            }
 
-              if (!messageText && !flowData) {
-                messageText = `[Media/Unsupported message type: ${message.type}]`;
-              }
+            if (!messageText && !flowData) {
+              messageText = `[Media/Unsupported message type: ${message.type}]`;
+            }
 
-              // Process incoming message: intent classification + auto response + WhatsApp dispatch
-              await this.chatService.processIncomingMessage({
-                tenantId: tenant.id,
-                buyerPhone,
-                text: messageText,
-                flowData,
-                sender: MessageSender.BUYER,
-                incomingMessageId: message.id,
-              });
-            }),
-          );
+            // Process incoming message: intent classification + auto response + WhatsApp dispatch
+            await this.chatService.processIncomingMessage({
+              tenantId: tenant.id,
+              buyerPhone,
+              text: messageText,
+              flowData,
+              sender: MessageSender.BUYER,
+              incomingMessageId: message.id,
+            });
+          }),);
       }
     }
 

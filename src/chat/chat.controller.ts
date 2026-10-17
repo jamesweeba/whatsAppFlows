@@ -1,9 +1,13 @@
 import {
   Body,
   Controller,
+  DefaultValuePipe,
   Get,
+  Param,
+  ParseIntPipe,
   Post,
   Query,
+  Request,
   UseGuards,
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
@@ -30,6 +34,31 @@ export class ChatController {
   }
 
   /**
+   * List all buyer conversations with latest message preview and orders.
+   * GET /api/v1/chat/sessions?page=1&limit=20&search=+233
+   */
+  @Get('sessions')
+  @UseGuards(JwtAuthGuard)
+  async getSessions(
+    @Request() req: any,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit: number,
+    @Query('search') search?: string,
+  ) {
+    return this.chatService.getSessionsForVendor(req.user.id, page, limit, search);
+  }
+
+  /**
+   * Get full conversation thread and all orders placed for a specific session.
+   * GET /api/v1/chat/sessions/:id
+   */
+  @Get('sessions/:id')
+  @UseGuards(JwtAuthGuard)
+  async getSessionDetail(@Request() req: any, @Param('id') id: string) {
+    return this.chatService.getSessionDetailForVendor(req.user.id, id);
+  }
+
+  /**
    * Retrieve chat history for a buyer-tenant session.
    * Protected by JWT Guard (for vendor management dashboard).
    */
@@ -42,3 +71,4 @@ export class ChatController {
     return this.chatService.getSessionHistory(tenantId, buyerPhone);
   }
 }
+

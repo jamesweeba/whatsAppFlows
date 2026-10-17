@@ -12,7 +12,7 @@ import { EncryptedFlowRequestDto, SendFlowMessageDto } from './dto/flow-request.
 import { WabaService } from '../waba/waba.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 
-@Controller('api/v1/flow')
+@Controller(['api/v1/flow', 'webhook'])
 export class FlowController {
   private readonly logger = new Logger(FlowController.name);
 

@@ -59,26 +59,18 @@ describe('FlowService', () => {
       expect.objectContaining({ skip: 0, take: 5 }),
     );
     expect(firstPage.data.products).toHaveLength(5);
-    expect(firstPage.data.page_options).toEqual([
-      { id: '1', title: 'Page 1' },
-      { id: '2', title: 'Page 2' },
-      { id: '3', title: 'Page 3' },
-    ]);
+    // page_options is NOT declared in the PRODUCT_SELECT schema — ensure it's absent
+    expect(firstPage.data.page_options).toBeUndefined();
     expect(firstPage.data.pages).toEqual([
       { id: '1', title: 'Page 1 of 3' },
       { id: '2', title: 'Page 2 of 3' },
       { id: '3', title: 'Page 3 of 3' },
     ]);
     expect(firstPage.data.page_prefill).toBe('1');
-    expect(firstPage.data.has_previous_page).toBe(false);
-    expect(firstPage.data.has_next_page).toBe(true);
-    expect(firstPage.data.visible_product_ids).toEqual([
-      'p1',
-      'p2',
-      'p3',
-      'p4',
-      'p5',
-    ]);
+    // has_previous_page / has_next_page / visible_product_ids are NOT in schema
+    expect(firstPage.data.has_previous_page).toBeUndefined();
+    expect(firstPage.data.has_next_page).toBeUndefined();
+    expect(firstPage.data.visible_product_ids).toBeUndefined();
     expect(nextPage.data.products.map(({ id }: { id: string }) => id)).toEqual([
       'p6',
       'p7',
@@ -87,7 +79,8 @@ describe('FlowService', () => {
       'p10',
     ]);
     expect(nextPage.data.page_prefill).toBe('2');
-    expect(nextPage.data.selected_ids).toEqual(['p1', 'p3']);
+    // selected_ids is NOT in PRODUCT_SELECT schema — ensure it's absent
+    expect(nextPage.data.selected_ids).toBeUndefined();
   });
 
   it('accepts the page_select field used by the Flow definition and preserves selections between pages', async () => {
@@ -120,10 +113,13 @@ describe('FlowService', () => {
       expect.objectContaining({ skip: 5, take: 5 }),
     );
     expect(pageTwo.data.page_prefill).toBe('2');
-    expect(pageTwo.data.selected_ids).toEqual(['p1', 'p3']);
+    // selected_ids / has_previous_page / has_next_page are NOT in schema
+    expect(pageTwo.data.selected_ids).toBeUndefined();
     expect(pageTwo.data.pre_selected).toEqual([]);
-    expect(pageTwo.data.has_previous_page).toBe(true);
-    expect(pageTwo.data.has_next_page).toBe(true);
+    expect(pageTwo.data.has_previous_page).toBeUndefined();
+    expect(pageTwo.data.has_next_page).toBeUndefined();
+    // Selections are tracked via selection_note (declared) not via undeclared keys
+    expect(pageTwo.data.selection_note).toContain('item(s) selected');
   });
 
   it('preserves multi-page selections when moving between page 1 and page 2 and continuing to quantities', async () => {
@@ -174,7 +170,8 @@ describe('FlowService', () => {
       },
     });
     expect(page2.data.page_prefill).toBe('2');
-    expect(page2.data.selected_ids).toContain('p1');
+    // selected_ids is NOT in schema; selections tracked via selection_note
+    expect(page2.data.selected_ids).toBeUndefined();
     expect(page2.data.selection_note).toContain('1 item(s) selected');
 
     // 3. User selects Onions ('p6') on Page 2 and navigates back to Page 1
@@ -191,8 +188,9 @@ describe('FlowService', () => {
     });
     expect(backToPage1.data.page_prefill).toBe('1');
     expect(backToPage1.data.pre_selected).toEqual(['p1']);
-    expect(backToPage1.data.selected_products).toEqual(['p1']);
-    expect(backToPage1.data.selected_ids).toEqual(['p1', 'p6']);
+    // selected_products / selected_ids are NOT in schema
+    expect(backToPage1.data.selected_products).toBeUndefined();
+    expect(backToPage1.data.selected_ids).toBeUndefined();
     expect(backToPage1.data.selection_note).toContain('2 item(s) selected');
 
     // 4. User clicks Continue
@@ -232,22 +230,26 @@ describe('FlowService', () => {
     expect(result.data.item_0_id).toBe('p1');
     expect(result.data.item_0_label).toContain('Tomato');
     expect(result.data.item_0_label.length).toBeLessThanOrEqual(20);
-    expect(result.data.item_0_price).toBe('₵2.50');
-    expect(result.data.item_0_sublabel).toBe('💰 ₵2.50');
+    expect(result.data.item_0_helper).toBe('₵2.50 each');
     expect(result.data.item_0_options).toHaveLength(10);
     expect(result.data.item_0_default).toBe('1');
     expect(result.data.show_0).toBe(true);
     expect(result.data.item_1_id).toBe('p2');
     expect(result.data.item_1_label).toContain('Onion');
     expect(result.data.item_1_label.length).toBeLessThanOrEqual(20);
-    expect(result.data.item_1_price).toBe('₵1.50');
-    expect(result.data.item_1_sublabel).toBe('💰 ₵1.50');
+    expect(result.data.item_1_helper).toBe('₵1.50 each');
     expect(result.data.show_1).toBe(true);
     expect(result.data.item_2_id).toBe(' ');
     expect(result.data.show_2).toBe(false);
-    expect(Object.keys(result.data)).toHaveLength(100);
+    // 6 keys per slot (id, label, helper, options, default, show) × 10 slots = 60
+    expect(Object.keys(result.data)).toHaveLength(60);
     expect(result.data).not.toHaveProperty('i0_id');
     expect(result.data).not.toHaveProperty('show0');
+    // Ensure removed undeclared fields are not present (they caused Invariant Violation #73970)
+    expect(result.data).not.toHaveProperty('item_0_price');
+    expect(result.data).not.toHaveProperty('item_0_sublabel');
+    expect(result.data).not.toHaveProperty('item_0_caption');
+    expect(result.data).not.toHaveProperty('item_0_unit_price');
   });
 
   it('reads quantities from both modern and legacy key formats', async () => {

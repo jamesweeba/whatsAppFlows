@@ -176,10 +176,12 @@ export class ChatService {
       try {
         if (classification.intent === BuyerIntent.GREETING) {
           const flowId = process.env.META_FLOW_ID;
+          let flowSent = false;
+
           if (flowId) {
             const firstScreen = process.env.META_FLOW_FIRST_SCREEN || 'PRODUCT_SELECT';
-            const flowData = await this.flowService.buildFlowInitData(tenant.id);
             try {
+              const flowData = await this.flowService.buildFlowInitData(tenant.id);
               await this.wabaService.sendFlowMessage({
                 phoneNumberId: tenant.whatsappPhoneNumberId,
                 toPhone: dto.buyerPhone,
@@ -191,52 +193,63 @@ export class ChatService {
                 bodyText: 'Hi 👋 What would you like to do today?',
                 data: flowData,
               });
+              flowSent = true;
             } catch (flowErr: any) {
-              if (firstScreen !== 'PRODUCT_SELECT') {
-                console.warn(
-                  `Meta Flow screen "${firstScreen}" rejected by Meta. Falling back to "PRODUCT_SELECT": ${flowErr?.message || flowErr}`,
-                );
-                await this.wabaService.sendFlowMessage({
-                  phoneNumberId: tenant.whatsappPhoneNumberId,
-                  toPhone: dto.buyerPhone,
-                  flowId,
-                  flowToken: `${tenant.id}:${Date.now()}`,
-                  flowCta: 'Get started',
-                  screen: 'PRODUCT_SELECT',
-                  headerText: tenant.name,
-                  bodyText: 'Browse our products and place your order.',
-                  data: flowData,
-                });
-              } else {
-                throw flowErr;
-              }
+              console.warn(
+                `WhatsApp Flow dispatch failed (${flowErr?.message || flowErr}). Falling back to interactive buttons.`,
+              );
             }
-          } else {
-            await this.wabaService.sendWelcomeButtons(
-              tenant.whatsappPhoneNumberId,
-              dto.buyerPhone,
-              tenant.name,
-            );
+          }
+
+          if (!flowSent) {
+            try {
+              await this.wabaService.sendWelcomeButtons(
+                tenant.whatsappPhoneNumberId,
+                dto.buyerPhone,
+                tenant.name,
+              );
+            } catch (buttonErr: any) {
+              console.warn(
+                `Welcome buttons dispatch failed (${buttonErr?.message || buttonErr}). Falling back to text message.`,
+              );
+              await this.wabaService.sendTextMessage(
+                tenant.whatsappPhoneNumberId,
+                dto.buyerPhone,
+                responseText,
+              );
+            }
           }
         } else if (shopRequested) {
           const flowId = process.env.META_FLOW_ID;
-          if (!flowId) {
-            throw new Error('META_FLOW_ID is not configured.');
+          let flowSent = false;
+
+          if (flowId) {
+            try {
+              const flowData = await this.flowService.buildFlowInitData(tenant.id);
+              await this.wabaService.sendFlowMessage({
+                phoneNumberId: tenant.whatsappPhoneNumberId,
+                toPhone: dto.buyerPhone,
+                flowId,
+                flowToken: `${tenant.id}:${Date.now()}`,
+                flowCta: 'Get started',
+                screen: 'PRODUCT_SELECT',
+                headerText: tenant.name,
+                bodyText: 'Browse our products and place your order.',
+                data: flowData,
+              });
+              flowSent = true;
+            } catch (flowErr: any) {
+              console.warn(`Shop flow dispatch failed: ${flowErr?.message || flowErr}`);
+            }
           }
 
-          const flowData = await this.flowService.buildFlowInitData(tenant.id);
-
-          await this.wabaService.sendFlowMessage({
-            phoneNumberId: tenant.whatsappPhoneNumberId,
-            toPhone: dto.buyerPhone,
-            flowId,
-            flowToken: `${tenant.id}:${Date.now()}`,
-            flowCta: 'Get started',
-            screen: 'PRODUCT_SELECT',
-            headerText: tenant.name,
-            bodyText: 'Browse our products and place your order.',
-            data: flowData,
-          });
+          if (!flowSent) {
+            await this.wabaService.sendTextMessage(
+              tenant.whatsappPhoneNumberId,
+              dto.buyerPhone,
+              responseText,
+            );
+          }
         } else {
           await this.wabaService.sendTextMessage(
             tenant.whatsappPhoneNumberId,
@@ -376,6 +389,125 @@ export class ChatService {
   }
 
   /**
+   * Helper to resolve the authenticated vendor user's tenant.
+   */
+  private async getTenantForUser(userId: string) {
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { userId },
+    });
+    if (!tenant) {
+      throw new NotFoundException('You do not have a registered shop/tenant.');
+    }
+    return tenant;
+  }
+
+  /**
+   * List all buyer chat sessions/conversations for the authenticated vendor's shop.
+   * Includes latest message preview and associated orders count.
+   */
+  async getSessionsForVendor(
+    userId: string,
+    page = 1,
+    limit = 20,
+    search?: string,
+  ) {
+    const tenant = await this.getTenantForUser(userId);
+    const skip = (Math.max(1, page) - 1) * limit;
+
+    const whereClause: any = {
+      tenantId: tenant.id,
+      ...(search
+        ? {
+            buyerPhone: { contains: search, mode: 'insensitive' },
+          }
+        : {}),
+    };
+
+    const [total, sessions] = await Promise.all([
+      this.prisma.chatSession.count({ where: whereClause }),
+      this.prisma.chatSession.findMany({
+        where: whereClause,
+        skip,
+        take: limit,
+        orderBy: { updatedAt: 'desc' },
+        include: {
+          messages: {
+            orderBy: { createdAt: 'desc' },
+            take: 1, // latest message preview
+          },
+          orders: {
+            orderBy: { createdAt: 'desc' },
+            include: {
+              items: true,
+            },
+          },
+          _count: {
+            select: {
+              messages: true,
+              orders: true,
+            },
+          },
+        },
+      }),
+    ]);
+
+    const formattedSessions = sessions.map((session) => ({
+      id: session.id,
+      buyerPhone: session.buyerPhone,
+      lastIntent: session.lastIntent,
+      createdAt: session.createdAt,
+      updatedAt: session.updatedAt,
+      lastMessage: session.messages[0] || null,
+      totalMessages: session._count.messages,
+      totalOrders: session._count.orders,
+      orders: session.orders,
+    }));
+
+    return {
+      data: formattedSessions,
+      meta: {
+        total,
+        page,
+        limit,
+        totalPages: Math.ceil(total / limit),
+      },
+    };
+  }
+
+  /**
+   * Get complete conversation and all placed orders for a single buyer session.
+   */
+  async getSessionDetailForVendor(userId: string, sessionId: string) {
+    const tenant = await this.getTenantForUser(userId);
+
+    const session = await this.prisma.chatSession.findFirst({
+      where: {
+        id: sessionId,
+        tenantId: tenant.id,
+      },
+      include: {
+        messages: {
+          orderBy: { createdAt: 'asc' },
+        },
+        orders: {
+          orderBy: { createdAt: 'desc' },
+          include: {
+            items: true,
+          },
+        },
+      },
+    });
+
+    if (!session) {
+      throw new NotFoundException(
+        `Conversation session "${sessionId}" not found for your shop.`,
+      );
+    }
+
+    return session;
+  }
+
+  /**
    * Get full chat history for a buyer with a specific tenant.
    */
   async getSessionHistory(tenantId: string, buyerPhone: string) {
@@ -402,3 +534,4 @@ export class ChatService {
     return session;
   }
 }
+

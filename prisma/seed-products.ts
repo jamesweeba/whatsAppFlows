@@ -2,8 +2,6 @@ import { PrismaClient } from '@prisma/client';
 
 const prisma = new PrismaClient();
 
-const TENANT_ID = '448038c6-5f87-45c2-b20e-f827c89c2aa2'; // AIWIJN
-
 const products = [
   // Vegetables
   { name: 'Tomatoes (1 basket)',               image: '🍅', price: 85.00,  inStock: true },
@@ -35,20 +33,34 @@ const products = [
 ];
 
 async function main() {
-  console.log(`Seeding ${products.length} products for tenant AIWIJN...`);
+  const targetTenantId = process.env.TENANT_ID;
+
+  let tenant = targetTenantId
+    ? await prisma.tenant.findUnique({ where: { id: targetTenantId } })
+    : null;
+
+  if (!tenant) {
+    tenant = await prisma.tenant.findFirst();
+  }
+
+  if (!tenant) {
+    throw new Error('No tenant found in database. Please register a tenant before seeding products.');
+  }
+
+  console.log(`Seeding ${products.length} products for tenant "${tenant.name}" (${tenant.id})...`);
 
   // Clear existing products for this tenant first
-  const deleted = await prisma.product.deleteMany({ where: { tenantId: TENANT_ID } });
+  const deleted = await prisma.product.deleteMany({ where: { tenantId: tenant.id } });
   console.log(`Cleared ${deleted.count} existing products.`);
 
   const created = await prisma.product.createMany({
     data: products.map((p) => ({
       ...p,
-      tenantId: TENANT_ID,
+      tenantId: tenant.id,
     })),
   });
 
-  console.log(`✅ Successfully seeded ${created.count} products.`);
+  console.log(`✅ Successfully seeded ${created.count} products into the "Product" table.`);
 }
 
 main()
@@ -57,3 +69,4 @@ main()
     process.exit(1);
   })
   .finally(() => prisma.$disconnect());
+
