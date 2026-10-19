@@ -116,6 +116,37 @@ describe('PaystackService', () => {
       expect(result.success).toBe(true);
       expect(result.status).toBe('pay_offline');
     });
+
+    it('treats send_otp as successful initiation for Ghana Mobile Money', async () => {
+      process.env.PAYSTACK_SECRET_KEY = 'sk_test_fake_key';
+
+      const mockResponse = {
+        ok: true,
+        json: vi.fn().mockResolvedValue({
+          status: true,
+          message: 'Charge attempted',
+          data: {
+            status: 'send_otp',
+            reference: 'MX-9002',
+            display_text: 'Please complete authorization',
+          },
+        }),
+      };
+
+      vi.stubGlobal('fetch', vi.fn().mockResolvedValue(mockResponse));
+
+      const result = await service.initiateMoMoCharge({
+        amount: 75.0,
+        momoNumber: '0598402862',
+        provider: 'mtn',
+        email: 'tenant@marketix.app',
+        reference: 'MX-9002',
+      });
+
+      expect(result.success).toBe(true);
+      expect(result.status).toBe('send_otp');
+      expect(result.message).toBe('Charge initiated');
+    });
   });
 
   describe('verifyWebhookSignature', () => {

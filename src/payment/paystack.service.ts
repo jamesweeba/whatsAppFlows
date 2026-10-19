@@ -12,7 +12,7 @@ export interface InitiateMoMoChargeParams {
 
 export interface PaystackChargeResult {
   success: boolean;
-  status: 'pending' | 'pay_offline' | 'success' | 'failed';
+  status: 'pending' | 'pay_offline' | 'success' | 'failed' | 'send_otp' | 'send_pin';
   reference: string;
   message: string;
   displayText?: string;
@@ -81,6 +81,18 @@ export class PaystackService {
       };
     }
 
+    if (secretKey.startsWith('pk_')) {
+      this.logger.error(
+        `PAYSTACK_SECRET_KEY is set to a Public Key (${secretKey.slice(0, 8)}...). The Paystack Charge API requires the Secret Key starting with "sk_test_" or "sk_live_".`,
+      );
+      return {
+        success: false,
+        status: 'failed',
+        reference: params.reference,
+        message: 'A Public Key (pk_...) was used instead of the Secret Key (sk_...). Please update PAYSTACK_SECRET_KEY in .env to your Secret Key.',
+      };
+    }
+
     const payload = {
       amount: amountInPesewas,
       email: params.email || 'customer@orders.marketix.app',
@@ -120,7 +132,7 @@ export class PaystackService {
           success: false,
           status: 'failed',
           reference: params.reference,
-          message: data.message || 'Payment initiation failed',
+          message: data.data?.message || data.message || 'Payment initiation failed',
           rawResponse: data,
         };
       }
@@ -128,11 +140,19 @@ export class PaystackService {
       const chargeStatus = data.data?.status || 'pending';
       const displayText = data.data?.display_text || 'Please complete authorization on your mobile phone.';
 
+      // Paystack Mobile Money in Ghana returns 'send_otp', 'pay_offline', 'pending', or 'send_pin' upon prompt dispatch
+      const isSuccess =
+        chargeStatus === 'send_otp' ||
+        chargeStatus === 'pay_offline' ||
+        chargeStatus === 'pending' ||
+        chargeStatus === 'send_pin' ||
+        chargeStatus === 'success';
+
       return {
-        success: chargeStatus === 'pay_offline' || chargeStatus === 'pending' || chargeStatus === 'success',
-        status: chargeStatus,
+        success: isSuccess,
+        status: isSuccess ? (chargeStatus as any) : 'failed',
         reference: data.data?.reference || params.reference,
-        message: data.message || 'Charge initiated',
+        message: isSuccess ? 'Charge initiated' : (data.data?.gateway_response || data.message || 'Payment initiation failed'),
         displayText,
         rawResponse: data.data,
       };

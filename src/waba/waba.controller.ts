@@ -31,7 +31,6 @@ export class WabaController {
     @Body() dto: OnboardWabaDto,
   ) {
     const tenant = await this.tenantService.findByUser(req.user.id);
-
     const verifiedName = dto.verifiedName || tenant.name;
     const countryCode = dto.countryCode || tenant.countryCode
 

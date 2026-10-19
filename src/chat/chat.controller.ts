@@ -30,6 +30,8 @@ export class ChatController {
   @Post('')
   @UseGuards(WebhookSecretGuard)
   async processMessage(@Body() dto: ProcessMessageDto) {
+    console.log(dto)
+    console.log("wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww")
     return this.chatService.processIncomingMessage(dto);
   }
 

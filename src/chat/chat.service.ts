@@ -67,6 +67,7 @@ export class ChatService {
    * updates session state, and dispatches automated response to buyer on WhatsApp.
    */
   async processIncomingMessage(dto: ProcessMessageDto) {
+
     let messageText = dto.text || '';
     let source = dto.source || MessageSource.TEXT;
 
@@ -212,12 +213,12 @@ export class ChatService {
     // 6. Generate automated response based on classified intent
     const responseText = dto.flowData?.order_ref
       ? this.formatOrderConfirmationMessage(
-          String(dto.flowData.order_ref).trim(),
-          dto.flowData.payment_method,
-          dto.flowData.momo_number,
-          dto.buyerPhone,
-          completedOrder,
-        )
+        String(dto.flowData.order_ref).trim(),
+        dto.flowData.payment_method,
+        dto.flowData.momo_number,
+        dto.buyerPhone,
+        completedOrder,
+      )
       : (shopRequested
         ? 'Opening the product catalog.'
         : await this.generateResponseForIntent(

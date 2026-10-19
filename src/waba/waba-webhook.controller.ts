@@ -70,6 +70,10 @@ export class WabaWebhookController {
       const changes = entry.changes || [];
       for (const change of changes) {
         const value = change.value;
+
+        console.log(JSON.stringify(value))
+        console.log("yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy")
+
         if (!value || !value.messages) continue;
 
         const phoneNumberId = value.metadata?.phone_number_id;
@@ -100,8 +104,20 @@ export class WabaWebhookController {
         // Process all incoming messages in parallel for throughput
         await Promise.all(
           value.messages.map(async (message: any) => {
-            const rawPhone = message.from || '';
-            const buyerPhone = rawPhone.startsWith('+') ? rawPhone : `+${rawPhone}`;
+            const rawPhone = (message.from || '').trim();
+            console.log(rawPhone)
+            console.log("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+
+            let cleanPhone = rawPhone.replace(/[^\d+]/g, '');
+            if (cleanPhone.startsWith('+')) {
+              cleanPhone = cleanPhone.slice(1);
+            }
+            if (cleanPhone.startsWith('0') && cleanPhone.length === 10) {
+              cleanPhone = '233' + cleanPhone.slice(1);
+            } else if (!cleanPhone.startsWith('0') && cleanPhone.length === 9) {
+              cleanPhone = '233' + cleanPhone;
+            }
+            const buyerPhone = cleanPhone ? `+${cleanPhone}` : '';
 
             let messageText = '';
             let flowData: Record<string, any> | undefined;

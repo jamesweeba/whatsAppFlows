@@ -137,13 +137,37 @@ export class WabaService {
    * Send a text message to a buyer via Meta WhatsApp Cloud API.
    * POST /{PHONE_NUMBER_ID}/messages
    */
+  /**
+   * Format recipient phone number into E.164 international format without '+' or leading local '0'.
+   * Meta WhatsApp Business API requires numbers in international format (e.g. 233245655799).
+   * Local Ghana numbers like "0245655799" are converted to "233245655799".
+   */
+  formatRecipientPhone(phone: string): string {
+    if (!phone) return '';
+    let clean = phone.replace(/[^\d+]/g, '');
+    if (clean.startsWith('+')) {
+      clean = clean.slice(1);
+    }
+    console.log(clean);
+    console.log("jjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjjj")
+
+    // If local Ghana number starting with 0 (e.g. 0245655799 -> 233245655799)
+    if (clean.startsWith('0') && clean.length === 10) {
+      clean = '233' + clean.slice(1);
+    } else if (!clean.startsWith('0') && clean.length === 9) {
+      clean = '233' + clean;
+    }
+    return clean;
+  }
+
   async sendTextMessage(
     phoneNumberId: string,
     toPhone: string,
     text: string,
   ): Promise<{ messageId: string }> {
     const url = `${this.baseUrl}/${phoneNumberId}/messages`;
-    const recipientPhone = toPhone.replace(/^\+/, '');
+    const recipientPhone = this.formatRecipientPhone(toPhone);
+
 
     const body = {
       messaging_product: 'whatsapp',
@@ -171,7 +195,7 @@ export class WabaService {
     storeName: string,
   ): Promise<{ messageId: string }> {
     const url = `${this.baseUrl}/${phoneNumberId}/messages`;
-    const recipientPhone = toPhone.replace(/^\+/, '');
+    const recipientPhone = this.formatRecipientPhone(toPhone);
 
     const body = {
       messaging_product: 'whatsapp',
@@ -235,7 +259,7 @@ export class WabaService {
     flowAction?: 'navigate' | 'data_exchange';
   }): Promise<{ messageId: string }> {
     const url = `${this.baseUrl}/${options.phoneNumberId}/messages`;
-    const recipientPhone = options.toPhone.replace(/^\+/, '');
+    const recipientPhone = this.formatRecipientPhone(options.toPhone);
 
     const flowAction = options.flowAction || 'navigate';
     const actionParameters: Record<string, any> = {
