@@ -1,5 +1,5 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
-import { BuyerIntent, MessageSender, MessageSource, Tenant, Product } from '@prisma/client';
+import { BuyerIntent, MessageSender, MessageSource, Tenant, Product, OrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AiClassifierService } from './ai-classifier.service.js';
 import { ProcessMessageDto } from './dto/process-message.dto.js';
@@ -10,6 +10,13 @@ import { OrderService } from '../order/order.service.js';
 
 @Injectable()
 export class ChatService {
+  /**
+   * Tracks the last time an order flow was sent to each buyer (keyed by tenantId:buyerPhone).
+   * Used to enforce a 15-minute cooldown so the flow is not spammed on every message.
+   */
+  private readonly flowCooldownMs = 15 * 60 * 1000; // 15 minutes
+  private readonly lastFlowSent = new Map<string, number>();
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly aiClassifierService: AiClassifierService,
@@ -19,16 +26,26 @@ export class ChatService {
   ) { }
 
   /**
-   * Get an existing chat session or create a new one for a buyer-tenant pair.
+   * Clear the 15-minute order flow cooldown for a buyer-tenant pair.
+   * Called when an order is completed, allowing the buyer to launch a fresh flow immediately.
+   */
+  clearCooldown(tenantId: string, buyerPhone: string) {
+    this.lastFlowSent.delete(`${tenantId}:${buyerPhone}`);
+  }
+
+  /**
+   * Get an active chat session (where orderCompleted is false) or create a new one.
+   * When an order is completed, the previous session is marked orderCompleted=true,
+   * so the buyer's next interaction will automatically create a brand new session.
    */
   async getOrCreateSession(tenantId: string, buyerPhone: string) {
-    let session = await this.prisma.chatSession.findUnique({
+    let session = await this.prisma.chatSession.findFirst({
       where: {
-        tenantId_buyerPhone: {
-          tenantId,
-          buyerPhone,
-        },
+        tenantId,
+        buyerPhone,
+        orderCompleted: false,
       },
+      orderBy: { createdAt: 'desc' },
     });
 
     if (!session) {
@@ -36,6 +53,7 @@ export class ChatService {
         data: {
           tenantId,
           buyerPhone,
+          orderCompleted: false,
         },
       });
     }
@@ -75,7 +93,7 @@ export class ChatService {
     if (dto.incomingMessageId && tenant?.whatsappPhoneNumberId) {
       this.wabaService
         .sendTypingIndicator(tenant.whatsappPhoneNumberId, dto.incomingMessageId)
-        .catch(() => {});
+        .catch(() => { });
     }
 
     // 2. Fetch or create ChatSession
@@ -97,6 +115,8 @@ export class ChatService {
       messageText,
       historyContext,
     );
+
+
 
     const shopRequested = ['SHOP', '🛍️ Shop products'].includes(
       messageText.trim(),
@@ -125,7 +145,7 @@ export class ChatService {
       },
     });
 
-    // 5b. Auto-create Order in DB if WhatsApp Flow cart submission payload exists
+    // 5b. Auto-create or confirm Order in DB if WhatsApp Flow submission payload exists
     if (dto.flowData?.cart_json) {
       try {
         const cartItems = typeof dto.flowData.cart_json === 'string'
@@ -149,15 +169,63 @@ export class ChatService {
       }
     }
 
+    let completedOrder: any = null;
+
+    if (dto.flowData?.order_ref) {
+      try {
+        const orderRef = String(dto.flowData.order_ref).trim();
+        const paymentMethod = dto.flowData.payment_method;
+        const momoNetwork = dto.flowData.momo_network;
+        const momoNumber = dto.flowData.momo_number;
+
+        const existingOrder = await this.prisma.order.findUnique({
+          where: { orderNumber: orderRef },
+          include: { items: true },
+        });
+
+        if (existingOrder) {
+          completedOrder = existingOrder;
+          const notesArr = [existingOrder.notes];
+          if (paymentMethod === 'momo') {
+            notesArr.push(`MoMo Details: ${momoNetwork || 'MoMo'} (${momoNumber || dto.buyerPhone})`);
+          } else if (paymentMethod === 'cod') {
+            notesArr.push('Payment: Cash on Delivery confirmed');
+          }
+
+          await this.prisma.order.update({
+            where: { id: existingOrder.id },
+            data: {
+              sessionId: session.id,
+              status: paymentMethod === 'momo' ? OrderStatus.AWAITING_PAYMENT : OrderStatus.CONFIRMED,
+              notes: notesArr.filter(Boolean).join(' | '),
+            },
+          });
+        }
+      } catch (orderUpdateErr) {
+        console.warn(`Error updating flow order: ${orderUpdateErr}`);
+      }
+
+      // Reset flow cooldown immediately upon order completion
+      this.clearCooldown(dto.tenantId, dto.buyerPhone);
+    }
+
     // 6. Generate automated response based on classified intent
-    const responseText = shopRequested
-      ? 'Opening the product catalog.'
-      : await this.generateResponseForIntent(
+    const responseText = dto.flowData?.order_ref
+      ? this.formatOrderConfirmationMessage(
+          String(dto.flowData.order_ref).trim(),
+          dto.flowData.payment_method,
+          dto.flowData.momo_number,
+          dto.buyerPhone,
+          completedOrder,
+        )
+      : (shopRequested
+        ? 'Opening the product catalog.'
+        : await this.generateResponseForIntent(
           classification.intent,
           dto.tenantId,
           classification.extractedEntities,
           tenant,
-        );
+        ));
 
     // 7. Save automated system response in database
     const systemResponse = await this.prisma.chatMessage.create({
@@ -171,91 +239,116 @@ export class ChatService {
     });
 
     // 8. Dispatch automated WhatsApp message back to buyer via Meta Cloud API if tenant is onboarded
-
     if (tenant?.whatsappPhoneNumberId) {
       try {
-        if (classification.intent === BuyerIntent.GREETING) {
-          const flowId = process.env.META_FLOW_ID;
-          let flowSent = false;
+        const isOrderConfirmation = !!dto.flowData?.order_ref;
+        const isFlowSubmission = dto.source === MessageSource.FLOW_SELECTION || !!dto.flowData;
 
-          if (flowId) {
+        // === INTENTS THAT ALWAYS LAUNCH THE FLOW ===
+        const flowIntents = new Set<BuyerIntent>([
+          BuyerIntent.GREETING,
+          BuyerIntent.VIEW_CATALOG,
+          BuyerIntent.ORDER_INTENT,
+          BuyerIntent.PRODUCT_INQUIRY,
+          BuyerIntent.STOCK_CHECK,
+          BuyerIntent.HUMAN_SUPPORT,
+          BuyerIntent.OUT_OF_BOUNDS,
+        ]);
+
+        if (isOrderConfirmation) {
+          // Order was just placed via the flow — send confirmation text only
+          await this.wabaService.sendTextMessage(
+            tenant.whatsappPhoneNumberId,
+            dto.buyerPhone,
+            responseText,
+          );
+        } else if (isFlowSubmission) {
+          // Intermediate flow step (not final order) — don't send anything extra
+        } else if (shopRequested || flowIntents.has(classification.intent)) {
+          // Determine message copy based on intent
+          const isGreeting = classification.intent === BuyerIntent.GREETING || shopRequested;
+          const isOutOfScope = classification.intent === BuyerIntent.OUT_OF_BOUNDS;
+          const isHumanSupport = classification.intent === BuyerIntent.HUMAN_SUPPORT;
+
+          let bodyText: string;
+          let ctaLabel: string;
+
+          if (isGreeting) {
+            bodyText = `Hi 👋 Welcome to *${tenant.name}*! Tap below to browse fresh groceries and place your order.`;
+            ctaLabel = 'Order Groceries';
+          } else if (isOutOfScope) {
+            bodyText = `👋 I can only help with grocery orders from *${tenant.name}*. Tap the button below to browse our products and place an order!`;
+            ctaLabel = 'Browse & Order';
+          } else if (isHumanSupport) {
+            bodyText = `🤝 To get the fastest help, please place your order through our order form. A team member will follow up with you on WhatsApp.`;
+            ctaLabel = 'Open Order Form';
+          } else if (classification.intent === BuyerIntent.ORDER_INTENT) {
+            bodyText = `🛒 Ready to order? Browse all available groceries from *${tenant.name}* and place your order right here!`;
+            ctaLabel = 'Order Now';
+          } else if (classification.intent === BuyerIntent.PRODUCT_INQUIRY || classification.intent === BuyerIntent.STOCK_CHECK) {
+            bodyText = `🔍 Browse all our in-stock products from *${tenant.name}* and select exactly what you need!`;
+            ctaLabel = 'Browse Products';
+          } else {
+            bodyText = `🛍️ Shop fresh groceries from *${tenant.name}* — delivered to your door!`;
+            ctaLabel = 'Order Groceries';
+          }
+
+          // Cooldown check: only re-send flow if it hasn't been sent in the last 15 minutes
+          const cooldownKey = `${tenant.id}:${dto.buyerPhone}`;
+          const lastSent = this.lastFlowSent.get(cooldownKey) || 0;
+          const cooldownExpired = Date.now() - lastSent > this.flowCooldownMs;
+
+          const flowId = process.env.META_FLOW_ID;
+
+          if (flowId && cooldownExpired) {
             const firstScreen = process.env.META_FLOW_FIRST_SCREEN || 'PRODUCT_SELECT';
             try {
-              const flowData = await this.flowService.buildFlowInitData(tenant.id);
+              const flowData = await this.flowService.buildFlowInitData(tenant.id, firstScreen);
               await this.wabaService.sendFlowMessage({
                 phoneNumberId: tenant.whatsappPhoneNumberId,
                 toPhone: dto.buyerPhone,
                 flowId,
-                flowToken: `${tenant.id}:${Date.now()}`,
-                flowCta: 'Get started',
+                flowToken: `${tenant.id}:${dto.buyerPhone}:${Date.now()}`,
+                flowCta: ctaLabel,
                 screen: firstScreen,
                 headerText: tenant.name,
-                bodyText: 'Hi 👋 What would you like to do today?',
+                bodyText,
                 data: flowData,
               });
-              flowSent = true;
+              this.lastFlowSent.set(cooldownKey, Date.now());
             } catch (flowErr: any) {
-              console.warn(
-                `WhatsApp Flow dispatch failed (${flowErr?.message || flowErr}). Falling back to interactive buttons.`,
+              console.warn(`Flow dispatch failed (${flowErr?.message || flowErr}). Sending nudge text.`);
+              // Fallback: send a short text nudge if flow fails
+              await this.wabaService.sendTextMessage(
+                tenant.whatsappPhoneNumberId,
+                dto.buyerPhone,
+                bodyText,
               );
             }
-          }
-
-          if (!flowSent) {
+          } else if (!flowId) {
+            // No flow configured — fall back to welcome buttons or text
             try {
               await this.wabaService.sendWelcomeButtons(
                 tenant.whatsappPhoneNumberId,
                 dto.buyerPhone,
                 tenant.name,
               );
-            } catch (buttonErr: any) {
-              console.warn(
-                `Welcome buttons dispatch failed (${buttonErr?.message || buttonErr}). Falling back to text message.`,
-              );
+            } catch {
               await this.wabaService.sendTextMessage(
                 tenant.whatsappPhoneNumberId,
                 dto.buyerPhone,
-                responseText,
+                bodyText,
               );
             }
-          }
-        } else if (shopRequested) {
-          const flowId = process.env.META_FLOW_ID;
-          let flowSent = false;
-
-          if (flowId) {
-            try {
-              const flowData = await this.flowService.buildFlowInitData(tenant.id);
-              await this.wabaService.sendFlowMessage({
-                phoneNumberId: tenant.whatsappPhoneNumberId,
-                toPhone: dto.buyerPhone,
-                flowId,
-                flowToken: `${tenant.id}:${Date.now()}`,
-                flowCta: 'Get started',
-                screen: 'PRODUCT_SELECT',
-                headerText: tenant.name,
-                bodyText: 'Browse our products and place your order.',
-                data: flowData,
-              });
-              flowSent = true;
-            } catch (flowErr: any) {
-              console.warn(`Shop flow dispatch failed: ${flowErr?.message || flowErr}`);
-            }
-          }
-
-          if (!flowSent) {
+          } else {
+            // Flow was sent recently (within cooldown) — send a short nudge instead
+            const nudgeText = `👆 We already sent you the order form just a moment ago! Check your messages above to tap *${ctaLabel}*.`;
             await this.wabaService.sendTextMessage(
               tenant.whatsappPhoneNumberId,
               dto.buyerPhone,
-              responseText,
+              nudgeText,
             );
           }
-        } else {
-          await this.wabaService.sendTextMessage(
-            tenant.whatsappPhoneNumberId,
-            dto.buyerPhone,
-            responseText,
-          );
         }
       } catch (err) {
         const message = err instanceof Error ? err.message : 'Unknown error';
@@ -263,11 +356,13 @@ export class ChatService {
       }
     }
 
-    // 8. Update ChatSession state
+    // 8. Update ChatSession state (mark orderCompleted if final order confirmation)
+    const isFinalOrder = !!dto.flowData?.order_ref;
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: session.id },
       data: {
         lastIntent: classification.intent,
+        orderCompleted: isFinalOrder ? true : session.orderCompleted,
         updatedAt: new Date(),
       },
     });
@@ -418,8 +513,8 @@ export class ChatService {
       tenantId: tenant.id,
       ...(search
         ? {
-            buyerPhone: { contains: search, mode: 'insensitive' },
-          }
+          buyerPhone: { contains: search, mode: 'insensitive' },
+        }
         : {}),
     };
 
@@ -455,6 +550,7 @@ export class ChatService {
       id: session.id,
       buyerPhone: session.buyerPhone,
       lastIntent: session.lastIntent,
+      orderCompleted: session.orderCompleted,
       createdAt: session.createdAt,
       updatedAt: session.updatedAt,
       lastMessage: session.messages[0] || null,
@@ -511,13 +607,12 @@ export class ChatService {
    * Get full chat history for a buyer with a specific tenant.
    */
   async getSessionHistory(tenantId: string, buyerPhone: string) {
-    const session = await this.prisma.chatSession.findUnique({
+    const session = await this.prisma.chatSession.findFirst({
       where: {
-        tenantId_buyerPhone: {
-          tenantId,
-          buyerPhone,
-        },
+        tenantId,
+        buyerPhone,
       },
+      orderBy: { createdAt: 'desc' },
       include: {
         messages: {
           orderBy: { createdAt: 'asc' },
@@ -533,5 +628,107 @@ export class ChatService {
 
     return session;
   }
+
+  /**
+   * Format the final order confirmation receipt message sent on WhatsApp.
+   * Includes order reference, itemized grocery breakdown with quantities and prices,
+   * items subtotal, delivery fee (for delivery orders), delivery address, grand total,
+   * and payment method instructions.
+   */
+  private formatOrderConfirmationMessage(
+    orderRef: string,
+    paymentMethod?: string,
+    momoNumber?: string,
+    buyerPhone?: string,
+    order?: {
+      totalAmount: number;
+      notes?: string | null;
+      items?: Array<{
+        productName: string;
+        quantity: number;
+        unitPrice: number;
+        totalPrice?: number;
+      }>;
+    } | null,
+  ): string {
+    const lines: string[] = [];
+
+    lines.push(`🧾 *Order ${orderRef} placed successfully!*\n`);
+
+    if (order?.items && order.items.length > 0) {
+      lines.push('📦 *Items Ordered:*');
+      let itemsSubtotal = 0;
+      for (const item of order.items) {
+        const itemTotal =
+          item.totalPrice != null
+            ? item.totalPrice
+            : item.quantity * item.unitPrice;
+        itemsSubtotal += itemTotal;
+        lines.push(`• ${item.quantity}x ${item.productName} — GH₵${itemTotal.toFixed(2)}`);
+      }
+      lines.push('');
+
+      // Check delivery details from order notes or difference
+      let isDelivery = false;
+      let deliveryFee = 0;
+      let deliveryAddress: string | null = null;
+
+      if (order.notes) {
+        if (order.notes.includes('Fulfillment: Delivery')) {
+          isDelivery = true;
+          const addrMatch = order.notes.match(/Address:\s*([^|]+)/i);
+          if (addrMatch) {
+            deliveryAddress = addrMatch[1].trim();
+          }
+        }
+        const feeMatch = order.notes.match(/Delivery Fee:\s*₵?([0-9.]+)/i);
+        if (feeMatch) {
+          deliveryFee = parseFloat(feeMatch[1]);
+        }
+      }
+
+      // If delivery fee wasn't explicitly found in notes, check if total exceeds items subtotal
+      if (!deliveryFee && order.totalAmount > itemsSubtotal) {
+        const diff = Number((order.totalAmount - itemsSubtotal).toFixed(2));
+        if (diff > 0.01) {
+          deliveryFee = diff;
+          isDelivery = true;
+        }
+      }
+
+      if (deliveryFee > 0 || isDelivery) {
+        lines.push(`🛒 *Items Subtotal:* GH₵${itemsSubtotal.toFixed(2)}`);
+        lines.push(`🛵 *Delivery Fee:* GH₵${deliveryFee.toFixed(2)}`);
+        lines.push(`💰 *Total Amount:* GH₵${order.totalAmount.toFixed(2)}`);
+        if (deliveryAddress) {
+          lines.push(`📍 *Delivery Address:* ${deliveryAddress}`);
+        }
+      } else if (order.notes?.includes('Fulfillment: Pickup')) {
+        lines.push(`💰 *Total Amount:* GH₵${order.totalAmount.toFixed(2)}`);
+        lines.push('🛍️ *Fulfillment:* Store Pickup (Free)');
+      } else {
+        lines.push(`💰 *Total Amount:* GH₵${order.totalAmount.toFixed(2)}`);
+      }
+
+      lines.push('');
+    }
+
+    if (paymentMethod === 'momo') {
+      const phone = momoNumber || buyerPhone || '';
+      lines.push(`💳 *Payment Method:* Mobile Money${phone ? ` (${phone})` : ''}`);
+      lines.push(`\nPlease approve the MoMo prompt sent to ${phone}. Your groceries will be delivered today!`);
+    } else if (paymentMethod === 'cod') {
+      lines.push('💳 *Payment Method:* Cash on Delivery');
+      lines.push('\nYour order has been confirmed for Cash on Delivery. Please have the exact amount ready upon delivery. Our rider will contact you on WhatsApp!');
+    } else if (paymentMethod === 'card') {
+      lines.push('💳 *Payment Method:* Card Payment');
+      lines.push('\nWe will send you a secure payment link on WhatsApp shortly.');
+    } else {
+      lines.push('\nYour order has been confirmed! Our team will contact you on WhatsApp with updates.');
+    }
+
+    return lines.join('\n');
+  }
 }
+
 

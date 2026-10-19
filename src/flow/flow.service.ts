@@ -1,13 +1,44 @@
 import { Injectable, Logger, BadRequestException } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { FlowCryptoService, DecryptedFlowPayload, EncryptedFlowRequest } from './flow-crypto.service.js';
+import { OrderStatus } from '@prisma/client';
+import { PaystackService } from '../payment/paystack.service.js';
+
+export interface CartItem {
+  id: string;
+  title: string;
+  qty: number;
+  unitPrice: number;
+  total: number;
+}
+
+export interface FlowSessionState {
+  selectedIds: Set<string>;
+  lastVisibleIds: string[];
+  cartItems?: CartItem[];
+  fulfillment?: string;
+  address?: string;
+  paymentMethod?: string;
+  momoNetwork?: string;
+  momoNumber?: string;
+  category?: string;
+  query?: string;
+  page?: number;
+  subtotal?: number;
+  deliveryFee?: number;
+  totalAmount?: number;
+  orderRef?: string;
+  updatedAt: number;
+}
 
 @Injectable()
 export class FlowService {
   private readonly productsPerPage = 5;
+  private readonly logger = new Logger(FlowService.name);
+  private readonly flowSessions = new Map<string, FlowSessionState>();
 
-  /** Categories served by this flow. Keep in sync with the Flow JSON. */
-  private readonly flowCategories: { id: string; title: string }[] = [
+  /** Categories served by this flow. Matches flow.json. */
+  public readonly flowCategories: { id: string; title: string }[] = [
     { id: 'all', title: '🛒 All Products' },
     { id: 'vegetables', title: '🥦 Vegetables' },
     { id: 'grains', title: '🌾 Grains & Staples' },
@@ -15,29 +46,18 @@ export class FlowService {
     { id: 'snacks', title: '🥜 Snacks' },
   ];
 
-  /** Map category id → product name keywords for DB filtering. */
+  /** Map category id -> product name keywords for DB filtering. */
   private readonly categoryKeywords: Record<string, string[]> = {
     vegetables: ['tomato', 'onion', 'pepper', 'carrot', 'cabbage', 'lettuce', 'spinach', 'okra', 'okro', 'green', 'veg', 'cucumber', 'kontomire'],
-    grains: ['rice', 'maize', 'corn', 'wheat', 'oat', 'millet', 'sorghum', 'bread', 'cassava', 'yam', 'potato', 'bean', 'pea'],
+    grains: ['rice', 'maize', 'corn', 'wheat', 'oat', 'millet', 'sorghum', 'bread', 'cassava', 'yam', 'potato', 'bean', 'pea', 'gari'],
     spices: ['pepper', 'chili', 'chilli', 'shito', 'garlic', 'ginger', 'spice', 'seasoning', 'curry', 'turmeric'],
-    snacks: ['peanut', 'groundnut', 'chin chin', 'biscuit', 'chips', 'snack', 'nut', 'cracker', 'wafer'],
+    snacks: ['peanut', 'groundnut', 'chin chin', 'biscuit', 'chips', 'snack', 'nut', 'cracker', 'wafer', 'plantain', 'banana'],
   };
-  private readonly logger = new Logger(FlowService.name);
-  private readonly flowSessions = new Map<
-    string,
-    {
-      selectedIds: Set<string>;
-      lastVisibleIds: string[];
-      cartItems?: Array<{ id: string; title: string; qty: number; unitPrice: number; total: number }>;
-      fulfillment?: string;
-      address?: string;
-      updatedAt: number;
-    }
-  >();
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly flowCrypto: FlowCryptoService,
+    private readonly paystackService: PaystackService,
   ) {}
 
   /**
@@ -71,9 +91,10 @@ export class FlowService {
   }
 
   /**
-   * Core logic for dynamic screen navigation for the Marketix Groceries / Catalog Flow JSON.
+   * Core logic for dynamic screen navigation for Marketix Groceries WhatsApp Flow JSON.
+   * Screens: PRODUCT_SELECT -> QUANTITIES -> CHECKOUT -> DONE
    */
-  private async handleFlowAction(payload: DecryptedFlowPayload): Promise<Record<string, any>> {
+  async handleFlowAction(payload: DecryptedFlowPayload): Promise<Record<string, any>> {
     const { action, screen, data, flow_token } = payload;
 
     // Handle Health Ping from Meta
@@ -86,13 +107,18 @@ export class FlowService {
       };
     }
 
-    // Attempt to extract tenantId from flow_token (format: "tenantId:timestamp" or fallback to active tenant)
+    // Extract tenantId and buyerPhone from flow_token (format: "tenantId:buyerPhone:timestamp" or "tenantId:timestamp")
     let tenantId: string | null = null;
+    let buyerPhoneFromToken: string | null = null;
     if (flow_token && flow_token.includes(':')) {
-      tenantId = flow_token.split(':')[0];
+      const parts = flow_token.split(':');
+      tenantId = parts[0];
+      if (parts.length >= 3) {
+        buyerPhoneFromToken = parts[1];
+      }
     }
 
-    let tenant = tenantId
+    const tenant = tenantId
       ? await this.prisma.tenant.findUnique({ where: { id: tenantId } })
       : await this.prisma.tenant.findFirst({ where: { status: 'ACTIVE' } });
 
@@ -114,742 +140,176 @@ export class FlowService {
       }
     }
 
-    const query = typeof data?.query === 'string' ? data.query.trim() : '';
-    const category = typeof data?.category === 'string' ? data.category.trim() : 'all';
-
-    const buildWhere = (q: string, cat: string) => {
-      const keywords = cat !== 'all' ? (this.categoryKeywords[cat] ?? []) : [];
-      const nameConditions: Record<string, any>[] = [];
-
-      if (q) {
-        nameConditions.push({ name: { contains: q, mode: 'insensitive' as const } });
-      }
-      if (keywords.length > 0) {
-        nameConditions.push(...keywords.map((kw) => ({ name: { contains: kw, mode: 'insensitive' as const } })));
-      }
-
-      return {
-        tenantId: tenant?.id ?? '',
-        inStock: true,
-        ...(nameConditions.length > 0 ? { OR: nameConditions } : {}),
-      };
-    };
-
-    const where = buildWhere(query, category);
-
-    const getPage = async (requestedPage: number, overrideWhere?: Record<string, any>) => {
-      const effectiveWhere = overrideWhere ?? where;
-      const total = tenant ? await this.prisma.product.count({ where: effectiveWhere }) : 0;
-      const totalPages = Math.max(1, Math.ceil(total / this.productsPerPage));
-      const page = Math.min(Math.max(requestedPage, 1), totalPages);
-      const products = tenant
-        ? await this.prisma.product.findMany({
-            where: effectiveWhere,
-            orderBy: { createdAt: 'desc' },
-            skip: (page - 1) * this.productsPerPage,
-            take: this.productsPerPage,
-          })
-        : [];
-
-      return {
-        products: products.map((product) => ({
-          id: product.id,
-          title: this.formatProductTitle(product.name, product.image),
-          description: `₵${product.price.toFixed(2)}`,
-          price: product.price,
-        })),
-        total,
-        totalPages,
-        page,
-      };
-    };
-
-    const buildProductSelectResponse = (
-      products: Array<{ id: string; title: string; description: string }>,
-      total: number,
-      totalPages: number,
-      page: number,
-      selectedIds: string[] = [],
-      notice = ' ',
-      showNotice = false,
-      activeCategory = 'all',
-      activeQuery = query,
-    ) => {
-      const pageSelected = products
-        .map(({ id }) => id)
-        .filter((id) => selectedIds.includes(id));
-
-      const pages = Array.from({ length: totalPages }, (_, index) => ({
-        id: String(index + 1),
-        title: `Page ${index + 1} of ${totalPages}`,
-      }));
-
-      return {
-        version: '3.0',
-        screen: 'PRODUCT_SELECT',
-        data: {
-          categories: this.flowCategories,
-          category_prefill: activeCategory,
-          pages,
-          page_prefill: String(page),
-          products,
-          pre_selected: pageSelected,
-          page_label: `${total} products`,
-          selection_note: selectedIds.length
-            ? `🛒 ${selectedIds.length} item(s) selected`
-            : '🛒 Your basket is empty — tap items to add',
-          search_prefill: activeQuery || ' ',
-          notice,
-          show_notice: showNotice,
-        },
-      };
-    };
-
-    // 1. INIT Action: Opening Flow on screen "MENU" or "PRODUCT_SELECT"
-    if (action === 'INIT') {
-      this.flowSessions.set(sessionKey, {
+    let session = this.flowSessions.get(sessionKey);
+    if (!session) {
+      session = {
         selectedIds: new Set<string>(),
         lastVisibleIds: [],
+        category: 'all',
+        query: '',
+        page: 1,
         updatedAt: Date.now(),
-      });
-
-      if (screen === 'PRODUCT_SELECT') {
-        const catalog = await getPage(1);
-        const session = this.flowSessions.get(sessionKey);
-        if (session) {
-          session.lastVisibleIds = catalog.products.map(({ id }) => id);
-        }
-        return buildProductSelectResponse(
-          catalog.products,
-          catalog.total,
-          catalog.totalPages,
-          catalog.page,
-          [],
-          ' ',
-          false,
-          category,
-          query,
-        );
-      }
-
-      return {
-        version: '3.0',
-        screen: 'MENU',
-        data: {
-          store_name: tenant?.name || 'Our Store',
-          welcome_title: `Welcome to ${tenant?.name || 'Our Store'}`,
-          welcome_body: 'Hi 👋 What would you like to do today?',
-          menu_options: [
-            { id: 'SHOP', title: '🛍️ Shop products' },
-            { id: 'TRACK', title: '📦 Track my order' },
-            { id: 'HUMAN', title: '💬 Talk to us' },
-          ],
-        },
       };
+      this.flowSessions.set(sessionKey, session);
+    } else {
+      session.updatedAt = Date.now();
     }
 
-    // 2. DATA_EXCHANGE Action: Handling user interactions and screen transitions
-    if (action === 'data_exchange') {
-      let session = this.flowSessions.get(sessionKey);
-      if (!session) {
-        session = {
-          selectedIds: new Set<string>(),
-          lastVisibleIds: [],
-          updatedAt: Date.now(),
-        };
-        this.flowSessions.set(sessionKey, session);
+    const buildWhereClause = (cat: string, q: string) => {
+      const where: Record<string, any> = { tenantId: tenant.id, inStock: true };
+      const conditions: any[] = [];
+
+      if (q && q.trim()) {
+        conditions.push({ name: { contains: q.trim(), mode: 'insensitive' } });
       }
 
-      // Merge incoming selected items from this screen
-      const rawSelected =
-        data?.selected_products ??
-        data?.selected_on_page ??
-        data?.products_selected;
-
-      const currentOnPageIds = Array.isArray(rawSelected)
-        ? rawSelected.filter((id): id is string => typeof id === 'string')
-        : [];
-
-      const visibleIds: string[] =
-        Array.isArray(data?.visible_product_ids) && data.visible_product_ids.length > 0
-          ? data.visible_product_ids.filter((id): id is string => typeof id === 'string')
-          : session.lastVisibleIds;
-
-      // Also import any selected_ids explicitly supplied in payload
-      if (Array.isArray(data?.selected_ids)) {
-        for (const id of data.selected_ids) {
-          if (typeof id === 'string') session.selectedIds.add(id);
-        }
-      }
-
-      if (visibleIds.length > 0) {
-        for (const id of visibleIds) {
-          session.selectedIds.delete(id);
-        }
-        for (const id of currentOnPageIds) {
-          session.selectedIds.add(id);
-        }
-      } else if (currentOnPageIds.length > 0) {
-        for (const id of currentOnPageIds) {
-          session.selectedIds.add(id);
-        }
-      }
-
-      session.updatedAt = Date.now();
-
-      const step = data?.step;
-      const menuSelection = data?.menu_selection || data?.menu_option;
-
-      // Handle Menu Selection navigation
-      if (menuSelection === 'SHOP' || step === 'menu_shop') {
-        const catalog = await getPage(1);
-        session.lastVisibleIds = catalog.products.map(({ id }) => id);
-        return buildProductSelectResponse(
-          catalog.products,
-          catalog.total,
-          catalog.totalPages,
-          catalog.page,
-          Array.from(session.selectedIds),
-          ' ',
-          false,
-          category,
-          query,
-        );
-      }
-
-      if (menuSelection === 'TRACK' || step === 'menu_track') {
-        return {
-          version: '3.0',
-          screen: 'TRACK_ORDER',
-          data: {
-            title: '📦 Track My Order',
-            instructions: 'Please enter your order number below to check its status:',
-            order_number_prefill: '',
-          },
-        };
-      }
-
-      if (menuSelection === 'HUMAN' || step === 'menu_human') {
-        return {
-          version: '3.0',
-          screen: 'SUPPORT_MESSAGE',
-          data: {
-            title: '💬 Customer Support',
-            instructions: 'Type your question or message below and a representative will get back to you shortly:',
-            message_prefill: '',
-          },
-        };
-      }
-
-      // Handle category change (set_category step from Dropdown on-select-action).
-      if (step === 'set_category') {
-        const newCategory = typeof data?.category === 'string' ? data.category.trim() : 'all';
-        const newQuery = typeof data?.query === 'string' ? data.query.trim() : '';
-        const newWhere = buildWhere(newQuery, newCategory);
-        const catalog = await getPage(1, newWhere);
-        session.lastVisibleIds = catalog.products.map(({ id }) => id);
-        const selectedIds = Array.from(session.selectedIds);
-
-        return buildProductSelectResponse(
-          catalog.products.map(({ id, title, description }) => ({ id, title, description })),
-          catalog.total,
-          catalog.totalPages,
-          catalog.page,
-          selectedIds,
-          ' ',
-          false,
-          newCategory,
-          newQuery,
-        );
-      }
-
-      // Handle searching and page navigation within PRODUCT_SELECT.
-      if (
-        step === 'search' ||
-        step === 'go_page' ||
-        step === 'goto_page' ||
-        step === 'next_page' ||
-        step === 'previous_page'
-      ) {
-        const navCategory = typeof data?.category === 'string' ? data.category.trim() : category;
-        const navQuery = typeof data?.query === 'string' ? data.query.trim() : query;
-        const navWhere = buildWhere(navQuery, navCategory);
-        const currentPage = Number.parseInt(
-          String(data?.page ?? data?.page_select ?? data?.page_prefill ?? '1'),
-          10,
-        );
-        const requestedPage =
-          step === 'next_page'
-            ? currentPage + 1
-            : step === 'previous_page'
-              ? currentPage - 1
-              : step === 'search'
-                ? 1
-                : currentPage;
-        const catalog = await getPage(Number.isFinite(requestedPage) ? requestedPage : 1, navWhere);
-        session.lastVisibleIds = catalog.products.map(({ id }) => id);
-        const selectedIds = Array.from(session.selectedIds);
-
-        return buildProductSelectResponse(
-          catalog.products.map(({ id, title, description }) => ({
-            id,
-            title,
-            description,
+      if (cat && cat !== 'all' && this.categoryKeywords[cat]) {
+        conditions.push({
+          OR: this.categoryKeywords[cat].map((kw) => ({
+            name: { contains: kw, mode: 'insensitive' },
           })),
-          catalog.total,
-          catalog.totalPages,
-          catalog.page,
-          selectedIds,
-          ' ',
-          false,
-          navCategory,
-          navQuery,
-        );
+        });
       }
 
-      // Transition: PRODUCT_SELECT -> QUANTITIES (step: "continue")
-      if (step === 'continue') {
-        const contCategory = typeof data?.category === 'string' ? data.category.trim() : category;
-        const contQuery = typeof data?.query === 'string' ? data.query.trim() : query;
-        const contWhere = buildWhere(contQuery, contCategory);
-        const requestedPage = Number.parseInt(
-          String(data?.page ?? data?.page_select ?? data?.page_prefill ?? '1'),
-          10,
-        );
-        const catalog = await getPage(
-          Number.isFinite(requestedPage) ? requestedPage : 1,
-          contWhere,
-        );
-        const selectedIds = Array.from(session.selectedIds);
+      if (conditions.length === 1) {
+        Object.assign(where, conditions[0]);
+      } else if (conditions.length > 1) {
+        where.AND = conditions;
+      }
 
+      return where;
+    };
+
+    // 1. INIT Action: Opening Flow on screen "PRODUCT_SELECT"
+    if (action === 'INIT') {
+      session.selectedIds.clear();
+      session.lastVisibleIds = [];
+      session.cartItems = [];
+      session.category = 'all';
+      session.query = '';
+      session.page = 1;
+
+      return this.buildProductSelectScreen(tenant.id, session, 1, 'all', '');
+    }
+
+    // 2. DATA_EXCHANGE Action: Handling screen transitions and interactions
+    if (action === 'data_exchange') {
+      // Sync incoming selected items from current page checkboxes
+      this.syncProductSelection(session, data);
+
+      const step =
+        data?.step ||
+        data?.flow_action ||
+        data?.action ||
+        (data?.category !== undefined && !data?.cart ? 'set_category' : undefined) ||
+        (data?.query !== undefined && !data?.cart ? 'search' : undefined) ||
+        (data?.page !== undefined && !data?.cart ? 'go_page' : undefined);
+
+      // Step A: Category Change
+      if (step === 'set_category') {
+        const newCat = typeof data?.category === 'string' ? data.category.trim() : 'all';
+        const currentQuery = typeof data?.query === 'string' ? data.query.trim() : (session.query || '');
+        session.category = newCat;
+        session.query = currentQuery;
+        session.page = 1;
+        return this.buildProductSelectScreen(tenant.id, session, 1, newCat, currentQuery);
+      }
+
+      // Step B: Search / Show All
+      if (step === 'search') {
+        const newQuery = typeof data?.query === 'string'
+          ? data.query.trim()
+          : (typeof data?.search_query === 'string' ? data.search_query.trim() : '');
+        const currentCat = typeof data?.category === 'string' ? data.category.trim() : (session.category || 'all');
+        session.query = newQuery;
+        session.category = currentCat;
+        session.page = 1;
+        return this.buildProductSelectScreen(tenant.id, session, 1, currentCat, newQuery);
+      }
+
+      // Step C: Page Navigation
+      if (step === 'go_page' || step === 'next_page' || step === 'previous_page') {
+        const currentCat = typeof data?.category === 'string' ? data.category.trim() : (session.category || 'all');
+        const currentQuery = typeof data?.query === 'string' ? data.query.trim() : (session.query || '');
+        const reqPage = step === 'next_page'
+          ? (session.page || 1) + 1
+          : step === 'previous_page'
+            ? (session.page || 1) - 1
+            : parseInt(String(data?.page || data?.page_select || '1'), 10);
+
+        session.page = Math.max(1, reqPage || 1);
+        return this.buildProductSelectScreen(tenant.id, session, session.page, currentCat, currentQuery);
+      }
+
+      // Step D: Continue -> PRODUCT_SELECT to QUANTITIES
+      if (step === 'continue') {
+        const selectedIds = Array.from(session.selectedIds);
         if (selectedIds.length === 0) {
-          return buildProductSelectResponse(
-            catalog.products.map(({ id, title, description }) => ({
-              id,
-              title,
-              description,
-            })),
-            catalog.total,
-            catalog.totalPages,
-            catalog.page,
-            selectedIds,
+          return this.buildProductSelectScreen(
+            tenant.id,
+            session,
+            session.page || 1,
+            session.category || 'all',
+            session.query || '',
             '⚠️ Please select at least one item before continuing.',
             true,
-            contCategory,
-            contQuery,
           );
         }
 
-        // Resolve selected products against this tenant's available inventory.
-        const selectedProducts = tenant
-          ? await this.prisma.product.findMany({
-              where: {
-                tenantId: tenant.id,
-                inStock: true,
-                id: { in: selectedIds },
-              },
-              orderBy: { createdAt: 'desc' },
-            })
-          : [];
-
-        // Prepare fields declared in the QUANTITIES screen data schema.
-        const quantitiesData: Record<string, any> = {};
-        const defaultQtyOptions = [
-          { id: '1', title: '1' },
-          { id: '2', title: '2' },
-          { id: '3', title: '3' },
-          { id: '4', title: '4' },
-          { id: '5', title: '5' },
-          { id: '6', title: '6' },
-          { id: '7', title: '7' },
-          { id: '8', title: '8' },
-          { id: '9', title: '9' },
-          { id: '10', title: '10' },
-        ];
-
-        for (let i = 0; i < 10; i++) {
-          const product = selectedProducts[i];
-          const item = product
-            ? {
-                id: product.id,
-                title: this.formatProductTitle(product.name, product.image),
-                price: product.price,
-              }
-            : undefined;
-          if (item) {
-            const itemIdKey = `item_${i}_id`;
-            const itemLabelKey = `item_${i}_label`;
-            const itemHelperKey = `item_${i}_helper`;
-            const itemOptionsKey = `item_${i}_options`;
-            const itemDefaultKey = `item_${i}_default`;
-            const showKey = `show_${i}`;
-
-            const rawTitle = item.title.trim();
-            let label: string;
-            if (rawTitle.length <= 20) {
-              label = rawTitle;
-            } else {
-              let sliced = rawTitle.slice(0, 17);
-              const lastCharCode = sliced.charCodeAt(sliced.length - 1);
-              if (lastCharCode >= 0xd800 && lastCharCode <= 0xdbff) {
-                sliced = sliced.slice(0, -1);
-              }
-              label = `${sliced}...`;
-            }
-
-            const formattedPrice = `₵${item.price.toFixed(2)}`;
-
-            quantitiesData[itemIdKey] = item.id;
-            quantitiesData[itemLabelKey] = label;
-            quantitiesData[itemHelperKey] = `${formattedPrice} each`;
-            quantitiesData[itemOptionsKey] = defaultQtyOptions;
-            quantitiesData[itemDefaultKey] = '1';
-            quantitiesData[showKey] = true;
-          } else {
-            quantitiesData[`item_${i}_id`] = ' ';
-            quantitiesData[`item_${i}_label`] = ' ';
-            quantitiesData[`item_${i}_helper`] = ' ';
-            quantitiesData[`item_${i}_options`] = [{ id: '1', title: '1' }];
-            quantitiesData[`item_${i}_default`] = '1';
-            quantitiesData[`show_${i}`] = false;
-          }
-        }
-
-        return {
-          version: '3.0',
-          screen: 'QUANTITIES',
-          data: quantitiesData,
-        };
+        return this.buildQuantitiesScreen(tenant.id, session);
       }
 
-      // Transition: QUANTITIES -> SUMMARY (step: "quantities")
-      if (step === 'quantities') {
-        const itemIds = Array.from({ length: 10 }, (_, index) =>
-          String(data?.[`i${index}_id`] ?? data?.[`item_${index}_id`] ?? '').trim(),
-        ).filter((id) => id && id !== ' ');
-
-        const selectedProducts = tenant
-          ? await this.prisma.product.findMany({
-              where: {
-                tenantId: tenant.id,
-                inStock: true,
-                id: { in: itemIds },
-              },
-            })
-          : [];
-        const catalogProducts = selectedProducts.map((product) => ({
-          id: product.id,
-          title: this.formatProductTitle(product.name, product.image),
-          description: `₵${product.price.toFixed(2)}`,
-          price: product.price,
-        }));
-        const cartItems: Array<{ id: string; title: string; qty: number; unitPrice: number; total: number }> = [];
-        let grandTotal = 0;
-        const summaryLinesArr: string[] = [];
-
-        for (let i = 0; i < 10; i++) {
-          const itemId = (data?.[`i${i}_id`] ?? data?.[`item_${i}_id`] ?? '').toString().trim();
-          if (!itemId || itemId === ' ') continue;
-
-          const product = catalogProducts.find((p) => p.id === itemId);
-          if (!product) continue;
-
-          const rawQty = data?.[`i${i}_qty`] ?? data?.[`item_${i}_qty`];
-          const qty = rawQty && !isNaN(parseInt(String(rawQty), 10)) ? Math.max(1, parseInt(String(rawQty), 10)) : 1;
-          const itemTotal = product.price * qty;
-
-          grandTotal += itemTotal;
-
-          cartItems.push({
-            id: product.id,
-            title: product.title,
-            qty,
-            unitPrice: product.price,
-            total: itemTotal,
-          });
-
-          summaryLinesArr.push(`${product.title}: ${qty} × ₵${product.price.toFixed(2)} = ₵${itemTotal.toFixed(2)}`);
-        }
-
-        const summaryLines = summaryLinesArr.length > 0
-          ? summaryLinesArr.join('\n')
-          : 'No items in order.';
-
-        session.cartItems = cartItems;
-
-        return {
-          version: '3.0',
-          screen: 'SUMMARY',
-          data: {
-            summary_lines: summaryLines,
-            order_total: `💰 Total: ₵${grandTotal.toFixed(2)}`,
-            cart_json: JSON.stringify(cartItems),
-            fulfillment_prefill: 'delivery',
-            pickup_note: 'Pick up at Marketix Store, Osu. Ready in about 30 minutes.',
-            error_message: ' ',
-            show_error: false,
-          },
-        };
+      // Step E: Quantities Submitted -> QUANTITIES to SUMMARY
+      if (step === 'quantities' || screen === 'QUANTITIES') {
+        return this.buildSummaryScreen(tenant.id, session, data);
       }
 
-      // Transition: SUMMARY -> PAYMENT (step: "to_payment")
+      // Step F: Continue to Payment -> SUMMARY to PAYMENT
       if (step === 'to_payment') {
-        let cartItems: Array<{ id: string; title?: string; qty: number; unitPrice?: number }> = [];
-        try {
-          const rawCart = data?.cart;
-          cartItems = typeof rawCart === 'string' ? JSON.parse(rawCart) : (Array.isArray(rawCart) ? rawCart : []);
-        } catch {
-          cartItems = session.cartItems || [];
-        }
-
-        const fulfillment = typeof data?.fulfillment === 'string' ? data.fulfillment.trim() : 'delivery';
-        const address = typeof data?.address === 'string' ? data.address.trim() : '';
-
-        if (fulfillment === 'delivery' && !address) {
-          return {
-            version: '3.0',
-            screen: 'SUMMARY',
-            data: {
-              summary_lines: session.cartItems
-                ? session.cartItems.map((i) => `${i.title}: ${i.qty} × ₵${i.unitPrice.toFixed(2)} = ₵${i.total.toFixed(2)}`).join('\n')
-                : ' ',
-              order_total: session.cartItems
-                ? `💰 Total: ₵${session.cartItems.reduce((s, i) => s + i.total, 0).toFixed(2)}`
-                : ' ',
-              cart_json: data?.cart ?? '[]',
-              fulfillment_prefill: 'delivery',
-              pickup_note: 'Pick up at Marketix Store, Osu. Ready in about 30 minutes.',
-              error_message: '⚠️ Please enter a delivery address before continuing.',
-              show_error: true,
-            },
-          };
-        }
-
-        if (cartItems.length === 0) {
-          return {
-            version: '3.0',
-            screen: 'SUMMARY',
-            data: {
-              summary_lines: ' ',
-              order_total: ' ',
-              cart_json: '[]',
-              fulfillment_prefill: fulfillment || 'delivery',
-              pickup_note: 'Pick up at Marketix Store, Osu. Ready in about 30 minutes.',
-              error_message: '⚠️ Your cart is empty. Please go back and select items.',
-              show_error: true,
-            },
-          };
-        }
-
-        const itemIds = cartItems.map((c) => c.id).filter(Boolean);
-        const dbProducts = (tenant
-          ? await this.prisma.product.findMany({
-              where: { tenantId: tenant.id, inStock: true, id: { in: itemIds } },
-            })
-          : []) || [];
-
-        let grandTotal = 0;
-        for (const item of cartItems) {
-          const dbP = dbProducts.find((p) => p.id === item.id);
-          const price = dbP ? dbP.price : (item.unitPrice || 0);
-          grandTotal += price * Math.max(1, Number(item.qty) || 1);
-        }
-
-        session.fulfillment = fulfillment;
-        session.address = address;
-        session.cartItems = cartItems.map((c) => {
-          const dbP = dbProducts.find((p) => p.id === c.id);
-          const unitPrice = dbP ? dbP.price : (c.unitPrice || 0);
-          const qty = Math.max(1, Number(c.qty) || 1);
-          return {
-            id: c.id,
-            title: dbP ? this.formatProductTitle(dbP.name, dbP.image) : (c.title || c.id),
-            qty,
-            unitPrice,
-            total: unitPrice * qty,
-          };
-        });
-
-        let numberPrefill = '';
-        if (flow_token && flow_token.includes(':') && flow_token.split(':').length > 1) {
-          const secondPart = flow_token.split(':')[1];
-          if (/^\+?\d{8,15}$/.test(secondPart)) {
-            numberPrefill = secondPart;
-          }
-        }
-
-        return {
-          version: '3.0',
-          screen: 'PAYMENT',
-          data: {
-            order_total: `Total: ₵${grandTotal.toFixed(2)}`,
-            pay_label: `Pay ₵${grandTotal.toFixed(2)}`,
-            networks: [
-              { id: 'mtn', title: 'MTN MoMo' },
-              { id: 'telecel', title: 'Telecel Cash' },
-              { id: 'airteltigo', title: 'AirtelTigo Money' },
-            ],
-            network_prefill: 'mtn',
-            number_prefill: numberPrefill || ' ',
-            error_message: ' ',
-            show_error: false,
-          },
-        };
+        return this.handleToPayment(session, data);
       }
 
-      // Transition: PAYMENT -> DONE (step: "pay" or "confirm")
-      if (step === 'pay' || step === 'confirm') {
-        const paymentMethod = typeof data?.payment_method === 'string' ? data.payment_method.trim() : 'momo';
-        const momoNetwork = typeof data?.momo_network === 'string' ? data.momo_network.trim() : 'mtn';
-        const momoNumber = typeof data?.momo_number === 'string' ? data.momo_number.trim() : '';
+      // Step G: Pay / Place Order on PAYMENT screen -> to DONE
+      if (step === 'pay') {
+        return this.handlePay(tenant.id, session, data, flow_token, buyerPhoneFromToken);
+      }
 
-        const fulfillment = typeof data?.fulfillment === 'string' ? data.fulfillment.trim() : (session.fulfillment || 'delivery');
-        const address = typeof data?.address === 'string' ? data.address.trim() : (session.address || '');
+      // Fallback for screens if on that screen without specific step
+      if (screen === 'PRODUCT_SELECT') {
+        return this.buildProductSelectScreen(
+          tenant.id,
+          session,
+          session.page || 1,
+          session.category || 'all',
+          session.query || '',
+        );
+      }
 
-        if (fulfillment === 'delivery' && !address) {
-          return {
-            version: '3.0',
-            screen: 'SUMMARY',
-            data: {
-              summary_lines: ' ',
-              order_total: ' ',
-              cart_json: data?.cart ?? '[]',
-              fulfillment_prefill: 'delivery',
-              pickup_note: 'Pick up at Marketix Store, Osu. Ready in about 30 minutes.',
-              error_message: '⚠️ Please enter a delivery address before confirming.',
-              show_error: true,
-            },
-          };
-        }
+      if (screen === 'QUANTITIES') {
+        return this.buildQuantitiesScreen(tenant.id, session);
+      }
 
-        if (step === 'pay' && paymentMethod === 'momo' && !momoNumber) {
-          const currentTotal = session.cartItems
-            ? session.cartItems.reduce((sum, item) => sum + item.total, 0)
-            : 0;
-          return {
-            version: '3.0',
-            screen: 'PAYMENT',
-            data: {
-              order_total: `Total: ₵${currentTotal.toFixed(2)}`,
-              pay_label: `Pay ₵${currentTotal.toFixed(2)}`,
-              networks: [
-                { id: 'mtn', title: 'MTN MoMo' },
-                { id: 'telecel', title: 'Telecel Cash' },
-                { id: 'airteltigo', title: 'AirtelTigo Money' },
-              ],
-              network_prefill: momoNetwork || 'mtn',
-              number_prefill: ' ',
-              error_message: '⚠️ Please enter your mobile money number before paying.',
-              show_error: true,
-            },
-          };
-        }
+      if (screen === 'SUMMARY') {
+        return this.buildSummaryScreen(tenant.id, session, data);
+      }
 
-        let cartItems: Array<{ id: string; qty: number }> = [];
-        if (data?.cart) {
-          try {
-            const rawCart = data.cart;
-            cartItems = typeof rawCart === 'string' ? JSON.parse(rawCart) : (Array.isArray(rawCart) ? rawCart : []);
-          } catch {
-            cartItems = [];
-          }
-        }
-        if (cartItems.length === 0 && session.cartItems) {
-          cartItems = session.cartItems.map((item) => ({ id: item.id, qty: item.qty }));
-        }
+      if (screen === 'PAYMENT') {
+        return this.buildPaymentScreen(session);
+      }
 
-        const itemIds = cartItems.map((c) => c.id).filter(Boolean);
-        const dbProducts = (tenant
-          ? await this.prisma.product.findMany({
-              where: { tenantId: tenant.id, inStock: true, id: { in: itemIds } },
-            })
-          : []) || [];
-
-        const orderItems = cartItems
-          .map((c) => {
-            const product = dbProducts.find((p) => p.id === c.id);
-            if (!product) return null;
-            const qty = Math.max(1, Number(c.qty) || 1);
-            return {
-              productId: product.id,
-              productName: this.formatProductTitle(product.name, product.image),
-              unitPrice: product.price,
-              quantity: qty,
-            };
-          })
-          .filter((item): item is NonNullable<typeof item> => item !== null);
-
-        if (orderItems.length === 0) {
-          return {
-            version: '3.0',
-            screen: 'SUMMARY',
-            data: {
-              summary_lines: ' ',
-              order_total: ' ',
-              cart_json: '[]',
-              fulfillment_prefill: fulfillment,
-              pickup_note: 'Pick up at Marketix Store, Osu. Ready in about 30 minutes.',
-              error_message: '⚠️ None of the selected products are available. Please go back.',
-              show_error: true,
-            },
-          };
-        }
-
-        const buyerPhone = momoNumber || (flow_token && flow_token.includes(':') ? flow_token : (flow_token ?? 'flow-buyer'));
-
-        const paymentNotes = paymentMethod === 'momo'
-          ? `Payment: MoMo (${momoNetwork} - ${momoNumber})`
-          : paymentMethod === 'card'
-            ? 'Payment: Card Link on WhatsApp'
-            : 'Payment: Pay on delivery / pickup';
-
-        const notes = [
-          fulfillment === 'delivery' && address ? `Fulfillment: Delivery. Address: ${address}` : 'Fulfillment: Pickup',
-          paymentNotes,
-        ].filter(Boolean).join(' | ');
-
-        const createdOrder = await this.prisma.order.create({
-          data: {
-            tenantId: tenant.id,
-            buyerPhone,
-            notes: notes ?? null,
-            totalAmount: orderItems.reduce((sum, i) => sum + i.unitPrice * i.quantity, 0),
-            items: {
-              create: orderItems.map((i) => ({
-                productId: i.productId,
-                productName: i.productName,
-                unitPrice: i.unitPrice,
-                quantity: i.quantity,
-                totalPrice: i.unitPrice * i.quantity,
-              })),
-            },
-          },
-          select: { orderNumber: true },
-        });
-
-        // Clear this flow session after a successful order.
-        this.flowSessions.delete(sessionKey);
-
-        const orderRef = createdOrder.orderNumber.slice(-8).toUpperCase();
-
-        const doneMsg = paymentMethod === 'momo'
-          ? 'Order placed. Approve the payment prompt on your phone. We\'ll message you on WhatsApp with updates.'
-          : paymentMethod === 'card'
-            ? 'Order placed. We will send you a secure payment link on WhatsApp shortly.'
-            : 'Order placed. You can pay on delivery or upon pickup. We\'ll message you on WhatsApp with updates.';
-
+      if (screen === 'DONE') {
         return {
           version: '3.0',
           screen: 'DONE',
           data: {
-            order_ref: `MX-${orderRef}`,
-            done_message: doneMsg,
+            order_ref: session.orderRef || this.generateOrderRef(),
+            done_message: "Order placed. We'll message you on WhatsApp with updates.",
           },
         };
       }
     }
 
-    // Default fallback
+    // Default fallback: return current screen
     return {
       version: '3.0',
       screen: screen || 'PRODUCT_SELECT',
@@ -860,24 +320,495 @@ export class FlowService {
   }
 
   /**
-   * Build the initial Flow screen payload (PRODUCT_SELECT, page 1) for a given tenant.
-   * Used by ChatService and FlowController to avoid duplicating catalog-payload logic.
+   * Syncs checkbox selections between pages.
    */
-  async buildFlowInitData(tenantId: string): Promise<{
-    categories: { id: string; title: string }[];
-    category_prefill: string;
-    pages: { id: string; title: string }[];
-    page_prefill: string;
-    products: { id: string; title: string; description: string }[];
-    pre_selected: string[];
-    page_label: string;
-    selection_note: string;
-    search_prefill: string;
-    notice: string;
-    show_notice: boolean;
-  }> {
+  private syncProductSelection(session: FlowSessionState, data?: Record<string, any>) {
+    const rawSelected = data?.selected_on_page ?? data?.selected_products;
+    const currentOnPageIds = Array.isArray(rawSelected)
+      ? rawSelected.filter((id): id is string => typeof id === 'string')
+      : [];
+
+    const visibleIds = session.lastVisibleIds || [];
+    if (visibleIds.length > 0) {
+      for (const id of visibleIds) {
+        session.selectedIds.delete(id);
+      }
+      for (const id of currentOnPageIds) {
+        session.selectedIds.add(id);
+      }
+    } else if (currentOnPageIds.length > 0) {
+      for (const id of currentOnPageIds) {
+        session.selectedIds.add(id);
+      }
+    }
+  }
+
+  /**
+   * Build PRODUCT_SELECT screen payload matching user flow JSON schema.
+   */
+  private async buildProductSelectScreen(
+    tenantId: string,
+    session: FlowSessionState,
+    requestedPage: number,
+    cat: string,
+    q: string,
+    notice = ' ',
+    showNotice = false,
+  ): Promise<Record<string, any>> {
+    const where: Record<string, any> = { tenantId, inStock: true };
+    const conditions: any[] = [];
+
+    if (q && q.trim()) {
+      conditions.push({ name: { contains: q.trim(), mode: 'insensitive' } });
+    }
+
+    if (cat && cat !== 'all' && this.categoryKeywords[cat]) {
+      conditions.push({
+        OR: this.categoryKeywords[cat].map((kw) => ({
+          name: { contains: kw, mode: 'insensitive' },
+        })),
+      });
+    }
+
+    if (conditions.length === 1) {
+      Object.assign(where, conditions[0]);
+    } else if (conditions.length > 1) {
+      where.AND = conditions;
+    }
+
+    const total = await this.prisma.product.count({ where });
+    const totalPages = Math.max(1, Math.ceil(total / this.productsPerPage));
+    const page = Math.min(Math.max(requestedPage, 1), totalPages);
+
+    const products = await this.prisma.product.findMany({
+      where,
+      orderBy: { createdAt: 'desc' },
+      skip: (page - 1) * this.productsPerPage,
+      take: this.productsPerPage,
+    });
+
+    const pageProducts = products.map((p) => ({
+      id: p.id,
+      title: this.formatProductTitle(p.name, p.image),
+      description: `₵${p.price.toFixed(2)}`,
+    }));
+
+    session.lastVisibleIds = pageProducts.map((p) => p.id);
+    session.page = page;
+    session.category = cat;
+    session.query = q;
+
+    const allSelectedArray = Array.from(session.selectedIds);
+    const onPageSelected = pageProducts
+      .map((p) => p.id)
+      .filter((id) => session.selectedIds.has(id));
+
+    const pages = Array.from({ length: totalPages }, (_, index) => ({
+      id: String(index + 1),
+      title: `Page ${index + 1} of ${totalPages}`,
+    }));
+
+    return {
+      version: '3.0',
+      screen: 'PRODUCT_SELECT',
+      data: {
+        categories: this.flowCategories,
+        category_prefill: cat,
+        pages,
+        page_prefill: String(page),
+        products: pageProducts,
+        pre_selected: onPageSelected,
+        page_label: `${total} products`,
+        selection_note: allSelectedArray.length
+          ? `🛒 ${allSelectedArray.length} item(s) selected`
+          : '🛒 Your basket is empty — tap items to add',
+        search_prefill: q || ' ',
+        notice: notice || ' ',
+        show_notice: showNotice,
+      },
+    };
+  }
+
+  /**
+   * Build QUANTITIES screen payload matching user flow JSON schema (slots item_0 to item_9).
+   */
+  private async buildQuantitiesScreen(
+    tenantId: string,
+    session: FlowSessionState,
+  ): Promise<Record<string, any>> {
+    const selectedIds = Array.from(session.selectedIds);
+    const selectedProducts = await this.prisma.product.findMany({
+      where: {
+        tenantId,
+        inStock: true,
+        id: { in: selectedIds },
+      },
+      orderBy: { createdAt: 'desc' },
+    });
+
+    const defaultQtyOptions = Array.from({ length: 10 }, (_, i) => ({
+      id: String(i + 1),
+      title: String(i + 1),
+    }));
+
+    const quantitiesData: Record<string, any> = {};
+
+    for (let i = 0; i < 10; i++) {
+      const product = selectedProducts[i];
+      if (product) {
+        const rawTitle = this.formatProductTitle(product.name, product.image);
+        let label = rawTitle;
+        if (label.length > 20) {
+          let sliced = label.slice(0, 17);
+          const lastCharCode = sliced.charCodeAt(sliced.length - 1);
+          if (lastCharCode >= 0xd800 && lastCharCode <= 0xdbff) {
+            sliced = sliced.slice(0, -1);
+          }
+          label = `${sliced}...`;
+        }
+
+        quantitiesData[`item_${i}_id`] = product.id;
+        quantitiesData[`item_${i}_label`] = label;
+        quantitiesData[`item_${i}_helper`] = `₵${product.price.toFixed(2)} each`;
+        quantitiesData[`show_${i}`] = true;
+        quantitiesData[`item_${i}_options`] = defaultQtyOptions;
+        quantitiesData[`item_${i}_default`] = '1';
+      } else {
+        quantitiesData[`item_${i}_id`] = ' ';
+        quantitiesData[`item_${i}_label`] = ' ';
+        quantitiesData[`item_${i}_helper`] = ' ';
+        quantitiesData[`show_${i}`] = false;
+        quantitiesData[`item_${i}_options`] = [{ id: '1', title: '1' }];
+        quantitiesData[`item_${i}_default`] = '1';
+      }
+    }
+
+    return {
+      version: '3.0',
+      screen: 'QUANTITIES',
+      data: quantitiesData,
+    };
+  }
+
+  /**
+   * Build SUMMARY screen payload matching user flow JSON schema.
+   */
+  private async buildSummaryScreen(
+    tenantId: string,
+    session: FlowSessionState,
+    data?: Record<string, any>,
+    errorMessage = ' ',
+    showError = false,
+  ): Promise<Record<string, any>> {
+    const itemSlots: Array<{ id: string; qty: number }> = [];
+
+    for (let i = 0; i < 10; i++) {
+      const itemId = String(data?.[`i${i}_id`] ?? data?.[`item_${i}_id`] ?? '').trim();
+      const rawQty = data?.[`i${i}_qty`] ?? data?.[`item_${i}_qty`] ?? data?.[`qty_${i}`];
+      if (itemId && itemId !== ' ') {
+        const qty = Math.max(1, parseInt(String(rawQty || '1'), 10) || 1);
+        itemSlots.push({ id: itemId, qty });
+      }
+    }
+
+    let cartItems: CartItem[] = [];
+    let subtotal = 0;
+    const summaryLinesArr: string[] = [];
+
+    if (itemSlots.length > 0) {
+      const ids = itemSlots.map((s) => s.id);
+      const dbProducts = await this.prisma.product.findMany({
+        where: { tenantId, inStock: true, id: { in: ids } },
+      });
+
+      for (const slot of itemSlots) {
+        const p = dbProducts.find((prod) => prod.id === slot.id);
+        if (!p) continue;
+
+        const lineTotal = p.price * slot.qty;
+        subtotal += lineTotal;
+        const formattedTitle = this.formatProductTitle(p.name, p.image);
+        cartItems.push({
+          id: p.id,
+          title: formattedTitle,
+          qty: slot.qty,
+          unitPrice: p.price,
+          total: lineTotal,
+        });
+
+        summaryLinesArr.push(`${formattedTitle}: ${slot.qty} × ₵${p.price.toFixed(2)} = ₵${lineTotal.toFixed(2)}`);
+      }
+      session.cartItems = cartItems;
+    } else if (session.cartItems && session.cartItems.length > 0) {
+      cartItems = session.cartItems;
+      subtotal = cartItems.reduce((acc, i) => acc + (i.total || i.unitPrice * i.qty || 0), 0);
+      for (const i of cartItems) {
+        summaryLinesArr.push(`${i.title}: ${i.qty} × ₵${Number(i.unitPrice).toFixed(2)} = ₵${Number(i.total).toFixed(2)}`);
+      }
+    }
+
+    const fulfillment = session.fulfillment || 'delivery';
+    const deliveryFee = fulfillment === 'delivery' ? 5.0 : 0.0;
+    const total = subtotal + deliveryFee;
+
+    session.subtotal = subtotal;
+    session.deliveryFee = deliveryFee;
+    session.totalAmount = total;
+
+    const summaryLines = summaryLinesArr.length > 0 ? summaryLinesArr.join('\n') : 'No items selected.';
+    const orderTotalStr = fulfillment === 'delivery'
+      ? `💰 Total: ₵${total.toFixed(2)} (incl. ₵${deliveryFee.toFixed(2)} delivery)`
+      : `💰 Total: ₵${total.toFixed(2)} (Pickup)`;
+
+    return {
+      version: '3.0',
+      screen: 'SUMMARY',
+      data: {
+        summary_lines: summaryLines,
+        order_total: orderTotalStr,
+        cart_json: JSON.stringify(cartItems),
+        error_message: errorMessage || ' ',
+        show_error: showError,
+        fulfillment_prefill: fulfillment,
+        pickup_note: 'Pick up at Marketix Store, Osu. Ready in about 30 minutes.',
+      },
+    };
+  }
+
+  /**
+   * Handle transition from SUMMARY to PAYMENT screen.
+   */
+  private handleToPayment(
+    session: FlowSessionState,
+    data?: Record<string, any>,
+  ): Record<string, any> {
+    const rawCart = data?.cart;
+    let cartItems: CartItem[] = [];
+    try {
+      cartItems = typeof rawCart === 'string' ? JSON.parse(rawCart) : (Array.isArray(rawCart) ? rawCart : []);
+    } catch {
+      cartItems = session.cartItems || [];
+    }
+
+    if (cartItems.length > 0) {
+      session.cartItems = cartItems;
+    } else {
+      cartItems = session.cartItems || [];
+    }
+
+    const fulfillment = typeof data?.fulfillment === 'string' ? data.fulfillment.trim() : 'delivery';
+    const address = typeof data?.address === 'string' ? data.address.trim() : '';
+
+    const subtotal = cartItems.reduce((acc, i) => acc + (i.total || (i.unitPrice * i.qty) || 0), 0);
+    const deliveryFee = fulfillment === 'delivery' ? 5.0 : 0.0;
+    const total = subtotal + deliveryFee;
+
+    session.fulfillment = fulfillment;
+    session.address = address;
+    session.subtotal = subtotal;
+    session.deliveryFee = deliveryFee;
+    session.totalAmount = total;
+
+    // Validate delivery address
+    if (fulfillment === 'delivery' && !address) {
+      const summaryLines = cartItems.length > 0
+        ? cartItems.map((i) => `${i.title}: ${i.qty} × ₵${Number(i.unitPrice).toFixed(2)} = ₵${Number(i.total).toFixed(2)}`).join('\n')
+        : ' ';
+
+      return {
+        version: '3.0',
+        screen: 'SUMMARY',
+        data: {
+          summary_lines: summaryLines,
+          order_total: `💰 Total: ₵${total.toFixed(2)} (incl. ₵5.00 delivery)`,
+          cart_json: JSON.stringify(cartItems),
+          error_message: '⚠️ Please enter your delivery address / landmark before continuing.',
+          show_error: true,
+          fulfillment_prefill: fulfillment,
+          pickup_note: 'Pick up at Marketix Store, Osu. Ready in about 30 minutes.',
+        },
+      };
+    }
+
+    return this.buildPaymentScreen(session);
+  }
+
+  /**
+   * Build PAYMENT screen payload matching user flow JSON schema.
+   */
+  private buildPaymentScreen(
+    session: FlowSessionState,
+    errorMessage = ' ',
+    showError = false,
+  ): Record<string, any> {
+    const total = session.totalAmount || 0;
+    const networks = [
+      { id: 'mtn', title: 'MTN MoMo' },
+      { id: 'telecel', title: 'Telecel Cash' },
+      { id: 'airteltigo', title: 'AirtelTigo Money' },
+    ];
+
+    return {
+      version: '3.0',
+      screen: 'PAYMENT',
+      data: {
+        order_total: `Total: ₵${total.toFixed(2)}`,
+        pay_label: `Pay ₵${total.toFixed(2)}`,
+        networks,
+        error_message: errorMessage || ' ',
+        show_error: showError,
+        network_prefill: session.momoNetwork || 'mtn',
+        number_prefill: session.momoNumber || '',
+      },
+    };
+  }
+
+  /**
+   * Handle order payment submission on PAYMENT screen -> to DONE.
+   * Initiates direct Paystack MoMo push prompt on the customer's phone if paymentMethod is 'momo'.
+   */
+  private async handlePay(
+    tenantId: string,
+    session: FlowSessionState,
+    data?: Record<string, any>,
+    flow_token?: string,
+    buyerPhoneFromToken?: string | null,
+  ): Promise<Record<string, any>> {
+    const paymentMethod = typeof data?.payment_method === 'string' ? data.payment_method.trim() : 'momo';
+    const momoNetwork = typeof data?.momo_network === 'string' ? data.momo_network.trim() : 'mtn';
+    const momoNumber = typeof data?.momo_number === 'string' ? data.momo_number.trim() : '';
+
+    session.paymentMethod = paymentMethod;
+    session.momoNetwork = momoNetwork;
+    session.momoNumber = momoNumber;
+
+    if (paymentMethod === 'momo') {
+      const normalizedPhone = this.paystackService.normalizeGhanaPhone(momoNumber);
+      if (!normalizedPhone || normalizedPhone.length < 10) {
+        return this.buildPaymentScreen(
+          session,
+          '⚠️ Please enter a valid 10-digit mobile money number (e.g. 0244123456).',
+          true,
+        );
+      }
+    }
+
+    const cartItems = session.cartItems || [];
+    const subtotal = session.subtotal ?? cartItems.reduce((acc, i) => acc + (i.total || (i.unitPrice * i.qty) || 0), 0);
+    const fulfillment = session.fulfillment || 'delivery';
+    const deliveryFee = session.deliveryFee ?? (fulfillment === 'delivery' ? 5.0 : 0.0);
+    const total = session.totalAmount ?? (subtotal + deliveryFee);
+    const address = session.address || '';
+
+    const orderNumber = session.orderRef || this.generateOrderRef();
+    const buyerPhone = momoNumber || buyerPhoneFromToken || (flow_token && flow_token.includes(':') ? flow_token.split(':')[1] : 'flow-buyer');
+
+    // Fetch tenant and user to obtain tenant email for Paystack charge
+    const tenant = await this.prisma.tenant.findUnique({
+      where: { id: tenantId },
+      include: { user: true },
+    });
+    const tenantEmail = tenant?.user?.email || 'orders@marketix.app';
+
+    // Initiate direct Mobile Money USSD push charge via Paystack
+    let paystackResult: any = null;
+    if (paymentMethod === 'momo') {
+      paystackResult = await this.paystackService.initiateMoMoCharge({
+        amount: total,
+        momoNumber,
+        provider: momoNetwork,
+        email: tenantEmail,
+        reference: orderNumber,
+        metadata: {
+          tenantId,
+          orderNumber,
+          buyerPhone,
+          fulfillment,
+          address,
+        },
+      });
+
+      if (!paystackResult.success) {
+        return this.buildPaymentScreen(
+          session,
+          `⚠️ Payment initiation failed: ${paystackResult.message}. Please verify your phone number and network.`,
+          true,
+        );
+      }
+    }
+
+    const paymentNotes = paymentMethod === 'momo'
+      ? `Payment: MoMo (${momoNetwork} - ${momoNumber}) [Paystack Prompt Sent]`
+      : paymentMethod === 'card'
+        ? 'Payment: Card Link on WhatsApp'
+        : 'Payment: Pay on delivery / pickup';
+
+    const notes = [
+      fulfillment === 'delivery' && address ? `Fulfillment: Delivery. Address: ${address}` : 'Fulfillment: Pickup',
+      paymentNotes,
+      `Subtotal: ₵${subtotal.toFixed(2)}`,
+      `Delivery Fee: ₵${deliveryFee.toFixed(2)}`,
+      `Total: ₵${total.toFixed(2)}`,
+    ].filter(Boolean).join(' | ');
+
+    try {
+      await this.prisma.order.create({
+        data: {
+          tenantId,
+          buyerPhone,
+          notes,
+          orderNumber,
+          status: paymentMethod === 'momo' ? OrderStatus.AWAITING_PAYMENT : OrderStatus.PENDING,
+          totalAmount: total,
+          items: {
+            create: cartItems.map((i) => ({
+              productId: i.id,
+              productName: i.title,
+              unitPrice: i.unitPrice,
+              quantity: i.qty,
+              totalPrice: i.total,
+            })),
+          },
+        },
+      });
+    } catch (err) {
+      this.logger.warn(`Could not persist order ${orderNumber}: ${err}`);
+    }
+
+    // Clear session selections after placing order
+    session.selectedIds.clear();
+    session.cartItems = [];
+
+    const doneMsg = paymentMethod === 'momo'
+      ? `Order placed! A payment prompt has been sent to your phone (${momoNumber}). Please approve it with your MoMo PIN to complete the order.`
+      : paymentMethod === 'card'
+        ? "Order placed. We will send you a secure payment link on WhatsApp shortly."
+        : "Order placed. You can pay on delivery or upon pickup. We'll message you on WhatsApp with updates.";
+
+    return {
+      version: '3.0',
+      screen: 'DONE',
+      data: {
+        order_ref: orderNumber,
+        done_message: doneMsg,
+      },
+    };
+  }
+
+  /**
+   * Helper to generate a friendly order reference like "MX-1042".
+   */
+  private generateOrderRef(): string {
+    const randomNum = Math.floor(1000 + Math.random() * 9000);
+    return `MX-${randomNum}`;
+  }
+
+  /**
+   * Build initial Flow payload when dispatching flow messages to WhatsApp.
+   */
+  async buildFlowInitData(tenantId: string, screen = 'PRODUCT_SELECT'): Promise<Record<string, any>> {
     const where = { tenantId, inStock: true };
-    const [products, totalProducts] = await Promise.all([
+    const [products, total] = await Promise.all([
       this.prisma.product.findMany({
         where,
         orderBy: { createdAt: 'desc' },
@@ -885,16 +816,17 @@ export class FlowService {
       }),
       this.prisma.product.count({ where }),
     ]);
-    const totalPages = Math.max(1, Math.ceil(totalProducts / this.productsPerPage));
-    const pagesList = Array.from({ length: totalPages }, (_, i) => ({
-      id: String(i + 1),
-      title: `Page ${i + 1} of ${totalPages}`,
+
+    const totalPages = Math.max(1, Math.ceil(total / this.productsPerPage));
+    const pages = Array.from({ length: totalPages }, (_, index) => ({
+      id: String(index + 1),
+      title: `Page ${index + 1} of ${totalPages}`,
     }));
 
     return {
       categories: this.flowCategories,
       category_prefill: 'all',
-      pages: pagesList,
+      pages,
       page_prefill: '1',
       products: products.map((p) => ({
         id: p.id,
@@ -902,7 +834,7 @@ export class FlowService {
         description: `₵${p.price.toFixed(2)}`,
       })),
       pre_selected: [],
-      page_label: `${totalProducts} products`,
+      page_label: `${total} products`,
       selection_note: '🛒 Your basket is empty — tap items to add',
       search_prefill: ' ',
       notice: ' ',
@@ -919,7 +851,6 @@ export class FlowService {
 
     let title: string;
 
-    // If name already starts with an emoji icon, preserve it
     const startsWithEmoji = /^(\p{Extended_Pictographic}|\p{Emoji_Presentation})/u.test(trimmed);
     if (startsWithEmoji) {
       title = trimmed;
@@ -950,7 +881,7 @@ export class FlowService {
       else if (lower.includes('fish') || lower.includes('tilapia') || lower.includes('salmon')) icon = '🐟';
       else if (lower.includes('rice')) icon = '🍚';
       else if (lower.includes('milk') || lower.includes('dairy') || lower.includes('yogurt')) icon = '🥛';
-      else if (lower.includes('oil')) icon = '🫒';
+      else if (lower.includes('oil')) icon = '🌻';
       else if (lower.includes('garlic') || lower.includes('ginger')) icon = '🧄';
       else if (lower.includes('corn') || lower.includes('maize')) icon = '🌽';
       else if (lower.includes('cucumber')) icon = '🥒';

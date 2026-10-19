@@ -1,5 +1,4 @@
 {
-  "version": "6.1",
   "data_api_version": "3.0",
   "routing_model": {
     "PRODUCT_SELECT": [
@@ -16,6 +15,7 @@
     ],
     "DONE": []
   },
+  "version": "6.1",
   "screens": [
     {
       "id": "PRODUCT_SELECT",
@@ -104,9 +104,6 @@
               },
               "title": {
                 "type": "string"
-              },
-              "description": {
-                "type": "string"
               }
             }
           },
@@ -169,6 +166,14 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
+          {
+            "type": "Image",
+            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEUdnnUen3Ou3M3S6+MOaGgcoXdxwqiIzLY1qIMA/wBTtZYcnXQAAAD9/v4epHknontPs5Mgn3YAf3/E5dsdnHQcnXQAqlUAqqoAv38cmnQdnHQdoXcA//8concA/38nlWsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD1rZtiAAAAIHRSTlOjGf//BGj///8B//4A//3///8C/1DMAwMEMG/KAUoCCqQzpnMAAAOCSURBVHjavZp9m4IgDMCnVteFiZJal2/f/1seqJkZjCXS/ri7h679nm2wwQBiXMRNqF9BfoeiYAmTkrCigHsezD5GBNBPy1Ypb6BiSS+sl/HvChoFacvVgKvSvgf2VD2XfhT2wfiPnwPkt3YN6JXPIdDsMIQJIO3e7StU+8So9rv+Cx8A6nZQz0gyINqaDpAGN2T1I6Ix+EkHEHEAn6gfEBDEggSQ/5V/qn5A5LEGAe/RFbBGf2+EeI/1EnCL/6pV6ntE9ScVoACpP1mtXxnxRoCF/txF/xCImxlwi+9u+hXh/kqAhX7mLAsCvPqHbSCvXnoCWrf4vka6fQdspn9BeADq8lpspF8SimtZLwAihs30SwJMSQMe+TPfUH8f6OscIOog2RaQBLWYAcpNHTQ6qXwCSjmD2MYiZ1L5APyKrtgeUHTidwRoIpyN4h5n8GTAZAJoDeDpQ5xNkIBavBnAzw8JXUwQtQKUmjX2BJx/nEwoewBggDN3WwtQxwFDASlbO5cSFsQ1dLoyxsOLktFHq22Qxa0DLEuEChC55QvQeWg0g516E47rAdJHEDfmRTaE4uRgQiMBWB69DEvhyAli8BEIc5rg7OdMlqNhrUHHjICMpWT9kSEIHaClkpMBhsmc5IBt5rJholLEsByTO2AxpgchMq4EwEvBiQgIDcs9KSwAFjl5SAEYGmRqELhxLePbFc4OTh5SQbAs9iMJcDKndBuAFgQkoVsAtCCESMmwADLSRD1gANuOiK9NdFOQbYQLwUOZueTYFholWyAesq9kSsrGPFSAexAitOyD7extT9nYvkama9vZ7BGE1Cj47hErmS8p+3AyI8wxliVT2M8G0dpk3Rd96/GPkC3MAMA3XmOUD+sBauMVWINgNcFYz9TWkXREPlxQSbHNb0fuQmWcNrbYvtcUH0k9qfRTdGAzZzzH0AMIqY0wBTrEx3RHKO0h0JzxprygG9MfAnXHWGQecXRMd4yl9Iq4Zkpy2zSdDuKEVsIawLOVQDEh0lSXyHL4mJohdhNmG7yp/urGTO0cSkNqjGjELWPahhSppdaXnZBbx7QtNVJTkKfpkTKmbQoS4pxNP/AxfVuT1JjVNdgMTbf3xqz/1rL35rj/9r7/Cwr/Vyz+L4n8X3P5v6jzf9Xo/7LU/3Wv/wvrL1y5+3804P/Zwxcebnzh6ckXHs9s8vznH7vqre65tNkFAAAAAElFTkSuQmCC",
+            "width": 64,
+            "height": 64,
+            "scale-type": "contain",
+            "alt-text": "Shopping cart icon"
+          },
           {
             "type": "Form",
             "name": "select_form",
@@ -287,7 +292,7 @@
         },
         "item_0_label": {
           "type": "string",
-          "__example__": "Tomatoes"
+          "__example__": "🍅 Tomatoes"
         },
         "item_0_helper": {
           "type": "string",
@@ -303,7 +308,7 @@
         },
         "item_1_label": {
           "type": "string",
-          "__example__": "Pepper"
+          "__example__": "🌶️ Pepper"
         },
         "item_1_helper": {
           "type": "string",
@@ -742,6 +747,14 @@
         "type": "SingleColumnLayout",
         "children": [
           {
+            "type": "Image",
+            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEXy59f/AADLl1Hr17y/gCnChjS6dRYAAAD+/fzDexi2bQq9fSXLl1G8fAW7dRaqVQC4dBa6dRb/fwC6dha7dRa3dBb//wB/fwCzbAr/qgCqqgDAeBaZZgDDdxXbt4bly6gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmW9JUAAAAIHRSTlP/Af/////+AP/+////CcsDUGwCk7MwAQIPAwNIBRf//9y96xEAAALESURBVHja7ZrZYqsgEIanPS24FHDXxKR5/7csoOaogFVkctW5aav4fx1gWAaAblvLCvXjnuUl52Q0zss8u6vnBWt/EYDNt0Kps76U0rG0CTD8zsueKYbwBlyVel6RmfTc1OMqZ2PB44CLdKBX6mTDFKMXuvBBgFD/PN9WnxhcuSEOAZqC3vbJT4gbLZr9AOlwv1t+RPSOerIBGO2qI/IDouoo2wWQPTM7Kj8gMv3xbwBB29JDXiPK1mxrMKqn5p76ksBro5rA0Cfe+pJADAKs9LMz+oqQrQiw1M9PyWtEviRAYH2DAIv6CaAvCYtagln/r0kgq2fx8AQUbzWJw+jLvvRWrAGNuPI4lAcxv4pmBWC0DKavYvrZDDBNXllAfd3Q1zmgbRgJbKxpZwBBqzisflyN4x4M+nUc2oO4HggaUHQ8PIB3xQS4BG7hZztfRkCL4IB2oR0AOA5MLkhAwzgOgLNGAQSSA9oFoQEVFkDFAjSUETRjtIFbkGnMObndwFlDSSotOV1HQO+Ot98QRdEjPefDXTayvQ8l35E2ONuPwDHRpNFoX2dqSU484IiyQADOoLO/CgMgpIMMF5CBIwoCAeIcSlxACRwXwNcAHb/SPp8A8pFaYnoqZ1iyBtji12armN5bjoA1fm0GHuUMQBpt2Kw19pb7AxwHJI+djfzwbGSS/nN+9554lJOAdSR/jTZ98D7+TRJ7ubUty5mRTJLByKxGhwfEWs4wY6hwDHYf/4eKk4Md+nCNPuGgT5nokz76ssW18HoEW3g5lo5DrK7j0mPp6N4e2OLXY/HrXr7b4tdj+Y6+AUHfQuFvAtG3sfgbcfRUAn4yBD2dg5+QQk+p4ScF0dOa+IlZ/NQyenIcP72Pf0CBf8SCf0iEf8yFf1CHf9SIf1iKf9yLf2D9giN3/EsD+NceXnBx4wVXT15weSbI9Z8fVU/+sWtf+AUAAAAASUVORK5CYII=",
+            "width": 64,
+            "height": 64,
+            "scale-type": "contain",
+            "alt-text": "Plus and minus icon"
+          },
+          {
             "type": "Form",
             "name": "qty_form",
             "children": [
@@ -967,6 +980,14 @@
         "type": "SingleColumnLayout",
         "children": [
           {
+            "type": "Image",
+            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEXY1u+WkdNVVf8fH39oYMBhWb0zM5l/AH9mM5l/f3////+AeslSSbf9/f4AAABdVbtXTsHT0e1UVKtTSrh+d8hTSbc/P79PRrVTSrhGPLF/f/9TSrhTSrgAAP9RR7NZUMQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmfWp2AAAAIHRSTlP//wMD//8FAgUCAf/+/wD///8Fy/9OBBRs/wKTswEw/2WlgKQAAAL9SURBVHja7Zprd+IgEIZH7b0jUigBg9H//y8LSeyq4WbIeHbPWb5wbM37OENmgAFg6fbatL4TylgpcWxSWqOE/3vbvGYEIPlf4dW1sk6ac7xo/pO0SnuGmA3wT2pzcGpX4n8gHA9Gj1+8H7D2jjlgWPzCkoN31vpugHtIGIlJ9ZGB0oi4FWFA17IXIwvUR4Y0L6ztygHu16hy+QGhIkaEAA3Th7vke8RBuwdLAO7NVHi3vh8L1T+cAwi2sTPke4TdTN0EE/cc5QlntpM8TtwEE33kOLtxnBDgRl9hZVM3BLjWN7wWwM01ARbWnxDgyj8L6DvClZfg4v0/4kLteBEPv4C2W0zfEbr2FtAJIflS+lwK0d0AGman8bUrbNOIs7/DAOcEERjgHWzL2ndooMUlYNPpgKW7Qv3tZ+Bh3W0uAIKF8nMx4DuUvUcTYNA/clwWgPw4EHpAqyUuDUCp2zNgzdRpecBJ9WsND3gPG1AJcCa8D4B1LAdVAnhvggN8NGEDagEomw8PENFJphaAPtogEgNLAPpYgI5ppLIANevgjZlTGvAUTXLP+JUEnAx7g7iHzoBdPC/v0wDvIzcGmHHRcyLzpwGIfpDjE/EIwH3cAkgDXCgAsznAV7xBZpC5ZdBITvcWcdmARqQDuBcVFC1AQWIxtwCAG7C0AAsy66L5kewzagFgfiT3AETKSEYsAFREchmgIpLLAFVx8B/wNwD+/UjOJ7uaSHbJLp+uayLZpWtFG8mKfsokn/Tzy5YagC1ZeNUA/MJLUI6BWzrmF7/zAf3iN798nw/ol+/kGxDyLRT9JpB8G0u/EScvJSSLITBk/HSfK4akyjmr0YxknyvnJApSgPtV/0OTfbYgFS+p7YZpEVI95Etq0aLgys+WT9t0/7z93OeKguGy5tNqmHhXsE/3q32urBkuzP5WXEv7RGGWvrRMXhynL+/TH1DQH7HQHxLRH3PRH9TRHzXSH5bSH/fSH1g/4Mid/tIA/bWHB1zceMDVkwdcnlnk+s8PJGna1qRUlusAAAAASUVORK5CYII=",
+            "width": 64,
+            "height": 64,
+            "scale-type": "contain",
+            "alt-text": "Receipt icon"
+          },
+          {
             "type": "Form",
             "name": "confirm_form",
             "init-values": {
@@ -1012,7 +1033,7 @@
                 "then": [
                   {
                     "type": "TextArea",
-                    "label": "Delivery address",
+                    "label": "📍 Delivery address / landmark",
                     "name": "address",
                     "required": true,
                     "helper-text": "Add a landmark so the rider finds you."
@@ -1111,6 +1132,14 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
+          {
+            "type": "Image",
+            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEUPblYOcVcAPz8KbVsieWMA/wDV5uG61c46h3QAZjMA//9tpphJkX6jyL+HtqoObVX9/f0AAAAQclkedmDB2tQAVVVNk4EPbVUPbVUAfz8Af38Ja1APbVYOaVQPcFcObVUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADurXT2AAAAIHRSTlOpRwQR/wH///8FAf/////+/wD9//8D/1LMBAIUbDDKlQR5oCgAAAL+SURBVHja7ZrdYrMgDIZj/albt1GwThRa7/8uB1q3SqifIunRl5O2a32fhb+EAPBl69rOvqSJBimZYMYEkxJ0kj58vWCw+G1tH1dJf2NiMDbY/f2tT5Rl1MEA+6TSwP6kH234K2h1/+F2gHmqTsCrPaNAUi8hYEFe35bVJ8ZNLyD8gLzjb+vkJ8Qb7/L1APPfJKvl74jkiRM+wIEr2CI/IkCZB9cAzMhstsqPiGZ4+F+Amh8gRH9w4oCbyQW0/HoLkh8Qt6sRWAQYfRGsb51ABHD0mz36Y0e0zwEt1/v0LUHPCeDos93mEGDePiyCzVsJHsb/VcQBmJ7uMCCavkP4BdS1jKRvCLKuXUDL+2j6htD/dgNMC0QTUX/o6HoGyJWICxAqfwTUHKLqGwLcXYBR/xpZ3xCuI2EAdErGB0jVTYDYPTzrZ/A6EBZwvC7AEweqzYYQowsG8H5APXC6nDdb8SXmBCEP7xaAHRDHc5AVpUOwLoBnDgTqG8vwXICcqzmWnYL1z0fHBcVzSFEYu4QDXBc0TwG1ULVD//wxc8G2EfDUHaB7AN/OUE1NJ7tjKCbAjCNAgaYqojWRDTzQollW7TC0XLSgGMFC9zfmFTSE+rYTQNMCNPS0gB4kLUDSAxgtgOF0RRwv4Vbi9AVBs5hrEWMYUP0HOABBCxB4mEYFmGEqaQGSHtA/AxSlyGbBJPsMAPR4uZ4AJZ74xXaAxgFnAuA1ZEXKhwANDpmVN4damZK5WYUJmSjo/wHcEbe9iWzQx2nL/befyIHT9ryoX0q8ivm6fSwCEy/q1BElvxHjwZD84vR9T+roSd/xBuQrXP/izBy7AcFbKBHuQolayLMJFKwM1T95N4FoGyvYmmXNs0Er/dtYvI81n7KP762WPd2IxyoloFAwlRK8tQSx2RaKIeTlHPqCFHlJjb4oSF/WJC/M0peW6Yvj5OV9+gMK+iMW+kMi+mMu+oM6+qNG+sNS+uNe+gPrFxy5018aoL/28IKLGy+4evKCyzNRrv/8AHnPQPFmZqKzAAAAAElFTkSuQmCC",
+            "width": 64,
+            "height": 64,
+            "scale-type": "contain",
+            "alt-text": "Payment card icon"
+          },
           {
             "type": "Form",
             "name": "pay_form",
@@ -1230,6 +1259,14 @@
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
+          {
+            "type": "Image",
+            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEXa49JwlFEOcQCxxaFCcho7cBFIbQCiuY7A0LM8cg///wBchTo6bBAAAAD9/fw+chJVVQA6bBA+fAI6bRA3aQo7bRFgiD5/fwA5aRA7bRA7bRE8cBCJp28A/wA/PwBKeCMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADqVvCuAAAAIHRSTlP//wP//58H//9QAf/+AP/9A04HyxRs/wIwlLPM/wEE/5inPrkAAANESURBVHjavZrreoMgDIbT2q7dCiqIWq2293+XA88nkIOUP9vTze8tSUggCFg9zjQXPyhJr0mCupEk15RQ8XlOzzsCoPxrLNTZb/FCKOKjB7S/v4pfJhixNUA8ydISTaSnQ3xcpqz7R3MAfyomV7QtPkLQlcQqBMjlz+lLrd4zXulZjtgG1Dm3jZZ8j2A4r/UB/NsQbfkOQSST2AK8MStN5FtEyfiDOgBuT2Iq3yJI8/AeIMbvwkZfEIr32kxLAMXPxEq+QSRPTNUArh9Z64tJrAiw0Ccu+q0jqBxAceok3yDSOQEO1l8RYG4fdMCYW2kE5Ny/6JDBPZ2vAblb/CxjKV8B4jg5SF+shzheAiguDtPnhGJwA/QJghyo3zg6ngFqho4FIFZPATEuD9XnhLKbArT6z4P1m1iNB0D+kxwPSH7yHnC0h2d+Bk8TGKYAvibQT4ED/t6JH0Dy/hMA5wl8TpI11EwB3NfAPawUawFqzNwsEYRheJP8jeEamGMZq0IxAllxY+BkoQidwnbAR2IjwNTJweEwtgiIcic7xRAM+oEkjsCp0ASD/l1WeIBar7II3QZ9uEjWGgXm7mCZA5pABWJtn2zUP0nrIQHrVXAZHVxJ9aMUrH28E0C9l8HWx2MAgTKj2gGiLkMoAmgAOAdQtmNJK/s8dALIAaAVQDqASvL17joBtAtoHJltEW5aAbQH6AJlg1BpZAidGVR9kES2AaQGVKNKJCkxlc6OXLbQqun3jDYzxE1DX76SJ4aYEfZKzBogS3bZBkGjxKyTnSRdRxsEvRKzTNdEGqZrQqafIcaCw5Am4WKUIcaSKS/6S4JeiVkVfcW2ZU54BCYZYty2qDZec4JhAA0bL6qsLFuETD+x862jevO7RThpn9mbze/O9n1NqPR7As32fe8AsiQEyGCIA8juEWpOMCmx7RFq/xA4I3xMAO0hcP8YOyFkJvrdMVbjHDsQTiZNn+EgrtFKiNAngPD+MNIfWgmaR/GLifnnzRDv7Rz/DSnvLTX/TUH/bU3vjVn/rWX/zXHv7X3/FxT+r1j8XxL5v+byf1Hn/6rR/2Wp/+te/xfWX7hy9//SgP/XHr7w4sYXXj35wsszh7z+8w+1qMpU86YsCwAAAABJRU5ErkJggg==",
+            "width": 64,
+            "height": 64,
+            "scale-type": "contain",
+            "alt-text": "Order placed check mark icon"
+          },
           {
             "type": "TextHeading",
             "text": "🎉 Order placed"

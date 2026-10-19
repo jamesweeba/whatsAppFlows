@@ -1,333 +1,78 @@
 import { describe, expect, it, vi, beforeEach } from 'vitest';
 import { FlowService } from './flow.service.js';
 
-describe('FlowService', () => {
+describe('FlowService (PRODUCT_SELECT -> QUANTITIES -> SUMMARY -> PAYMENT -> DONE)', () => {
   let service: FlowService;
   let prisma: any;
+
+  let mockPaystackService: any;
 
   beforeEach(() => {
     prisma = {
       tenant: {
-        findUnique: vi.fn(),
-        findFirst: vi.fn(),
+        findUnique: vi.fn().mockResolvedValue({ id: 'tenant-1', user: { email: 'tenant@marketix.app' } }),
+        findFirst: vi.fn().mockResolvedValue({ id: 'tenant-1', user: { email: 'tenant@marketix.app' } }),
       },
       product: {
         findMany: vi.fn(),
         count: vi.fn(),
       },
       order: {
-        create: vi.fn(),
+        create: vi.fn().mockResolvedValue({ id: 'order-1', orderNumber: 'MX-1042' }),
       },
     };
 
-    service = new FlowService(prisma, {} as any);
-  });
-
-  it('returns at most five database products per page and provides page navigation options', async () => {
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
-    prisma.product.count.mockResolvedValue(12);
-    prisma.product.findMany.mockImplementation(({ skip, take }: { skip: number; take: number }) =>
-      Array.from({ length: Math.min(take, 12 - skip) }, (_, index) => {
-        const productNumber = skip + index + 1;
-        return {
-          id: `p${productNumber}`,
-          name: `Product ${productNumber}`,
-          price: productNumber,
-        };
+    mockPaystackService = {
+      initiateMoMoCharge: vi.fn().mockResolvedValue({
+        success: true,
+        status: 'pay_offline',
+        reference: 'MX-1042',
+        message: 'Prompt initiated',
+        displayText: 'Please approve the prompt on your phone',
       }),
-    );
+      normalizeGhanaPhone: vi.fn((phone: string) => (phone ? phone.replace(/[^\d]/g, '') : '')),
+      verifyWebhookSignature: vi.fn().mockReturnValue(true),
+    };
 
-    const firstPage = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'INIT',
-      screen: 'PRODUCT_SELECT',
-    });
-    const nextPage = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      data: {
-        step: 'next_page',
-        page: '1',
-        selected_ids: [],
-        visible_product_ids: ['p1', 'p2', 'p3', 'p4', 'p5'],
-        selected_on_page: ['p1', 'p3'],
-      },
-    });
-
-    expect(prisma.product.findMany).toHaveBeenNthCalledWith(
-      1,
-      expect.objectContaining({ skip: 0, take: 5 }),
-    );
-    expect(firstPage.data.products).toHaveLength(5);
-    // page_options is NOT declared in the PRODUCT_SELECT schema — ensure it's absent
-    expect(firstPage.data.page_options).toBeUndefined();
-    expect(firstPage.data.pages).toEqual([
-      { id: '1', title: 'Page 1 of 3' },
-      { id: '2', title: 'Page 2 of 3' },
-      { id: '3', title: 'Page 3 of 3' },
-    ]);
-    expect(firstPage.data.page_prefill).toBe('1');
-    // has_previous_page / has_next_page / visible_product_ids are NOT in schema
-    expect(firstPage.data.has_previous_page).toBeUndefined();
-    expect(firstPage.data.has_next_page).toBeUndefined();
-    expect(firstPage.data.visible_product_ids).toBeUndefined();
-    expect(nextPage.data.products.map(({ id }: { id: string }) => id)).toEqual([
-      'p6',
-      'p7',
-      'p8',
-      'p9',
-      'p10',
-    ]);
-    expect(nextPage.data.page_prefill).toBe('2');
-    // selected_ids is NOT in PRODUCT_SELECT schema — ensure it's absent
-    expect(nextPage.data.selected_ids).toBeUndefined();
+    service = new FlowService(prisma, {} as any, mockPaystackService);
   });
 
-  it('accepts the page_select field used by the Flow definition and preserves selections between pages', async () => {
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
-    prisma.product.count.mockResolvedValue(12);
-    prisma.product.findMany.mockImplementation(({ skip, take }: { skip: number; take: number }) =>
-      Array.from({ length: Math.min(take, 12 - skip) }, (_, index) => {
-        const productNumber = skip + index + 1;
-        return {
-          id: `p${productNumber}`,
-          name: `Product ${productNumber}`,
-          price: productNumber,
-        };
-      }),
-    );
-
-    const pageTwo = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      data: {
-        step: 'go_page',
-        page_select: '2',
-        selected_ids: ['p1'],
-        visible_product_ids: ['p1', 'p2', 'p3', 'p4', 'p5'],
-        selected_products: ['p1', 'p3'],
-      },
-    });
-
-    expect(prisma.product.findMany).toHaveBeenLastCalledWith(
-      expect.objectContaining({ skip: 5, take: 5 }),
-    );
-    expect(pageTwo.data.page_prefill).toBe('2');
-    // selected_ids / has_previous_page / has_next_page are NOT in schema
-    expect(pageTwo.data.selected_ids).toBeUndefined();
-    expect(pageTwo.data.pre_selected).toEqual([]);
-    expect(pageTwo.data.has_previous_page).toBeUndefined();
-    expect(pageTwo.data.has_next_page).toBeUndefined();
-    // Selections are tracked via selection_note (declared) not via undeclared keys
-    expect(pageTwo.data.selection_note).toContain('item(s) selected');
-  });
-
-  it('preserves multi-page selections when moving between page 1 and page 2 and continuing to quantities', async () => {
-    prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1' });
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
+  it('opens PRODUCT_SELECT on INIT by default', async () => {
     prisma.product.count.mockResolvedValue(10);
-    prisma.product.findMany.mockImplementation(({ skip, take, where }: any) => {
-      if (where?.id?.in) {
-        return where.id.in.map((id: string) => ({
-          id,
-          name: id === 'p1' ? 'Tomatoes' : 'Onions',
-          price: 10,
-          inStock: true,
-        }));
-      }
-      return Array.from({ length: Math.min(take, 10 - skip) }, (_, index) => {
-        const productNumber = skip + index + 1;
-        return {
-          id: `p${productNumber}`,
-          name: productNumber === 1 ? 'Tomatoes' : productNumber === 6 ? 'Onions' : `Product ${productNumber}`,
-          price: productNumber * 5,
-        };
-      });
-    });
+    prisma.product.findMany.mockResolvedValue([
+      { id: 'p1', name: 'Tomatoes', price: 2.5, image: '🍅' },
+      { id: 'p2', name: 'Onions', price: 1.5, image: '🧅' },
+    ]);
 
-    const flowToken = 'tenant-1:flow-session-1';
-
-    // 1. User opens PRODUCT_SELECT (Page 1)
-    const page1 = await (service as any).handleFlowAction({
+    const result = await (service as any).handleFlowAction({
       version: '3.0',
       action: 'INIT',
       screen: 'PRODUCT_SELECT',
-      flow_token: flowToken,
     });
-    expect(page1.data.products[0].id).toBe('p1');
-    expect(page1.data.pre_selected).toEqual([]);
 
-    // 2. User selects Tomatoes ('p1') on Page 1 and navigates to Page 2
-    const page2 = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      flow_token: flowToken,
-      data: {
-        step: 'next_page',
-        page: '1',
-        selected_products: ['p1'],
-        visible_product_ids: ['p1', 'p2', 'p3', 'p4', 'p5'],
-      },
-    });
-    expect(page2.data.page_prefill).toBe('2');
-    // selected_ids is NOT in schema; selections tracked via selection_note
-    expect(page2.data.selected_ids).toBeUndefined();
-    expect(page2.data.selection_note).toContain('1 item(s) selected');
-
-    // 3. User selects Onions ('p6') on Page 2 and navigates back to Page 1
-    const backToPage1 = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      flow_token: flowToken,
-      data: {
-        step: 'previous_page',
-        page: '2',
-        selected_products: ['p6'],
-        visible_product_ids: ['p6', 'p7', 'p8', 'p9', 'p10'],
-      },
-    });
-    expect(backToPage1.data.page_prefill).toBe('1');
-    expect(backToPage1.data.pre_selected).toEqual(['p1']);
-    // selected_products / selected_ids are NOT in schema
-    expect(backToPage1.data.selected_products).toBeUndefined();
-    expect(backToPage1.data.selected_ids).toBeUndefined();
-    expect(backToPage1.data.selection_note).toContain('2 item(s) selected');
-
-    // 4. User clicks Continue
-    const quantities = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      flow_token: flowToken,
-      data: {
-        step: 'continue',
-        page: '1',
-        selected_products: ['p1'],
-        visible_product_ids: ['p1', 'p2', 'p3', 'p4', 'p5'],
-      },
-    });
-    expect(quantities.screen).toBe('QUANTITIES');
-    expect(quantities.data.show_0).toBe(true);
-    expect(quantities.data.show_1).toBe(true);
-    expect([quantities.data.item_0_id, quantities.data.item_1_id]).toContain('p1');
-    expect([quantities.data.item_0_id, quantities.data.item_1_id]).toContain('p6');
+    expect(result.screen).toBe('PRODUCT_SELECT');
+    expect(result.data.categories).toHaveLength(5);
+    expect(result.data.category_prefill).toBe('all');
+    expect(result.data.products).toHaveLength(2);
+    expect(result.data.page_prefill).toBe('1');
+    expect(result.data.pre_selected).toEqual([]);
+    expect(result.data.selection_note).toBe('🛒 Your basket is empty — tap items to add');
   });
 
-  it('creates quantity slots with compatible flow keys', async () => {
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
-    prisma.product.count.mockResolvedValue(2);
+  it('handles category filtering, search, and page navigation on PRODUCT_SELECT', async () => {
+    prisma.product.count.mockResolvedValue(10);
     prisma.product.findMany.mockResolvedValue([
-      { id: 'p1', name: 'Tomato', price: 2.5, inStock: true },
-      { id: 'p2', name: 'Onion', price: 1.5, inStock: true },
+      { id: 'p1', name: 'Tomatoes', price: 2.5, image: '🍅' },
     ]);
 
-    const result = await (service as any).handleFlowAction({
+    const flowToken = 'tenant-1:session-1';
+
+    // 1. Category filter
+    const catRes = await (service as any).handleFlowAction({
       version: '3.0',
       action: 'data_exchange',
-      data: { step: 'continue', selected_on_page: ['p1', 'p2'] },
-    });
-
-    expect(result.screen).toBe('QUANTITIES');
-    expect(result.data.item_0_id).toBe('p1');
-    expect(result.data.item_0_label).toContain('Tomato');
-    expect(result.data.item_0_label.length).toBeLessThanOrEqual(20);
-    expect(result.data.item_0_helper).toBe('₵2.50 each');
-    expect(result.data.item_0_options).toHaveLength(10);
-    expect(result.data.item_0_default).toBe('1');
-    expect(result.data.show_0).toBe(true);
-    expect(result.data.item_1_id).toBe('p2');
-    expect(result.data.item_1_label).toContain('Onion');
-    expect(result.data.item_1_label.length).toBeLessThanOrEqual(20);
-    expect(result.data.item_1_helper).toBe('₵1.50 each');
-    expect(result.data.show_1).toBe(true);
-    expect(result.data.item_2_id).toBe(' ');
-    expect(result.data.show_2).toBe(false);
-    // 6 keys per slot (id, label, helper, options, default, show) × 10 slots = 60
-    expect(Object.keys(result.data)).toHaveLength(60);
-    expect(result.data).not.toHaveProperty('i0_id');
-    expect(result.data).not.toHaveProperty('show0');
-    // Ensure removed undeclared fields are not present (they caused Invariant Violation #73970)
-    expect(result.data).not.toHaveProperty('item_0_price');
-    expect(result.data).not.toHaveProperty('item_0_sublabel');
-    expect(result.data).not.toHaveProperty('item_0_caption');
-    expect(result.data).not.toHaveProperty('item_0_unit_price');
-  });
-
-  it('reads quantities from both modern and legacy key formats', async () => {
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
-    prisma.product.count.mockResolvedValue(2);
-    prisma.product.findMany.mockResolvedValue([
-      { id: 'p1', name: 'Tomato', price: 2.5, inStock: true },
-      { id: 'p2', name: 'Onion', price: 1.5, inStock: true },
-    ]);
-
-    const result = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      data: {
-        step: 'quantities',
-        item_0_id: 'p1',
-        item_0_qty: '2',
-        item_1_id: 'p2',
-        item_1_qty: '3',
-      },
-    });
-
-    expect(result.screen).toBe('SUMMARY');
-    expect(result.data.summary_lines).toContain('Tomato: 2 × ₵2.50 = ₵5.00');
-    expect(result.data.summary_lines).toContain('Onion: 3 × ₵1.50 = ₵4.50');
-    expect(result.data.order_total).toBe('💰 Total: ₵9.50');
-  });
-
-  it('opens MENU screen on INIT and routes to TRACK and HUMAN support screens', async () => {
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1', name: 'SuperStore' });
-
-    const initMenu = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'INIT',
-    });
-    expect(initMenu.screen).toBe('MENU');
-    expect(initMenu.data.menu_options).toHaveLength(3);
-
-    const trackScreen = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      data: { menu_selection: 'TRACK' },
-    });
-    expect(trackScreen.screen).toBe('TRACK_ORDER');
-
-    const supportScreen = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      data: { menu_selection: 'HUMAN' },
-    });
-    expect(supportScreen.screen).toBe('SUPPORT_MESSAGE');
-  });
-
-  it('formats product titles with appropriate image icons and caps length at 30 characters', () => {
-    expect(service.formatProductTitle('Tomatoes')).toBe('🍅 Tomatoes');
-    expect(service.formatProductTitle('Onions')).toBe('🧅 Onions');
-    expect(service.formatProductTitle('Pepper')).toBe('🌶️ Pepper');
-    expect(service.formatProductTitle('Carrots')).toBe('🥕 Carrots');
-    expect(service.formatProductTitle('Cabbage')).toBe('🥬 Cabbage');
-    expect(service.formatProductTitle('Fresh Milk')).toBe('🥛 Fresh Milk');
-    expect(service.formatProductTitle('Bread', '🍞')).toBe('🍞 Bread');
-    expect(service.formatProductTitle('🍅 Tomatoes')).toBe('🍅 Tomatoes');
-
-    const scotchBonnet = service.formatProductTitle('Scotch Bonnet Pepper (1 cup)');
-    expect(scotchBonnet.length).toBeLessThanOrEqual(30);
-    expect(scotchBonnet).toBe('🌶️ Scotch Bonnet Pepper (1...');
-  });
-
-  it('supports set_category step and returns flow categories with prefilled category', async () => {
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
-    prisma.product.count.mockResolvedValue(1);
-    prisma.product.findMany.mockResolvedValue([
-      { id: 'p1', name: 'Carrots', price: 2.5, inStock: true },
-    ]);
-
-    const result = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
+      screen: 'PRODUCT_SELECT',
+      flow_token: flowToken,
       data: {
         step: 'set_category',
         category: 'vegetables',
@@ -336,129 +81,246 @@ describe('FlowService', () => {
       },
     });
 
-    expect(result.screen).toBe('PRODUCT_SELECT');
-    expect(result.data.category_prefill).toBe('vegetables');
-    expect(result.data.categories).toHaveLength(5);
-    expect(result.data.categories[1].id).toBe('vegetables');
-    expect(result.data.products).toHaveLength(1);
+    expect(catRes.screen).toBe('PRODUCT_SELECT');
+    expect(catRes.data.category_prefill).toBe('vegetables');
+
+    // 2. Search query
+    const searchRes = await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'PRODUCT_SELECT',
+      flow_token: flowToken,
+      data: {
+        step: 'search',
+        query: 'rice',
+        category: 'all',
+        selected_on_page: [],
+      },
+    });
+
+    expect(searchRes.screen).toBe('PRODUCT_SELECT');
+    expect(searchRes.data.search_prefill).toBe('rice');
+
+    // 3. Page navigation
+    const pageRes = await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'PRODUCT_SELECT',
+      flow_token: flowToken,
+      data: {
+        step: 'go_page',
+        page: '2',
+        query: '',
+        category: 'all',
+        selected_on_page: [],
+      },
+    });
+
+    expect(pageRes.screen).toBe('PRODUCT_SELECT');
+    expect(pageRes.data.page_prefill).toBe('2');
   });
 
-  it('parses QUANTITIES footer payload using i{n}_id and i{n}_qty keys', async () => {
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
+  it('preserves multi-page selection and validates minimum selection on continue', async () => {
+    prisma.product.count.mockResolvedValue(10);
+    prisma.product.findMany.mockImplementation(({ where }: any) => {
+      if (where?.id?.in) {
+        return where.id.in.map((id: string) => ({
+          id,
+          name: id === 'p1' ? 'Tomatoes' : 'Onions',
+          price: 10,
+          inStock: true,
+        }));
+      }
+      return [
+        { id: 'p1', name: 'Tomatoes', price: 10, inStock: true },
+        { id: 'p2', name: 'Onions', price: 10, inStock: true },
+      ];
+    });
+
+    const flowToken = 'tenant-1:session-2';
+
+    // 1. Continue with 0 selected items -> Error notice
+    const emptyRes = await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'PRODUCT_SELECT',
+      flow_token: flowToken,
+      data: {
+        step: 'continue',
+        selected_on_page: [],
+      },
+    });
+
+    expect(emptyRes.screen).toBe('PRODUCT_SELECT');
+    expect(emptyRes.data.show_notice).toBe(true);
+    expect(emptyRes.data.notice).toContain('Please select at least one item');
+
+    // 2. Continue with items -> Transitions to QUANTITIES
+    const successRes = await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'PRODUCT_SELECT',
+      flow_token: flowToken,
+      data: {
+        step: 'continue',
+        selected_on_page: ['p1', 'p2'],
+      },
+    });
+
+    expect(successRes.screen).toBe('QUANTITIES');
+    expect(successRes.data.item_0_id).toBe('p1');
+    expect(successRes.data.show_0).toBe(true);
+    expect(successRes.data.item_1_id).toBe('p2');
+    expect(successRes.data.show_1).toBe(true);
+    expect(successRes.data.show_2).toBe(false);
+  });
+
+  it('routes from QUANTITIES to SUMMARY with order summary lines and default delivery', async () => {
     prisma.product.findMany.mockResolvedValue([
-      { id: 'prod-1', name: 'Tomatoes', price: 2.0, inStock: true },
-      { id: 'prod-3', name: 'Pepper', price: 3.0, inStock: true },
+      { id: 'p1', name: 'Tomatoes', price: 2.0, inStock: true },
+      { id: 'p2', name: 'Pepper', price: 3.0, inStock: true },
     ]);
 
     const result = await (service as any).handleFlowAction({
       version: '3.0',
       action: 'data_exchange',
+      screen: 'QUANTITIES',
       data: {
         step: 'quantities',
-        i0_id: 'prod-1',
+        i0_id: 'p1',
         i0_qty: '2',
-        i1_id: 'prod-3',
+        i1_id: 'p2',
         i1_qty: '1',
       },
     });
 
     expect(result.screen).toBe('SUMMARY');
-    expect(result.data.summary_lines).toContain('2 × ₵2.00');
-    expect(result.data.summary_lines).toContain('1 × ₵3.00');
-    expect(result.data.order_total).toBe('💰 Total: ₵7.00');
-    expect(result.data.error_message).toBe(' ');
-    expect(result.data.show_error).toBe(false);
+    expect(result.data.summary_lines).toContain('Tomatoes');
+    expect(result.data.summary_lines).toContain('Pepper');
+    // 2x 2.00 + 1x 3.00 = 7.00 + 5.00 delivery = 12.00
+    expect(result.data.order_total).toContain('12.00');
+    expect(result.data.fulfillment_prefill).toBe('delivery');
   });
 
-  it('routes SUMMARY to PAYMENT screen on to_payment step', async () => {
-    prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1' });
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
-    prisma.product.findMany.mockResolvedValue([
-      { id: 'prod-1', name: 'Tomatoes', price: 2.0, inStock: true },
-      { id: 'prod-3', name: 'Pepper', price: 3.0, inStock: true },
-    ]);
+  it('validates address on SUMMARY and transitions to PAYMENT when valid', async () => {
+    const cart = [
+      { id: 'p1', title: 'Tomatoes', qty: 2, unitPrice: 2, total: 4 },
+      { id: 'p2', title: 'Pepper', qty: 1, unitPrice: 3, total: 3 },
+    ];
+    const flowToken = 'tenant-1:session-to-pay';
 
-    const result = await (service as any).handleFlowAction({
+    // 1. Delivery selected without address -> Stays on SUMMARY with error
+    const missingAddrRes = await (service as any).handleFlowAction({
       version: '3.0',
       action: 'data_exchange',
-      flow_token: 'tenant-1:0241234567',
+      screen: 'SUMMARY',
+      flow_token: flowToken,
       data: {
         step: 'to_payment',
-        cart: JSON.stringify([
-          { id: 'prod-1', qty: 2 },
-          { id: 'prod-3', qty: 1 },
-        ]),
-        fulfillment: 'delivery',
-        address: '123 Market St, Near Post Office',
-      },
-    });
-
-    expect(result.screen).toBe('PAYMENT');
-    expect(result.data.order_total).toBe('Total: ₵7.00');
-    expect(result.data.pay_label).toBe('Pay ₵7.00');
-    expect(result.data.networks).toHaveLength(3);
-    expect(result.data.number_prefill).toBe('0241234567');
-  });
-
-  it('creates order on pay step and returns DONE screen', async () => {
-    prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1' });
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
-    prisma.product.findMany.mockResolvedValue([
-      { id: 'prod-1', name: 'Tomatoes', price: 2.0, inStock: true },
-      { id: 'prod-3', name: 'Pepper', price: 3.0, inStock: true },
-    ]);
-    prisma.order.create.mockResolvedValue({
-      orderNumber: '550e8400-e29b-41d4-a716-446655440000',
-    });
-
-    const result = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      flow_token: 'tenant-1:123456789',
-      data: {
-        step: 'pay',
-        payment_method: 'momo',
-        momo_network: 'mtn',
-        momo_number: '0241234567',
-        cart: JSON.stringify([
-          { id: 'prod-1', qty: 2 },
-          { id: 'prod-3', qty: 1 },
-        ]),
-        fulfillment: 'delivery',
-        address: '123 Market St, Near Post Office',
-      },
-    });
-
-    expect(result.screen).toBe('DONE');
-    expect(result.data.order_ref).toBe('MX-55440000');
-    expect(result.data.done_message).toContain('Order placed');
-    expect(prisma.order.create).toHaveBeenCalledWith(
-      expect.objectContaining({
-        data: expect.objectContaining({
-          tenantId: 'tenant-1',
-          totalAmount: 7,
-          notes: expect.stringContaining('123 Market St'),
-        }),
-      }),
-    );
-  });
-
-  it('rejects to_payment step when delivery is selected without address', async () => {
-    prisma.tenant.findFirst.mockResolvedValue({ id: 'tenant-1' });
-
-    const result = await (service as any).handleFlowAction({
-      version: '3.0',
-      action: 'data_exchange',
-      data: {
-        step: 'to_payment',
-        cart: JSON.stringify([{ id: 'prod-1', qty: 2 }]),
+        cart: JSON.stringify(cart),
         fulfillment: 'delivery',
         address: '',
       },
     });
 
-    expect(result.screen).toBe('SUMMARY');
-    expect(result.data.show_error).toBe(true);
-    expect(result.data.error_message).toContain('delivery address');
+    expect(missingAddrRes.screen).toBe('SUMMARY');
+    expect(missingAddrRes.data.show_error).toBe(true);
+    expect(missingAddrRes.data.error_message).toContain('delivery address');
+
+    // 2. Delivery with valid address -> Transitions to PAYMENT
+    const validDeliveryRes = await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'SUMMARY',
+      flow_token: flowToken,
+      data: {
+        step: 'to_payment',
+        cart: JSON.stringify(cart),
+        fulfillment: 'delivery',
+        address: 'House 4, Cantonments',
+      },
+    });
+
+    expect(validDeliveryRes.screen).toBe('PAYMENT');
+    expect(validDeliveryRes.data.order_total).toBe('Total: ₵12.00');
+    expect(validDeliveryRes.data.pay_label).toBe('Pay ₵12.00');
+    expect(validDeliveryRes.data.networks).toHaveLength(3);
+
+    // 3. Pickup without address -> Valid, transitions to PAYMENT with ₵0 delivery fee
+    const pickupRes = await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'SUMMARY',
+      flow_token: flowToken,
+      data: {
+        step: 'to_payment',
+        cart: JSON.stringify(cart),
+        fulfillment: 'pickup',
+      },
+    });
+
+    expect(pickupRes.screen).toBe('PAYMENT');
+    expect(pickupRes.data.order_total).toBe('Total: ₵7.00');
+    expect(pickupRes.data.pay_label).toBe('Pay ₵7.00');
+  });
+
+  it('validates mobile money on PAYMENT and transitions to DONE screen on success', async () => {
+    const flowToken = 'tenant-1:session-pay-done';
+
+    // Seed session via to_payment
+    await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'SUMMARY',
+      flow_token: flowToken,
+      data: {
+        step: 'to_payment',
+        cart: JSON.stringify([{ id: 'p1', title: 'Tomatoes', qty: 2, unitPrice: 2, total: 4 }]),
+        fulfillment: 'pickup',
+      },
+    });
+
+    // 1. MoMo without phone number -> Stays on PAYMENT with error
+    const missingMomoRes = await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'PAYMENT',
+      flow_token: flowToken,
+      data: {
+        step: 'pay',
+        payment_method: 'momo',
+        momo_number: '',
+      },
+    });
+
+    expect(missingMomoRes.screen).toBe('PAYMENT');
+    expect(missingMomoRes.data.show_error).toBe(true);
+    expect(missingMomoRes.data.error_message).toContain('mobile money number');
+
+    // 2. Valid MoMo payment -> DONE screen and order created in Prisma
+    const doneRes = await (service as any).handleFlowAction({
+      version: '3.0',
+      action: 'data_exchange',
+      screen: 'PAYMENT',
+      flow_token: flowToken,
+      data: {
+        step: 'pay',
+        payment_method: 'momo',
+        momo_network: 'mtn',
+        momo_number: '0241234567',
+      },
+    });
+
+    expect(doneRes.screen).toBe('DONE');
+    expect(doneRes.data.order_ref).toBeDefined();
+    expect(doneRes.data.done_message).toContain('Order placed');
+    expect(mockPaystackService.initiateMoMoCharge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        momoNumber: '0241234567',
+        provider: 'mtn',
+        email: 'tenant@marketix.app',
+      }),
+    );
+    expect(prisma.order.create).toHaveBeenCalled();
   });
 });

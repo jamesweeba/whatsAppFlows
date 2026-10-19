@@ -44,8 +44,6 @@ export class FlowController {
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: body.tenantId },
     });
-    console.log(tenant);
-    console.log("pppppppppppppppppppppppppppppppppppppp")
 
     if (!tenant || !tenant.whatsappPhoneNumberId) {
       throw new NotFoundException(
@@ -61,16 +59,17 @@ export class FlowController {
       );
     }
 
-    const flowToken = `${tenant.id}:${Date.now()}`;
-    const flowData = await this.flowService.buildFlowInitData(tenant.id);
+    const flowToken = `${tenant.id}:${body.toPhone}:${Date.now()}`;
+    const screen = body.screen || process.env.META_FLOW_FIRST_SCREEN || 'PRODUCT_SELECT';
+    const flowData = await this.flowService.buildFlowInitData(tenant.id, screen);
 
     const result = await this.wabaService.sendFlowMessage({
       phoneNumberId: tenant.whatsappPhoneNumberId,
       toPhone: body.toPhone,
       flowId,
       flowToken,
-      flowCta: body.flowCta || 'View Products',
-      screen: body.screen || 'PRODUCT_SELECT',
+      flowCta: body.flowCta || 'Order Groceries',
+      screen,
       data: flowData,
     });
 

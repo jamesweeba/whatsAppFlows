@@ -9,6 +9,7 @@ import { WabaModule } from './waba/waba.module.js';
 import { ChatModule } from './chat/chat.module.js';
 import { FlowModule } from './flow/flow.module.js';
 import { OrderModule } from './order/order.module.js';
+import { PaymentModule } from './payment/payment.module.js';
 
 @Module({
   imports: [
@@ -20,6 +21,7 @@ import { OrderModule } from './order/order.module.js';
     ChatModule,
     FlowModule,
     OrderModule,
+    PaymentModule,
   ],
   controllers: [AppController],
   providers: [AppService],

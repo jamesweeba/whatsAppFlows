@@ -82,17 +82,19 @@ model Tenant {
 }
 
 model ChatSession {
-  id         String        @id @default(uuid())
-  tenantId   String
-  tenant     Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  buyerPhone String
-  lastIntent BuyerIntent?
-  messages   ChatMessage[]
-  orders     Order[]
-  createdAt  DateTime      @default(now())
-  updatedAt  DateTime      @updatedAt
+  id             String        @id @default(uuid())
+  tenantId       String
+  tenant         Tenant        @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  buyerPhone     String
+  lastIntent     BuyerIntent?
+  orderCompleted Boolean       @default(false)
+  messages       ChatMessage[]
+  orders         Order[]
+  createdAt      DateTime      @default(now())
+  updatedAt      DateTime      @updatedAt
 
-  @@unique([tenantId, buyerPhone])
+  @@index([tenantId, buyerPhone])
+  @@index([tenantId, buyerPhone, orderCompleted])
 }
 
 model ChatMessage {

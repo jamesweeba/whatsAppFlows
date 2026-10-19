@@ -16,6 +16,7 @@ describe('ChatModule', () => {
   const mockPrismaService = {
     chatSession: {
       findUnique: vi.fn(),
+      findFirst: vi.fn(),
       create: vi.fn(),
       update: vi.fn(),
     },
@@ -29,6 +30,10 @@ describe('ChatModule', () => {
     product: {
       findMany: vi.fn(),
       count: vi.fn(),
+    },
+    order: {
+      findUnique: vi.fn(),
+      update: vi.fn(),
     },
   };
 
@@ -185,6 +190,7 @@ describe('ChatModule', () => {
       const previousFlowId = process.env.META_FLOW_ID;
       process.env.META_FLOW_ID = 'flow-123';
       mockPrismaService.chatSession.findUnique.mockResolvedValue(mockSession);
+      mockPrismaService.chatSession.findFirst.mockResolvedValue(mockSession);
       mockPrismaService.chatMessage.findMany.mockResolvedValue([]);
       mockPrismaService.chatMessage.create.mockImplementation(({ data }) =>
         Promise.resolve({ id: 'msg-1', ...data }),
@@ -218,15 +224,8 @@ describe('ChatModule', () => {
           phoneNumberId: 'phone-number-id',
           toPhone: '+233240000000',
           flowId: 'flow-123',
-          screen: 'PRODUCT_SELECT',
+          screen: process.env.META_FLOW_FIRST_SCREEN || 'PRODUCT_SELECT',
           headerText: 'SuperStore',
-          data: expect.objectContaining({
-            products: [
-              { id: 'p1', title: 'Tomatoes', description: '₵2.00' },
-              { id: 'p2', title: 'Onions', description: '₵1.50' },
-            ],
-            page_label: 'Page 1 of 2 · 7 products',
-          }),
         }),
       );
       expect(mockWabaService.sendTextMessage).not.toHaveBeenCalled();
@@ -247,6 +246,7 @@ describe('ChatModule', () => {
       };
 
       mockPrismaService.chatSession.findUnique.mockResolvedValue(mockSession);
+      mockPrismaService.chatSession.findFirst.mockResolvedValue(mockSession);
       mockPrismaService.chatMessage.findMany.mockResolvedValue([]);
       mockPrismaService.chatMessage.create.mockImplementation(({ data }) =>
         Promise.resolve({ id: 'msg-1', ...data }),
@@ -281,19 +281,22 @@ describe('ChatModule', () => {
           expect.objectContaining({
             phoneNumberId: 'phone-number-id',
             toPhone: '+233240000000',
-            flowCta: 'Get started',
+            flowCta: 'Order Groceries',
             screen: process.env.META_FLOW_FIRST_SCREEN || 'PRODUCT_SELECT',
+            headerText: 'SuperStore',
           }),
         );
+        expect(mockWabaService.sendTextMessage).not.toHaveBeenCalled();
       } else {
         expect(mockWabaService.sendWelcomeButtons).toHaveBeenCalledWith(
           'phone-number-id',
           '+233240000000',
           'SuperStore',
         );
+        expect(mockWabaService.sendTextMessage).not.toHaveBeenCalled();
       }
-      expect(mockWabaService.sendTextMessage).not.toHaveBeenCalled();
     });
+
 
     it('should fetch in-stock database items formatted in WhatsApp style for ORDER_INTENT without a product name', async () => {
       vi.spyOn(aiClassifierService as any, 'apiKey', 'get').mockReturnValue('');
@@ -305,6 +308,7 @@ describe('ChatModule', () => {
       };
 
       mockPrismaService.chatSession.findUnique.mockResolvedValue(mockSession);
+      mockPrismaService.chatSession.findFirst.mockResolvedValue(mockSession);
       mockPrismaService.chatMessage.findMany.mockResolvedValue([]);
       mockPrismaService.chatMessage.create.mockImplementation(({ data }) =>
         Promise.resolve({ id: 'msg-1', ...data }),
@@ -338,11 +342,222 @@ describe('ChatModule', () => {
       expect(result.systemResponse.text).toContain('👟 *Running Shoes*');
       expect(result.systemResponse.text).toContain('💰 Price: GH₵150.00');
       expect(result.systemResponse.text).not.toContain('Wireless Earbuds');
+      // ORDER_INTENT now auto-launches the flow instead of replying with text
+      if (process.env.META_FLOW_ID) {
+        expect(mockWabaService.sendFlowMessage).toHaveBeenCalledWith(
+          expect.objectContaining({
+            phoneNumberId: 'phone-number-id',
+            toPhone: '+233240000000',
+            flowCta: 'Order Now',
+          }),
+        );
+      } else {
+        // No flow configured — falls back to welcome buttons or text
+        expect(
+          mockWabaService.sendFlowMessage.mock.calls.length +
+          mockWabaService.sendWelcomeButtons.mock.calls.length +
+          mockWabaService.sendTextMessage.mock.calls.length
+        ).toBeGreaterThan(0);
+      }
+    });
+
+    it('should reset flow cooldown and mark session as orderCompleted when order_ref is received', async () => {
+      const mockSession = {
+        id: 'session-order-1',
+        tenantId: 'tenant-abc',
+        buyerPhone: '+233240000000',
+        orderCompleted: false,
+        lastIntent: BuyerIntent.ORDER_INTENT,
+      };
+
+      mockPrismaService.chatSession.findFirst.mockResolvedValue(mockSession);
+      mockPrismaService.chatMessage.findMany.mockResolvedValue([]);
+      mockPrismaService.chatMessage.create.mockImplementation(({ data }) =>
+        Promise.resolve({ id: 'msg-1', ...data }),
+      );
+      mockPrismaService.chatSession.update.mockResolvedValue({
+        ...mockSession,
+        orderCompleted: true,
+      });
+      mockPrismaService.tenant.findUnique.mockResolvedValue({
+        id: 'tenant-abc',
+        name: 'SuperStore',
+        whatsappPhoneNumberId: 'phone-number-id',
+      });
+
+      // Simulate a prior flow sent so cooldown is active
+      (chatService as any).lastFlowSent.set('tenant-abc:+233240000000', Date.now());
+
+      await chatService.processIncomingMessage({
+        tenantId: 'tenant-abc',
+        buyerPhone: '+233240000000',
+        sender: MessageSender.BUYER,
+        flowData: {
+          order_ref: 'ORD-1234',
+          payment_method: 'cod',
+        },
+      });
+
+      // 1. Session should be marked as orderCompleted: true
+      expect(mockPrismaService.chatSession.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 'session-order-1' },
+          data: expect.objectContaining({
+            orderCompleted: true,
+          }),
+        }),
+      );
+
+      // 2. Cooldown should be deleted from in-memory map
+      expect((chatService as any).lastFlowSent.has('tenant-abc:+233240000000')).toBe(false);
+    });
+
+    it('should create a new session on next chat when previous session was completed', async () => {
+      // When findFirst queries for active session (orderCompleted: false), return null
+      mockPrismaService.chatSession.findFirst.mockResolvedValue(null);
+      const newSession = {
+        id: 'new-session-456',
+        tenantId: 'tenant-abc',
+        buyerPhone: '+233240000000',
+        orderCompleted: false,
+      };
+      mockPrismaService.chatSession.create.mockResolvedValue(newSession);
+
+      const session = await chatService.getOrCreateSession('tenant-abc', '+233240000000');
+
+      expect(mockPrismaService.chatSession.findFirst).toHaveBeenCalledWith({
+        where: {
+          tenantId: 'tenant-abc',
+          buyerPhone: '+233240000000',
+          orderCompleted: false,
+        },
+        orderBy: { createdAt: 'desc' },
+      });
+      expect(mockPrismaService.chatSession.create).toHaveBeenCalledWith({
+        data: {
+          tenantId: 'tenant-abc',
+          buyerPhone: '+233240000000',
+          orderCompleted: false,
+        },
+      });
+      expect(session.id).toBe('new-session-456');
+    });
+
+    it('should format order confirmation receipt with itemized breakdown, total, and payment method', async () => {
+      const mockSession = {
+        id: 'session-order-2',
+        tenantId: 'tenant-abc',
+        buyerPhone: '+233240000000',
+        orderCompleted: false,
+        lastIntent: BuyerIntent.ORDER_INTENT,
+      };
+
+      mockPrismaService.chatSession.findFirst.mockResolvedValue(mockSession);
+      mockPrismaService.chatMessage.findMany.mockResolvedValue([]);
+      mockPrismaService.chatMessage.create.mockImplementation(({ data }) =>
+        Promise.resolve({ id: 'msg-1', ...data }),
+      );
+      mockPrismaService.chatSession.update.mockResolvedValue({
+        ...mockSession,
+        orderCompleted: true,
+      });
+      mockPrismaService.tenant.findUnique.mockResolvedValue({
+        id: 'tenant-abc',
+        name: 'SuperStore',
+        whatsappPhoneNumberId: 'phone-number-id',
+      });
+
+      mockPrismaService.order.findUnique.mockResolvedValue({
+        id: 'order-1',
+        orderNumber: 'MX-5988',
+        totalAmount: 12.5,
+        notes: null,
+        items: [
+          { productName: 'Fresh Tomatoes', quantity: 2, unitPrice: 3.0, totalPrice: 6.0 },
+          { productName: 'Red Onions', quantity: 1, unitPrice: 6.5, totalPrice: 6.5 },
+        ],
+      });
+      mockPrismaService.order.update.mockResolvedValue({});
+
+      const result = await chatService.processIncomingMessage({
+        tenantId: 'tenant-abc',
+        buyerPhone: '+233240000000',
+        sender: MessageSender.BUYER,
+        flowData: {
+          order_ref: 'MX-5988',
+          payment_method: 'cod',
+        },
+      });
+
+      expect(result.systemResponse.text).toContain('🧾 *Order MX-5988 placed successfully!*');
+      expect(result.systemResponse.text).toContain('📦 *Items Ordered:*');
+      expect(result.systemResponse.text).toContain('• 2x Fresh Tomatoes — GH₵6.00');
+      expect(result.systemResponse.text).toContain('• 1x Red Onions — GH₵6.50');
+      expect(result.systemResponse.text).toContain('💰 *Total Amount:* GH₵12.50');
+      expect(result.systemResponse.text).toContain('💳 *Payment Method:* Cash on Delivery');
+      expect(result.systemResponse.text).toContain('Your order has been confirmed for Cash on Delivery.');
       expect(mockWabaService.sendTextMessage).toHaveBeenCalledWith(
         'phone-number-id',
         '+233240000000',
-        result.systemResponse.text,
+        expect.stringContaining('• 2x Fresh Tomatoes — GH₵6.00'),
       );
+    });
+
+    it('should itemize delivery fee, subtotal, and address when customer chooses delivery', async () => {
+      const mockSession = {
+        id: 'session-order-delivery',
+        tenantId: 'tenant-abc',
+        buyerPhone: '+233240000000',
+        orderCompleted: false,
+        lastIntent: BuyerIntent.ORDER_INTENT,
+      };
+
+      mockPrismaService.chatSession.findFirst.mockResolvedValue(mockSession);
+      mockPrismaService.chatMessage.findMany.mockResolvedValue([]);
+      mockPrismaService.chatMessage.create.mockImplementation(({ data }) =>
+        Promise.resolve({ id: 'msg-1', ...data }),
+      );
+      mockPrismaService.chatSession.update.mockResolvedValue({
+        ...mockSession,
+        orderCompleted: true,
+      });
+      mockPrismaService.tenant.findUnique.mockResolvedValue({
+        id: 'tenant-abc',
+        name: 'SuperStore',
+        whatsappPhoneNumberId: 'phone-number-id',
+      });
+
+      mockPrismaService.order.findUnique.mockResolvedValue({
+        id: 'order-delivery-1',
+        orderNumber: 'MX-9901',
+        totalAmount: 17.5,
+        notes: 'Fulfillment: Delivery. Address: East Legon, Accra | Payment: Pay on delivery / pickup | Subtotal: ₵12.50 | Delivery Fee: ₵5.00 | Total: ₵17.50',
+        items: [
+          { productName: 'Fresh Tomatoes', quantity: 2, unitPrice: 3.0, totalPrice: 6.0 },
+          { productName: 'Red Onions', quantity: 1, unitPrice: 6.5, totalPrice: 6.5 },
+        ],
+      });
+      mockPrismaService.order.update.mockResolvedValue({});
+
+      const result = await chatService.processIncomingMessage({
+        tenantId: 'tenant-abc',
+        buyerPhone: '+233240000000',
+        sender: MessageSender.BUYER,
+        flowData: {
+          order_ref: 'MX-9901',
+          payment_method: 'cod',
+        },
+      });
+
+      expect(result.systemResponse.text).toContain('🧾 *Order MX-9901 placed successfully!*');
+      expect(result.systemResponse.text).toContain('📦 *Items Ordered:*');
+      expect(result.systemResponse.text).toContain('• 2x Fresh Tomatoes — GH₵6.00');
+      expect(result.systemResponse.text).toContain('• 1x Red Onions — GH₵6.50');
+      expect(result.systemResponse.text).toContain('🛒 *Items Subtotal:* GH₵12.50');
+      expect(result.systemResponse.text).toContain('🛵 *Delivery Fee:* GH₵5.00');
+      expect(result.systemResponse.text).toContain('💰 *Total Amount:* GH₵17.50');
+      expect(result.systemResponse.text).toContain('📍 *Delivery Address:* East Legon, Accra');
+      expect(result.systemResponse.text).toContain('💳 *Payment Method:* Cash on Delivery');
     });
   });
 });

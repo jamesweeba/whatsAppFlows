@@ -232,9 +232,30 @@ export class WabaService {
     bodyText?: string;
     footerText?: string;
     data?: Record<string, any>;
+    flowAction?: 'navigate' | 'data_exchange';
   }): Promise<{ messageId: string }> {
     const url = `${this.baseUrl}/${options.phoneNumberId}/messages`;
     const recipientPhone = options.toPhone.replace(/^\+/, '');
+
+    const flowAction = options.flowAction || 'navigate';
+    const actionParameters: Record<string, any> = {
+      flow_message_version: '3',
+      mode: process.env.META_FLOW_MODE || 'draft',
+      flow_token: options.flowToken,
+      flow_id: options.flowId,
+      flow_cta: options.flowCta || 'View Products',
+      flow_action: flowAction,
+    };
+
+    if (flowAction === 'navigate') {
+      const payload: Record<string, any> = {
+        screen: options.screen || 'WELCOME',
+      };
+      if (options.data && Object.keys(options.data).length > 0) {
+        payload.data = options.data;
+      }
+      actionParameters.flow_action_payload = payload;
+    }
 
     const body = {
       messaging_product: 'whatsapp',
@@ -255,18 +276,7 @@ export class WabaService {
         },
         action: {
           name: 'flow',
-          parameters: {
-            flow_message_version: '3',
-            mode: process.env.META_FLOW_MODE || 'draft',
-            flow_token: options.flowToken,
-            flow_id: options.flowId,
-            flow_cta: options.flowCta || 'View Products',
-            flow_action: 'navigate',
-            flow_action_payload: {
-              screen: options.screen || 'CATALOG',
-              data: options.data || {},
-            },
-          },
+          parameters: actionParameters,
         },
       },
     };

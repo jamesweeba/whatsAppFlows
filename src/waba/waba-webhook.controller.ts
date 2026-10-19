@@ -56,11 +56,14 @@ export class WabaWebhookController {
   @Post()
   @HttpCode(HttpStatus.OK)
   async handleIncomingWebhook(@Body() payload: any) {
-    this.logger.log(`Received Webhook Payload: ${JSON.stringify(payload)}`);
+    // this.logger.log(`Received Webhook Payload: ${JSON.stringify(payload)}`);
 
     if (payload?.object !== 'whatsapp_business_account') {
       return { status: 'IGNORED' };
     }
+
+
+
 
     const entries = payload.entry || [];
     for (const entry of entries) {
@@ -74,8 +77,8 @@ export class WabaWebhookController {
         // Find tenant by matching whatsappPhoneNumberId or fallback to first tenant
         let tenant = phoneNumberId
           ? await this.prisma.tenant.findFirst({
-              where: { whatsappPhoneNumberId: phoneNumberId },
-            })
+            where: { whatsappPhoneNumberId: phoneNumberId },
+          })
           : null;
 
         if (!tenant) {

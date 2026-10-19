@@ -31,8 +31,33 @@ export function parseFlowToText(flowData: Record<string, any>): string {
     parts.push(`Items: [${itemsFormatted}]`);
   }
 
+  if (flowData.order_ref) {
+    parts.push(`Order Ref: ${flowData.order_ref}`);
+  }
+
+  if (flowData.payment_method) {
+    const methodStr = flowData.payment_method === 'momo'
+      ? `Mobile Money (${flowData.momo_network || 'MoMo'}: ${flowData.momo_number || 'N/A'})`
+      : 'Cash on Delivery';
+    parts.push(`Payment: ${methodStr}`);
+  }
+
   // Format any remaining key-values
-  const handledKeys = new Set(['screen', 'flow_screen', 'action', 'selected_product', 'product_name', 'product_id', 'quantity', 'qty', 'items']);
+  const handledKeys = new Set([
+    'screen',
+    'flow_screen',
+    'action',
+    'selected_product',
+    'product_name',
+    'product_id',
+    'quantity',
+    'qty',
+    'items',
+    'order_ref',
+    'payment_method',
+    'momo_network',
+    'momo_number',
+  ]);
   const customEntries: string[] = [];
 
   for (const [key, value] of Object.entries(flowData)) {
