@@ -71,8 +71,8 @@ export class WabaWebhookController {
       for (const change of changes) {
         const value = change.value;
 
-        console.log(JSON.stringify(value))
-        console.log("yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy")
+        // console.log(JSON.stringify(value))
+        // console.log("yyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyyy")
 
         if (!value || !value.messages) continue;
 
@@ -104,25 +104,77 @@ export class WabaWebhookController {
         // Process all incoming messages in parallel for throughput
         await Promise.all(
           value.messages.map(async (message: any) => {
-            const rawPhone = (message.from || '').trim();
-            console.log(rawPhone)
-            console.log("bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb");
+            const matchingContact =
+              value.contacts?.find(
+                (c: any) =>
+                  (message.from && c.wa_id === message.from) ||
+                  (message.from_user_id && c.user_id === message.from_user_id),
+              ) || value.contacts?.[0];
 
-            let cleanPhone = rawPhone.replace(/[^\d+]/g, '');
-            if (cleanPhone.startsWith('+')) {
-              cleanPhone = cleanPhone.slice(1);
+            const recipientId = (
+              message.recipient_id ||
+              message.from ||
+              matchingContact?.wa_id ||
+              ''
+            ).trim();
+
+            const recipientUserId = (
+              message.recipient_user_id ||
+              message.from_user_id ||
+              message.user_id ||
+              matchingContact?.user_id ||
+              ''
+            ).trim();
+
+            let buyerPhone = '';
+
+            // Check if user shared their contact phone number via request_contact_info response
+            const sharedContactPhone =
+              message.contact_request?.phone_number ||
+              message.interactive?.contact_request?.phone_number ||
+              (matchingContact?.wa_id && matchingContact.wa_id.length >= 9 ? matchingContact.wa_id : '');
+
+            if (sharedContactPhone) {
+              let cleanPhone = sharedContactPhone.replace(/[^\d+]/g, '');
+              if (cleanPhone.startsWith('+')) cleanPhone = cleanPhone.slice(1);
+              if (cleanPhone.startsWith('0') && cleanPhone.length === 10) {
+                cleanPhone = '233' + cleanPhone.slice(1);
+              } else if (!cleanPhone.startsWith('0') && cleanPhone.length === 9) {
+                cleanPhone = '233' + cleanPhone;
+              }
+              buyerPhone = cleanPhone ? `+${cleanPhone}` : '';
             }
-            if (cleanPhone.startsWith('0') && cleanPhone.length === 10) {
-              cleanPhone = '233' + cleanPhone.slice(1);
-            } else if (!cleanPhone.startsWith('0') && cleanPhone.length === 9) {
-              cleanPhone = '233' + cleanPhone;
+
+            if (!buyerPhone && recipientId) {
+              if (/^[A-Za-z]{2}\./.test(recipientId)) {
+                buyerPhone = recipientId;
+              } else {
+                let cleanPhone = recipientId.replace(/[^\d+]/g, '');
+                if (cleanPhone.startsWith('+')) {
+                  cleanPhone = cleanPhone.slice(1);
+                }
+                if (cleanPhone.startsWith('0') && cleanPhone.length === 10) {
+                  cleanPhone = '233' + cleanPhone.slice(1);
+                } else if (!cleanPhone.startsWith('0') && cleanPhone.length === 9) {
+                  cleanPhone = '233' + cleanPhone;
+                }
+                buyerPhone = cleanPhone ? `+${cleanPhone}` : '';
+              }
+            } else if (!buyerPhone && recipientUserId) {
+              buyerPhone = recipientUserId;
             }
-            const buyerPhone = cleanPhone ? `+${cleanPhone}` : '';
+
+            console.log("pppppppppppppppppppppppppp")
+            console.log(buyerPhone);
+            console.log("pppppppppppppppppppppppppp")
 
             let messageText = '';
             let flowData: Record<string, any> | undefined;
 
-            if (message.type === 'text' && message.text?.body) {
+            // If user just shared contact info via request_contact_info button
+            if (message.contact_request || message.interactive?.contact_request || message.interactive?.button_reply?.id === 'request_contact_info' || message.type === 'contact_request') {
+              messageText = 'SHOP'; // Immediately trigger the catalog flow!
+            } else if (message.type === 'text' && message.text?.body) {
               messageText = message.text.body;
             } else if (message.type === 'interactive') {
               if (message.interactive?.button_reply) {

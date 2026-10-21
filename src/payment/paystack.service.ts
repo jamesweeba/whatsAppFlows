@@ -168,6 +168,61 @@ export class PaystackService {
   }
 
   /**
+   * Initialize a standard Paystack transaction to get an authorization/checkout URL for card payments.
+   */
+  async initializeCardPayment(params: {
+    amount: number;
+    email: string;
+    reference: string;
+    callbackUrl?: string;
+  }): Promise<{ success: boolean; authorizationUrl?: string; message?: string }> {
+    const secretKey = process.env.PAYSTACK_SECRET_KEY;
+    const amountInPesewas = Math.round(params.amount * 100);
+
+    if (!secretKey || secretKey.startsWith('pk_')) {
+      return {
+        success: true,
+        authorizationUrl: `https://checkout.paystack.com/${params.reference}`,
+      };
+    }
+
+    try {
+      const response = await fetch(`${this.baseUrl}/transaction/initialize`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${secretKey}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          amount: amountInPesewas,
+          email: params.email || 'customer@orders.marketix.app',
+          reference: params.reference,
+          currency: 'GHS',
+          callback_url: params.callbackUrl,
+        }),
+      });
+
+      const data: any = await response.json();
+      if (!response.ok || !data.status) {
+        return {
+          success: false,
+          message: data.message || 'Payment initialization failed',
+        };
+      }
+
+      return {
+        success: true,
+        authorizationUrl: data.data?.authorization_url,
+      };
+    } catch (err: any) {
+      return {
+        success: false,
+        message: err.message || 'Error initializing card payment',
+      };
+    }
+  }
+
+  /**
    * Verify HMAC SHA-512 webhook signature from Paystack (x-paystack-signature header).
    */
   verifyWebhookSignature(rawBody: string | Buffer, signature: string): boolean {

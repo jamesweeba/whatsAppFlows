@@ -8,6 +8,7 @@ import { parseFlowToText } from './utils/flow-parser.util.js';
 import { FlowService } from '../flow/flow.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { OrderService } from '../order/order.service.js';
+import { InteractiveOrderService } from './interactive-order.service.js';
 
 describe('ChatModule', () => {
   let chatService: ChatService;
@@ -76,6 +77,11 @@ describe('ChatModule', () => {
     createOrder: vi.fn().mockResolvedValue({ id: 'order-1' }),
   };
 
+  const mockInteractiveOrderService = {
+    isBuyerWithoutPhoneNumber: vi.fn().mockReturnValue(false),
+    handleHiddenNumberBuyerInteraction: vi.fn().mockResolvedValue(true),
+  };
+
   beforeEach(async () => {
     const module: TestingModule = await Test.createTestingModule({
       providers: [
@@ -96,6 +102,10 @@ describe('ChatModule', () => {
         {
           provide: OrderService,
           useValue: mockOrderService,
+        },
+        {
+          provide: InteractiveOrderService,
+          useValue: mockInteractiveOrderService,
         },
       ],
     }).compile();

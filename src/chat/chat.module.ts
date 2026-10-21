@@ -7,12 +7,20 @@ import { ChatService } from './chat.service.js';
 import { WabaModule } from '../waba/waba.module.js';
 import { FlowModule } from '../flow/flow.module.js';
 import { OrderModule } from '../order/order.module.js';
+import { PaymentModule } from '../payment/payment.module.js';
+import { InteractiveOrderService } from './interactive-order.service.js';
 import { WabaWebhookController } from '../waba/waba-webhook.controller.js';
 
 @Module({
-  imports: [PrismaModule, WabaModule, forwardRef(() => FlowModule), OrderModule],
+  imports: [
+    PrismaModule,
+    WabaModule,
+    forwardRef(() => FlowModule),
+    OrderModule,
+    PaymentModule,
+  ],
   controllers: [ChatController, WabaWebhookController],
-  providers: [ChatService, AiClassifierService],
-  exports: [ChatService, AiClassifierService],
+  providers: [ChatService, AiClassifierService, InteractiveOrderService],
+  exports: [ChatService, AiClassifierService, InteractiveOrderService],
 })
 export class ChatModule {}

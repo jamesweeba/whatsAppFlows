@@ -144,6 +144,46 @@ describe('WabaService', () => {
     });
   });
 
+  describe('sendRequestContactInfo', () => {
+    it('sends Flow message to hidden-number buyer using recipient instead of to', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ messages: [{ id: 'wamid.hidden.test' }] }),
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      const result = await service.sendRequestContactInfo({
+        phoneNumberId: '1092837465',
+        toPhone: 'GH.989894404158856',
+        flowId: 'flow-hidden-123',
+        flowToken: 'tenant-123:GH.989894404158856:12345678',
+        flowCta: 'Browse & Order',
+        screen: 'PRODUCT_SELECT',
+        headerText: 'Hidden Store',
+        bodyText: 'Welcome! Tap below to open catalog:',
+        data: {
+          products: [{ id: 'prod-1', title: 'Tomatoes', description: '₵2.00 · Per KG' }],
+        },
+      });
+
+      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(result).toEqual({ messageId: 'wamid.hidden.test' });
+      // Crucial requirement: hidden numbers must use "recipient" and not "to"
+      expect(requestBody.recipient).toBe('GH.989894404158856');
+      expect(requestBody.to).toBeUndefined();
+      expect(requestBody.recipient_type).toBe('individual');
+      expect(requestBody.type).toBe('interactive');
+      expect(requestBody.interactive.type).toBe('flow');
+      expect(requestBody.interactive.header.text).toBe('Hidden Store');
+      expect(requestBody.interactive.body.text).toBe('Welcome! Tap below to open catalog:');
+      expect(requestBody.interactive.action.name).toBe('flow');
+      expect(requestBody.interactive.action.parameters.flow_id).toBe('flow-hidden-123');
+      expect(requestBody.interactive.action.parameters.flow_cta).toBe('Browse & Order');
+      expect(requestBody.interactive.action.parameters.flow_action_payload.screen).toBe('PRODUCT_SELECT');
+      expect(requestBody.interactive.action.parameters.flow_action_payload.data.products).toHaveLength(1);
+    });
+  });
+
   describe('sendTypingIndicator', () => {
     it('sends status read and typing indicator to Meta Graph API', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
@@ -167,6 +207,17 @@ describe('WabaService', () => {
           type: 'text',
         },
       });
+    });
+  });
+
+  describe('formatRecipientPhone', () => {
+    it('formats local Ghanaian numbers into international format without plus', () => {
+      expect(service.formatRecipientPhone('0245655799')).toBe('233245655799');
+      expect(service.formatRecipientPhone('+233245655799')).toBe('233245655799');
+    });
+
+    it('preserves WhatsApp BSUID intact', () => {
+      expect(service.formatRecipientPhone('GH.989894404158856')).toBe('GH.989894404158856');
     });
   });
 });

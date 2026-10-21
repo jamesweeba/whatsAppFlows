@@ -1,4 +1,4 @@
-import { Injectable, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { BuyerIntent, MessageSender, MessageSource, Tenant, Product, OrderStatus } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { AiClassifierService } from './ai-classifier.service.js';
@@ -7,9 +7,12 @@ import { parseFlowToText } from './utils/flow-parser.util.js';
 import { FlowService } from '../flow/flow.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { OrderService } from '../order/order.service.js';
+import { InteractiveOrderService } from './interactive-order.service.js';
 
 @Injectable()
 export class ChatService {
+  private readonly logger = new Logger(ChatService.name);
+
   /**
    * Tracks the last time an order flow was sent to each buyer (keyed by tenantId:buyerPhone).
    * Used to enforce a 15-minute cooldown so the flow is not spammed on every message.
@@ -23,6 +26,7 @@ export class ChatService {
     private readonly wabaService: WabaService,
     private readonly flowService: FlowService,
     private readonly orderService: OrderService,
+    private readonly interactiveOrderService: InteractiveOrderService,
   ) { }
 
   /**
@@ -68,6 +72,7 @@ export class ChatService {
    */
   async processIncomingMessage(dto: ProcessMessageDto) {
 
+
     let messageText = dto.text || '';
     let source = dto.source || MessageSource.TEXT;
 
@@ -99,6 +104,65 @@ export class ChatService {
 
     // 2. Fetch or create ChatSession
     const session = await this.getOrCreateSession(dto.tenantId, dto.buyerPhone);
+
+    // If buyer has a hidden phone number (BSUID e.g. GH.989894404158856),
+    // route to dedicated interactive conversation method (bypassing WhatsApp Flow)
+    if (this.interactiveOrderService.isBuyerWithoutPhoneNumber(dto.buyerPhone)) {
+      this.logger.log(`[BSUID] Hidden-number buyer detected: "${dto.buyerPhone}" for tenantId: ${dto.tenantId}`);
+
+      if (!tenant) {
+        this.logger.error(`[BSUID] Cannot handle hidden-number buyer: tenant ${dto.tenantId} not found in database.`);
+        return { session, message: null, classification: null, systemResponse: null };
+      }
+
+      if (!tenant.whatsappPhoneNumberId) {
+        this.logger.error(
+          `[BSUID] Cannot dispatch response: tenant "${tenant.name}" (${tenant.id}) has no whatsappPhoneNumberId configured. Please complete WhatsApp onboarding.`,
+        );
+        return { session, message: null, classification: null, systemResponse: null };
+      }
+
+      const buyerMessage = await this.prisma.chatMessage.create({
+        data: {
+          sessionId: session.id,
+          sender: dto.sender || MessageSender.BUYER,
+          source,
+          text: messageText,
+        },
+      });
+
+      this.logger.log(`[BSUID] Dispatching handleHiddenNumberBuyerInteraction for "${dto.buyerPhone}"`);
+
+      await this.interactiveOrderService.handleHiddenNumberBuyerInteraction({
+        tenant,
+        buyerPhone: dto.buyerPhone,
+        sessionId: session.id,
+        messageText,
+      });
+
+      const systemResponse = await this.prisma.chatMessage.create({
+        data: {
+          sessionId: session.id,
+          sender: MessageSender.SYSTEM,
+          source: MessageSource.TEXT,
+          text: 'Processed via interactive chatbot flow',
+          detectedIntent: BuyerIntent.VIEW_CATALOG,
+        },
+      });
+
+      return {
+        session,
+        message: buyerMessage,
+        classification: {
+          intent: BuyerIntent.VIEW_CATALOG,
+          confidence: 1,
+          isOutOfBounds: false,
+        },
+        systemResponse,
+      };
+    }
+
+
 
     // 3. Retrieve recent 5 messages for history context
     const recentMessages = await this.prisma.chatMessage.findMany({
@@ -301,7 +365,10 @@ export class ChatService {
 
           const flowId = process.env.META_FLOW_ID;
 
+
           if (flowId && cooldownExpired) {
+
+
             const firstScreen = process.env.META_FLOW_FIRST_SCREEN || 'PRODUCT_SELECT';
             try {
               const flowData = await this.flowService.buildFlowInitData(tenant.id, firstScreen);
