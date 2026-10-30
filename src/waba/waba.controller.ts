@@ -32,7 +32,7 @@ export class WabaController {
   ) {
     const tenant = await this.tenantService.findByUser(req.user.id);
     const verifiedName = dto.verifiedName || tenant.name;
-    const countryCode = dto.countryCode || tenant.countryCode
+    const countryCode = dto.countryCode || tenant.countryCode;
 
     // Clean phone number: remove leading + or country code if user provided full number
     let localNumber = tenant.whatsappNumber.replace(/^\+/, '');
@@ -40,8 +40,6 @@ export class WabaController {
       localNumber = localNumber.slice(countryCode.length);
     }
     localNumber = localNumber.replace(/^0+/, '');
-
-    console.log(localNumber, 'localNumber........................', verifiedName);
 
     const metaRes = await this.wabaService.addPhoneNumberToWaba({
       countryCode,

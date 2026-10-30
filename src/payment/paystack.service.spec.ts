@@ -1,3 +1,4 @@
+import { createHmac } from 'crypto';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { PaystackService } from './paystack.service.js';
 
@@ -45,8 +46,9 @@ describe('PaystackService', () => {
   });
 
   describe('initiateMoMoCharge', () => {
-    it('simulates charge if PAYSTACK_SECRET_KEY is missing', async () => {
+    it('fails closed instead of simulating a charge when PAYSTACK_SECRET_KEY is missing', async () => {
       delete process.env.PAYSTACK_SECRET_KEY;
+      vi.stubGlobal('fetch', vi.fn());
 
       const result = await service.initiateMoMoCharge({
         amount: 25.5,
@@ -56,10 +58,25 @@ describe('PaystackService', () => {
         reference: 'MX-9001',
       });
 
-      expect(result.success).toBe(true);
-      expect(result.status).toBe('pay_offline');
-      expect(result.reference).toBe('MX-9001');
-      expect(result.displayText).toContain('0241234567');
+      expect(result.success).toBe(false);
+      expect(result.status).toBe('failed');
+      expect(result.message).toContain('not configured');
+      expect(globalThis.fetch).not.toHaveBeenCalled();
+    });
+
+    it('refuses to charge with a public key', async () => {
+      process.env.PAYSTACK_SECRET_KEY = 'pk_test_fake';
+
+      const result = await service.initiateMoMoCharge({
+        amount: 1,
+        momoNumber: '0241234567',
+        provider: 'mtn',
+        email: 'x@y.z',
+        reference: 'MX-1',
+      });
+
+      expect(result.success).toBe(false);
+      expect(result.message).toContain('misconfigured');
     });
 
     it('calls Paystack API with amount in pesewas and returns result', async () => {
@@ -149,15 +166,34 @@ describe('PaystackService', () => {
     });
   });
 
+  describe('initializeCardPayment', () => {
+    it('does not fabricate a checkout link when the gateway is unavailable', async () => {
+      delete process.env.PAYSTACK_SECRET_KEY;
+
+      const result = await service.initializeCardPayment({ amount: 10, email: 'x@y.z', reference: 'MX-1' });
+
+      expect(result.success).toBe(false);
+      expect(result.authorizationUrl).toBeUndefined();
+    });
+  });
+
   describe('verifyWebhookSignature', () => {
     it('verifies valid HMAC SHA512 signature', () => {
       process.env.PAYSTACK_SECRET_KEY = 'test_secret';
       const body = JSON.stringify({ event: 'charge.success' });
-      const crypto = require('crypto');
-      const validSig = crypto.createHmac('sha512', 'test_secret').update(body).digest('hex');
+      const validSig = createHmac('sha512', 'test_secret').update(body).digest('hex');
 
       expect(service.verifyWebhookSignature(body, validSig)).toBe(true);
       expect(service.verifyWebhookSignature(body, 'invalid_sig')).toBe(false);
+      expect(service.verifyWebhookSignature(body, undefined)).toBe(false);
+    });
+
+    it('rejects every webhook when the secret key is not configured', () => {
+      delete process.env.PAYSTACK_SECRET_KEY;
+      const body = JSON.stringify({ event: 'charge.success' });
+      const sig = createHmac('sha512', 'anything').update(body).digest('hex');
+
+      expect(service.verifyWebhookSignature(body, sig)).toBe(false);
     });
   });
 });

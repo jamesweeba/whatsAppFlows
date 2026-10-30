@@ -1,23 +1,67 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { BuyerIntent, MessageSender, MessageSource, Tenant, Product, OrderStatus } from '@prisma/client';
-import { PrismaService } from '../prisma/prisma.service.js';
-import { AiClassifierService } from './ai-classifier.service.js';
-import { ProcessMessageDto } from './dto/process-message.dto.js';
-import { parseFlowToText } from './utils/flow-parser.util.js';
+import { BuyerIntent, MessageSender, MessageSource, Product, Tenant } from '@prisma/client';
+import { ghCedis } from '../common/money.util.js';
+import { isHiddenNumber } from '../common/phone.util.js';
 import { FlowService } from '../flow/flow.service.js';
-import { WabaService } from '../waba/waba.service.js';
+import { formatOrderReceipt } from '../order/order-receipt.js';
 import { OrderService } from '../order/order.service.js';
+import { PrismaService } from '../prisma/prisma.service.js';
+import { TenantService } from '../tenant/tenant.service.js';
+import { WabaService, WELCOME_BODY_TEXT, WELCOME_BUTTON_IDS } from '../waba/waba.service.js';
+import { AiClassifierService, ClassificationResult } from './ai-classifier.service.js';
+import { ProcessMessageDto } from './dto/process-message.dto.js';
 import { InteractiveOrderService } from './interactive-order.service.js';
+import { parseFlowToText } from './utils/flow-parser.util.js';
+
+type TenantWithProducts = Tenant & { products: Product[] };
+
+/** What we are about to send the buyer. The stored system message is always this text. */
+interface Reply {
+  kind: 'text' | 'flow' | 'buttons';
+  text: string;
+  cta?: string;
+}
+
+/** Copy used when the ordering Flow is available, keyed by detected intent. */
+const FLOW_COPY: Record<BuyerIntent, { body: (store: string) => string; cta: string }> = {
+  GREETING: {
+    body: (s) => `Hi 👋 Welcome to *${s}*! Tap below to browse our products and place your order.`,
+    cta: 'Shop Now',
+  },
+  VIEW_CATALOG: {
+    body: (s) => `🛍️ Browse everything *${s}* has in stock and order right here.`,
+    cta: 'Browse Products',
+  },
+  ORDER_INTENT: {
+    body: (s) => `🛒 Ready to order? Browse all available products from *${s}* and place your order right here!`,
+    cta: 'Order Now',
+  },
+  PRODUCT_INQUIRY: {
+    body: (s) => `🔍 Browse all our in-stock products from *${s}* and select exactly what you need!`,
+    cta: 'Browse Products',
+  },
+  STOCK_CHECK: {
+    body: (s) => `🔍 Browse all our in-stock products from *${s}* and select exactly what you need!`,
+    cta: 'Browse Products',
+  },
+  HUMAN_SUPPORT: {
+    body: () => '🤝 To get the fastest help, please place your order through our order form. A team member will follow up with you on WhatsApp.',
+    cta: 'Open Order Form',
+  },
+  OUT_OF_BOUNDS: {
+    body: (s) => `👋 I can only help with orders from *${s}*. Tap the button below to browse our products and place an order!`,
+    cta: 'Browse & Order',
+  },
+};
+
+const FLOW_COOLDOWN_MS = 15 * 60 * 1000;
+const HISTORY_CONTEXT_SIZE = 5;
 
 @Injectable()
 export class ChatService {
   private readonly logger = new Logger(ChatService.name);
 
-  /**
-   * Tracks the last time an order flow was sent to each buyer (keyed by tenantId:buyerPhone).
-   * Used to enforce a 15-minute cooldown so the flow is not spammed on every message.
-   */
-  private readonly flowCooldownMs = 15 * 60 * 1000; // 15 minutes
+  /** Last time the ordering Flow was sent to a buyer (tenantId:buyerPhone), to avoid spamming it. */
   private readonly lastFlowSent = new Map<string, number>();
 
   constructor(
@@ -27,776 +71,481 @@ export class ChatService {
     private readonly flowService: FlowService,
     private readonly orderService: OrderService,
     private readonly interactiveOrderService: InteractiveOrderService,
-  ) { }
+    private readonly tenantService: TenantService,
+  ) {}
 
-  /**
-   * Clear the 15-minute order flow cooldown for a buyer-tenant pair.
-   * Called when an order is completed, allowing the buyer to launch a fresh flow immediately.
-   */
   clearCooldown(tenantId: string, buyerPhone: string) {
-    this.lastFlowSent.delete(`${tenantId}:${buyerPhone}`);
+    this.lastFlowSent.delete(this.cooldownKey(tenantId, buyerPhone));
   }
 
   /**
-   * Get an active chat session (where orderCompleted is false) or create a new one.
-   * When an order is completed, the previous session is marked orderCompleted=true,
-   * so the buyer's next interaction will automatically create a brand new session.
+   * Get the active chat session (orderCompleted = false) or create a new one.
    */
   async getOrCreateSession(tenantId: string, buyerPhone: string) {
-    let session = await this.prisma.chatSession.findFirst({
-      where: {
-        tenantId,
-        buyerPhone,
-        orderCompleted: false,
-      },
+    const existing = await this.prisma.chatSession.findFirst({
+      where: { tenantId, buyerPhone, orderCompleted: false },
       orderBy: { createdAt: 'desc' },
     });
-
-    if (!session) {
-      session = await this.prisma.chatSession.create({
-        data: {
-          tenantId,
-          buyerPhone,
-          orderCompleted: false,
-        },
-      });
-    }
-
-    return session;
+    return existing ?? this.prisma.chatSession.create({ data: { tenantId, buyerPhone, orderCompleted: false } });
   }
 
   /**
-   * Process an incoming text message or WhatsApp Flow selection from a buyer.
-   * Parses flow payloads, saves message to history, runs AI intent classification,
-   * updates session state, and dispatches automated response to buyer on WhatsApp.
+   * Handle one inbound buyer message: persist it, work out what to say, say it, and
+   * persist exactly what was said so the vendor dashboard mirrors the WhatsApp thread.
    */
   async processIncomingMessage(dto: ProcessMessageDto) {
+    const { text: messageText, source } = this.normalizeIncoming(dto);
 
-
-    let messageText = dto.text || '';
-    let source = dto.source || MessageSource.TEXT;
-
-    // If flowData is provided, convert it into readable text and set source
-    if (dto.flowData && Object.keys(dto.flowData).length > 0) {
-      source = MessageSource.FLOW_SELECTION;
-      const parsedFlowText = parseFlowToText(dto.flowData);
-      messageText = messageText
-        ? `${messageText} | ${parsedFlowText}`
-        : parsedFlowText;
+    if (dto.incomingMessageId && (await this.isDuplicate(dto.incomingMessageId))) {
+      this.logger.log(`Skipping duplicate WhatsApp message ${dto.incomingMessageId}`);
+      return { duplicate: true, session: null, message: null, classification: null, systemResponse: null };
     }
 
-    if (!messageText.trim()) {
-      messageText = 'Empty message';
-    }
-
-    // 1. Fetch tenant early (used for typing indicator, response generation, and WhatsApp dispatch)
     const tenant = await this.prisma.tenant.findUnique({
       where: { id: dto.tenantId },
       include: { products: true },
     });
-
-    // 1b. Immediately display "typing..." indicator and mark message as read on WhatsApp
-    if (dto.incomingMessageId && tenant?.whatsappPhoneNumberId) {
-      this.wabaService
-        .sendTypingIndicator(tenant.whatsappPhoneNumberId, dto.incomingMessageId)
-        .catch(() => { });
+    if (!tenant) {
+      throw new NotFoundException(`Tenant ${dto.tenantId} not found.`);
     }
 
-    // 2. Fetch or create ChatSession
+    if (dto.incomingMessageId && tenant.whatsappPhoneNumberId) {
+      this.wabaService.sendTypingIndicator(tenant.whatsappPhoneNumberId, dto.incomingMessageId).catch(() => {});
+    }
+
     const session = await this.getOrCreateSession(dto.tenantId, dto.buyerPhone);
 
-    // If buyer has a hidden phone number (BSUID e.g. GH.989894404158856),
-    // route to dedicated interactive conversation method (bypassing WhatsApp Flow)
-    if (this.interactiveOrderService.isBuyerWithoutPhoneNumber(dto.buyerPhone)) {
-      this.logger.log(`[BSUID] Hidden-number buyer detected: "${dto.buyerPhone}" for tenantId: ${dto.tenantId}`);
+    if (isHiddenNumber(dto.buyerPhone)) {
+      return this.handleHiddenNumberBuyer(tenant, session, dto, messageText, source);
+    }
 
-      if (!tenant) {
-        this.logger.error(`[BSUID] Cannot handle hidden-number buyer: tenant ${dto.tenantId} not found in database.`);
-        return { session, message: null, classification: null, systemResponse: null };
-      }
+    const classification = await this.classify(session.id, messageText);
 
-      if (!tenant.whatsappPhoneNumberId) {
-        this.logger.error(
-          `[BSUID] Cannot dispatch response: tenant "${tenant.name}" (${tenant.id}) has no whatsappPhoneNumberId configured. Please complete WhatsApp onboarding.`,
-        );
-        return { session, message: null, classification: null, systemResponse: null };
-      }
+    const buyerMessage = await this.saveMessage(session.id, {
+      sender: dto.sender || MessageSender.BUYER,
+      source,
+      text: messageText,
+      whatsappMessageId: dto.incomingMessageId,
+      flowData: dto.flowData,
+      detectedIntent: classification.intent,
+      confidenceScore: classification.confidence,
+      rawAiResponse: classification.rawResponse,
+    });
 
-      const buyerMessage = await this.prisma.chatMessage.create({
-        data: {
-          sessionId: session.id,
-          sender: dto.sender || MessageSender.BUYER,
-          source,
-          text: messageText,
-        },
-      });
+    const orderRef = dto.flowData?.order_ref ? String(dto.flowData.order_ref).trim() : null;
+    let reply: Reply | null;
 
-      this.logger.log(`[BSUID] Dispatching handleHiddenNumberBuyerInteraction for "${dto.buyerPhone}"`);
+    if (orderRef) {
+      reply = { kind: 'text', text: await this.completeFlowOrder(tenant, session.id, orderRef, dto.buyerPhone) };
+    } else if (dto.flowData) {
+      reply = null; // intermediate Flow step: nothing to say yet
+    } else {
+      reply = await this.buildReply(tenant, dto.buyerPhone, messageText, classification);
+    }
 
-      await this.interactiveOrderService.handleHiddenNumberBuyerInteraction({
-        tenant,
-        buyerPhone: dto.buyerPhone,
-        sessionId: session.id,
-        messageText,
-      });
+    if (reply && tenant.whatsappPhoneNumberId) {
+      reply = await this.dispatch(tenant, dto.buyerPhone, reply);
+    }
 
-      const systemResponse = await this.prisma.chatMessage.create({
-        data: {
-          sessionId: session.id,
+    const systemResponse = reply
+      ? await this.saveMessage(session.id, {
           sender: MessageSender.SYSTEM,
           source: MessageSource.TEXT,
-          text: 'Processed via interactive chatbot flow',
-          detectedIntent: BuyerIntent.VIEW_CATALOG,
-        },
-      });
+          text: reply.text,
+          detectedIntent: classification.intent,
+        })
+      : null;
 
-      return {
-        session,
-        message: buyerMessage,
-        classification: {
-          intent: BuyerIntent.VIEW_CATALOG,
-          confidence: 1,
-          isOutOfBounds: false,
-        },
-        systemResponse,
-      };
-    }
-
-
-
-    // 3. Retrieve recent 5 messages for history context
-    const recentMessages = await this.prisma.chatMessage.findMany({
-      where: { sessionId: session.id },
-      orderBy: { createdAt: 'desc' },
-      take: 5,
-    });
-
-    const historyContext = recentMessages
-      .reverse()
-      .map((msg) => `${msg.sender}: ${msg.text}`);
-
-    // 4. Classify intent with AI
-    let classification = await this.aiClassifierService.classifyMessage(
-      messageText,
-      historyContext,
-    );
-
-
-
-    const shopRequested = ['SHOP', '🛍️ Shop products'].includes(
-      messageText.trim(),
-    );
-    if (shopRequested) {
-      classification = {
-        ...classification,
-        intent: BuyerIntent.VIEW_CATALOG,
-        confidence: 1,
-        isOutOfBounds: false,
-        reasoning: 'Buyer selected the Shop products welcome button.',
-      };
-    }
-
-    // 5. Save buyer ChatMessage in database
-    const buyerMessage = await this.prisma.chatMessage.create({
-      data: {
-        sessionId: session.id,
-        sender: dto.sender || MessageSender.BUYER,
-        source,
-        text: messageText,
-        flowData: dto.flowData ?? undefined,
-        detectedIntent: classification.intent,
-        confidenceScore: classification.confidence,
-        rawAiResponse: (classification.rawResponse ?? undefined) as any,
-      },
-    });
-
-    // 5b. Auto-create or confirm Order in DB if WhatsApp Flow submission payload exists
-    if (dto.flowData?.cart_json) {
-      try {
-        const cartItems = typeof dto.flowData.cart_json === 'string'
-          ? JSON.parse(dto.flowData.cart_json)
-          : dto.flowData.cart_json;
-
-        if (Array.isArray(cartItems) && cartItems.length > 0) {
-          await this.orderService.createOrder(dto.tenantId, {
-            buyerPhone: dto.buyerPhone,
-            sessionId: session.id,
-            items: cartItems.map((item: any) => ({
-              productId: item.id || item.productId || undefined,
-              productName: item.title || item.name || 'Product Item',
-              unitPrice: Number(item.unitPrice || item.price || 0),
-              quantity: Number(item.qty || item.quantity || 1),
-            })),
-          });
-        }
-      } catch (err) {
-        console.warn(`Auto order creation from flow failed: ${err}`);
-      }
-    }
-
-    let completedOrder: any = null;
-
-    if (dto.flowData?.order_ref) {
-      try {
-        const orderRef = String(dto.flowData.order_ref).trim();
-        const paymentMethod = dto.flowData.payment_method;
-        const momoNetwork = dto.flowData.momo_network;
-        const momoNumber = dto.flowData.momo_number;
-
-        const existingOrder = await this.prisma.order.findUnique({
-          where: { orderNumber: orderRef },
-          include: { items: true },
-        });
-
-        if (existingOrder) {
-          completedOrder = existingOrder;
-          const notesArr = [existingOrder.notes];
-          if (paymentMethod === 'momo') {
-            notesArr.push(`MoMo Details: ${momoNetwork || 'MoMo'} (${momoNumber || dto.buyerPhone})`);
-          } else if (paymentMethod === 'cod') {
-            notesArr.push('Payment: Cash on Delivery confirmed');
-          }
-
-          await this.prisma.order.update({
-            where: { id: existingOrder.id },
-            data: {
-              sessionId: session.id,
-              status: paymentMethod === 'momo' ? OrderStatus.AWAITING_PAYMENT : OrderStatus.CONFIRMED,
-              notes: notesArr.filter(Boolean).join(' | '),
-            },
-          });
-        }
-      } catch (orderUpdateErr) {
-        console.warn(`Error updating flow order: ${orderUpdateErr}`);
-      }
-
-      // Reset flow cooldown immediately upon order completion
-      this.clearCooldown(dto.tenantId, dto.buyerPhone);
-    }
-
-    // 6. Generate automated response based on classified intent
-    const responseText = dto.flowData?.order_ref
-      ? this.formatOrderConfirmationMessage(
-        String(dto.flowData.order_ref).trim(),
-        dto.flowData.payment_method,
-        dto.flowData.momo_number,
-        dto.buyerPhone,
-        completedOrder,
-      )
-      : (shopRequested
-        ? 'Opening the product catalog.'
-        : await this.generateResponseForIntent(
-          classification.intent,
-          dto.tenantId,
-          classification.extractedEntities,
-          tenant,
-        ));
-
-    // 7. Save automated system response in database
-    const systemResponse = await this.prisma.chatMessage.create({
-      data: {
-        sessionId: session.id,
-        sender: MessageSender.SYSTEM,
-        source: MessageSource.TEXT,
-        text: responseText,
-        detectedIntent: classification.intent,
-      },
-    });
-
-    // 8. Dispatch automated WhatsApp message back to buyer via Meta Cloud API if tenant is onboarded
-    if (tenant?.whatsappPhoneNumberId) {
-      try {
-        const isOrderConfirmation = !!dto.flowData?.order_ref;
-        const isFlowSubmission = dto.source === MessageSource.FLOW_SELECTION || !!dto.flowData;
-
-        // === INTENTS THAT ALWAYS LAUNCH THE FLOW ===
-        const flowIntents = new Set<BuyerIntent>([
-          BuyerIntent.GREETING,
-          BuyerIntent.VIEW_CATALOG,
-          BuyerIntent.ORDER_INTENT,
-          BuyerIntent.PRODUCT_INQUIRY,
-          BuyerIntent.STOCK_CHECK,
-          BuyerIntent.HUMAN_SUPPORT,
-          BuyerIntent.OUT_OF_BOUNDS,
-        ]);
-
-        if (isOrderConfirmation) {
-          // Order was just placed via the flow — send confirmation text only
-          await this.wabaService.sendTextMessage(
-            tenant.whatsappPhoneNumberId,
-            dto.buyerPhone,
-            responseText,
-          );
-        } else if (isFlowSubmission) {
-          // Intermediate flow step (not final order) — don't send anything extra
-        } else if (shopRequested || flowIntents.has(classification.intent)) {
-          // Determine message copy based on intent
-          const isGreeting = classification.intent === BuyerIntent.GREETING || shopRequested;
-          const isOutOfScope = classification.intent === BuyerIntent.OUT_OF_BOUNDS;
-          const isHumanSupport = classification.intent === BuyerIntent.HUMAN_SUPPORT;
-
-          let bodyText: string;
-          let ctaLabel: string;
-
-          if (isGreeting) {
-            bodyText = `Hi 👋 Welcome to *${tenant.name}*! Tap below to browse fresh groceries and place your order.`;
-            ctaLabel = 'Order Groceries';
-          } else if (isOutOfScope) {
-            bodyText = `👋 I can only help with grocery orders from *${tenant.name}*. Tap the button below to browse our products and place an order!`;
-            ctaLabel = 'Browse & Order';
-          } else if (isHumanSupport) {
-            bodyText = `🤝 To get the fastest help, please place your order through our order form. A team member will follow up with you on WhatsApp.`;
-            ctaLabel = 'Open Order Form';
-          } else if (classification.intent === BuyerIntent.ORDER_INTENT) {
-            bodyText = `🛒 Ready to order? Browse all available groceries from *${tenant.name}* and place your order right here!`;
-            ctaLabel = 'Order Now';
-          } else if (classification.intent === BuyerIntent.PRODUCT_INQUIRY || classification.intent === BuyerIntent.STOCK_CHECK) {
-            bodyText = `🔍 Browse all our in-stock products from *${tenant.name}* and select exactly what you need!`;
-            ctaLabel = 'Browse Products';
-          } else {
-            bodyText = `🛍️ Shop fresh groceries from *${tenant.name}* — delivered to your door!`;
-            ctaLabel = 'Order Groceries';
-          }
-
-          // Cooldown check: only re-send flow if it hasn't been sent in the last 15 minutes
-          const cooldownKey = `${tenant.id}:${dto.buyerPhone}`;
-          const lastSent = this.lastFlowSent.get(cooldownKey) || 0;
-          const cooldownExpired = Date.now() - lastSent > this.flowCooldownMs;
-
-          const flowId = process.env.META_FLOW_ID;
-
-
-          if (flowId && cooldownExpired) {
-
-
-            const firstScreen = process.env.META_FLOW_FIRST_SCREEN || 'PRODUCT_SELECT';
-            try {
-              const flowData = await this.flowService.buildFlowInitData(tenant.id, firstScreen);
-              await this.wabaService.sendFlowMessage({
-                phoneNumberId: tenant.whatsappPhoneNumberId,
-                toPhone: dto.buyerPhone,
-                flowId,
-                flowToken: `${tenant.id}:${dto.buyerPhone}:${Date.now()}`,
-                flowCta: ctaLabel,
-                screen: firstScreen,
-                headerText: tenant.name,
-                bodyText,
-                data: flowData,
-              });
-              this.lastFlowSent.set(cooldownKey, Date.now());
-            } catch (flowErr: any) {
-              console.warn(`Flow dispatch failed (${flowErr?.message || flowErr}). Sending nudge text.`);
-              // Fallback: send a short text nudge if flow fails
-              await this.wabaService.sendTextMessage(
-                tenant.whatsappPhoneNumberId,
-                dto.buyerPhone,
-                bodyText,
-              );
-            }
-          } else if (!flowId) {
-            // No flow configured — fall back to welcome buttons or text
-            try {
-              await this.wabaService.sendWelcomeButtons(
-                tenant.whatsappPhoneNumberId,
-                dto.buyerPhone,
-                tenant.name,
-              );
-            } catch {
-              await this.wabaService.sendTextMessage(
-                tenant.whatsappPhoneNumberId,
-                dto.buyerPhone,
-                bodyText,
-              );
-            }
-          } else {
-            // Flow was sent recently (within cooldown) — send a short nudge instead
-            const nudgeText = `👆 We already sent you the order form just a moment ago! Check your messages above to tap *${ctaLabel}*.`;
-            await this.wabaService.sendTextMessage(
-              tenant.whatsappPhoneNumberId,
-              dto.buyerPhone,
-              nudgeText,
-            );
-          }
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : 'Unknown error';
-        console.warn(`WhatsApp auto-reply dispatch failed: ${message}`);
-      }
-    }
-
-    // 8. Update ChatSession state (mark orderCompleted if final order confirmation)
-    const isFinalOrder = !!dto.flowData?.order_ref;
     const updatedSession = await this.prisma.chatSession.update({
       where: { id: session.id },
       data: {
         lastIntent: classification.intent,
-        orderCompleted: isFinalOrder ? true : session.orderCompleted,
-        updatedAt: new Date(),
+        orderCompleted: orderRef ? true : session.orderCompleted,
       },
     });
 
+    return { duplicate: false, session: updatedSession, message: buyerMessage, classification, systemResponse };
+  }
+
+  // ───────────────────────── Inbound helpers ─────────────────────────
+
+  private normalizeIncoming(dto: ProcessMessageDto): { text: string; source: MessageSource } {
+    let text = dto.text || '';
+    let source = dto.source || MessageSource.TEXT;
+
+    if (dto.flowData && Object.keys(dto.flowData).length > 0) {
+      source = MessageSource.FLOW_SELECTION;
+      const parsed = parseFlowToText(dto.flowData);
+      text = text ? `${text} | ${parsed}` : parsed;
+    }
+
+    return { text: text.trim() || 'Empty message', source };
+  }
+
+  private async isDuplicate(whatsappMessageId: string): Promise<boolean> {
+    const existing = await this.prisma.chatMessage.findUnique({ where: { whatsappMessageId } });
+    return Boolean(existing);
+  }
+
+  private saveMessage(
+    sessionId: string,
+    data: {
+      sender: MessageSender;
+      source: MessageSource;
+      text: string;
+      whatsappMessageId?: string;
+      flowData?: Record<string, any>;
+      detectedIntent?: BuyerIntent;
+      confidenceScore?: number;
+      rawAiResponse?: Record<string, any>;
+    },
+  ) {
+    return this.prisma.chatMessage.create({
+      data: {
+        sessionId,
+        sender: data.sender,
+        source: data.source,
+        text: data.text,
+        whatsappMessageId: data.whatsappMessageId ?? undefined,
+        flowData: data.flowData ?? undefined,
+        detectedIntent: data.detectedIntent ?? undefined,
+        confidenceScore: data.confidenceScore ?? undefined,
+        rawAiResponse: (data.rawAiResponse ?? undefined) as any,
+      },
+    });
+  }
+
+  /**
+   * Classify the buyer's intent. Welcome-button taps are mapped directly and skip the AI call.
+   */
+  private async classify(sessionId: string, messageText: string): Promise<ClassificationResult> {
+    const button = this.buttonIntent(messageText);
+    if (button) {
+      return { intent: button, confidence: 1, extractedEntities: {}, isOutOfBounds: false, reasoning: 'Welcome button tapped.' };
+    }
+
+    const recent = await this.prisma.chatMessage.findMany({
+      where: { sessionId },
+      orderBy: { createdAt: 'desc' },
+      take: HISTORY_CONTEXT_SIZE,
+    });
+    const history = recent.reverse().map((msg) => `${msg.sender}: ${msg.text}`);
+    return this.aiClassifierService.classifyMessage(messageText, history);
+  }
+
+  private buttonIntent(messageText: string): BuyerIntent | null {
+    switch (messageText.trim()) {
+      case WELCOME_BUTTON_IDS.SHOP:
+      case '🛍️ Shop products':
+        return BuyerIntent.VIEW_CATALOG;
+      case WELCOME_BUTTON_IDS.HUMAN:
+      case '💬 Talk to us':
+        return BuyerIntent.HUMAN_SUPPORT;
+      case WELCOME_BUTTON_IDS.TRACK:
+      case '📦 Track my order':
+        return BuyerIntent.ORDER_INTENT;
+      default:
+        return null;
+    }
+  }
+
+  private isTrackRequest(messageText: string): boolean {
+    const trimmed = messageText.trim();
+    return trimmed === WELCOME_BUTTON_IDS.TRACK || trimmed === '📦 Track my order';
+  }
+
+  // ───────────────────────── Hidden-number buyers ─────────────────────────
+
+  private async handleHiddenNumberBuyer(
+    tenant: TenantWithProducts,
+    session: { id: string },
+    dto: ProcessMessageDto,
+    messageText: string,
+    source: MessageSource,
+  ) {
+    if (!tenant.whatsappPhoneNumberId) {
+      this.logger.error(`[BSUID] Tenant "${tenant.name}" has no whatsappPhoneNumberId; cannot reply to ${dto.buyerPhone}.`);
+      return { duplicate: false, session, message: null, classification: null, systemResponse: null };
+    }
+
+    const buyerMessage = await this.saveMessage(session.id, {
+      sender: dto.sender || MessageSender.BUYER,
+      source,
+      text: messageText,
+      whatsappMessageId: dto.incomingMessageId,
+    });
+
+    await this.interactiveOrderService.handleHiddenNumberBuyerInteraction({
+      tenant,
+      buyerPhone: dto.buyerPhone,
+      sessionId: session.id,
+      messageText,
+    });
+
+    const systemResponse = await this.saveMessage(session.id, {
+      sender: MessageSender.SYSTEM,
+      source: MessageSource.TEXT,
+      text: 'Handled by the interactive ordering assistant.',
+      detectedIntent: BuyerIntent.VIEW_CATALOG,
+    });
+
     return {
-      session: updatedSession,
+      duplicate: false,
+      session,
       message: buyerMessage,
-      classification,
+      classification: { intent: BuyerIntent.VIEW_CATALOG, confidence: 1, isOutOfBounds: false },
       systemResponse,
     };
   }
 
-  /**
-   * Generate an automated response for the buyer based on detected AI intent and tenant context.
-   * Accepts the pre-fetched tenant (with products) to avoid a redundant DB query.
-   */
-  private async generateResponseForIntent(
-    intent: BuyerIntent,
-    tenantId: string,
-    extractedEntities?: { productName?: string | null; quantity?: number | null },
-    prefetchedTenant?: (Tenant & { products: Product[] }) | null,
-  ): Promise<string> {
-    const tenant =
-      prefetchedTenant ??
-      (await this.prisma.tenant.findUnique({
-        where: { id: tenantId },
-        include: { products: true },
-      }));
+  // ───────────────────────── Replies ─────────────────────────
 
-    const tenantName = tenant?.name || 'our store';
-    const products = tenant?.products || [];
+  /**
+   * A Flow order was completed (DONE screen). Link it to this chat and build the receipt.
+   */
+  private async completeFlowOrder(tenant: Tenant, sessionId: string, orderRef: string, buyerPhone: string): Promise<string> {
+    this.clearCooldown(tenant.id, buyerPhone);
+
+    const order = await this.orderService.findByOrderNumber(orderRef);
+    if (!order || order.tenantId !== tenant.id) {
+      this.logger.warn(`Order ${orderRef} not found for tenant ${tenant.id}; sending generic confirmation.`);
+      return `🧾 Order ${orderRef} received. We'll contact you on WhatsApp with updates.`;
+    }
+
+    await this.orderService.linkSession(order.id, sessionId);
+    return formatOrderReceipt(order);
+  }
+
+  private async buildReply(
+    tenant: TenantWithProducts,
+    buyerPhone: string,
+    messageText: string,
+    classification: ClassificationResult,
+  ): Promise<Reply> {
+    if (this.isTrackRequest(messageText)) {
+      return { kind: 'text', text: await this.trackLatestOrder(tenant, buyerPhone) };
+    }
+
+    const intent = classification.intent;
+
+    if (this.flowService.isConfigured()) {
+      const copy = FLOW_COPY[intent] ?? FLOW_COPY.OUT_OF_BOUNDS;
+      const lastSent = this.lastFlowSent.get(this.cooldownKey(tenant.id, buyerPhone)) || 0;
+      if (Date.now() - lastSent > FLOW_COOLDOWN_MS) {
+        return { kind: 'flow', text: copy.body(tenant.name), cta: copy.cta };
+      }
+      return {
+        kind: 'text',
+        text: `👆 We already sent you the order form a moment ago. Scroll up and tap *${copy.cta}* to continue.`,
+      };
+    }
+
+    const shopButton = intent === BuyerIntent.VIEW_CATALOG && this.buttonIntent(messageText) !== null;
+    if (intent === BuyerIntent.GREETING || shopButton) {
+      return { kind: 'buttons', text: WELCOME_BODY_TEXT };
+    }
+
+    return { kind: 'text', text: this.generateResponseForIntent(intent, tenant, classification.extractedEntities) };
+  }
+
+  /**
+   * Send the reply over WhatsApp. If a richer message type fails, fall back to plain text
+   * with the same copy, so the stored message still matches what the buyer saw.
+   */
+  private async dispatch(tenant: TenantWithProducts, buyerPhone: string, reply: Reply): Promise<Reply> {
+    const phoneNumberId = tenant.whatsappPhoneNumberId!;
+    try {
+      switch (reply.kind) {
+        case 'flow':
+          try {
+            await this.flowService.dispatchFlow({ tenant, toPhone: buyerPhone, cta: reply.cta!, bodyText: reply.text });
+            this.lastFlowSent.set(this.cooldownKey(tenant.id, buyerPhone), Date.now());
+          } catch (err: any) {
+            this.logger.warn(`Flow dispatch failed (${err?.message || err}); sending text instead.`);
+            await this.wabaService.sendTextMessage(phoneNumberId, buyerPhone, reply.text);
+          }
+          break;
+        case 'buttons':
+          try {
+            await this.wabaService.sendWelcomeButtons(phoneNumberId, buyerPhone, tenant.name);
+          } catch {
+            await this.wabaService.sendTextMessage(phoneNumberId, buyerPhone, reply.text);
+          }
+          break;
+        default:
+          await this.wabaService.sendTextMessage(phoneNumberId, buyerPhone, reply.text);
+      }
+    } catch (err: any) {
+      this.logger.warn(`WhatsApp auto-reply dispatch failed: ${err?.message || err}`);
+    }
+    return reply;
+  }
+
+  private async trackLatestOrder(tenant: Tenant, buyerPhone: string): Promise<string> {
+    const order = await this.orderService.findLatestForBuyer(tenant.id, buyerPhone);
+    if (!order) {
+      return `📦 You have no orders with *${tenant.name}* yet. Say *hi* to start one!`;
+    }
+    const status = order.status.replace(/_/g, ' ').toLowerCase();
+    return `📦 Your latest order *${order.orderNumber}* (${ghCedis(order.totalAmount)}) is currently *${status}*.`;
+  }
+
+  /**
+   * Plain-text reply used when no ordering Flow is configured.
+   */
+  private generateResponseForIntent(
+    intent: BuyerIntent,
+    tenant: TenantWithProducts,
+    entities?: { productName?: string | null; quantity?: number | null },
+  ): string {
+    const store = tenant.name || 'our store';
+    const products = tenant.products || [];
+    const inStock = products.filter((p) => p.inStock);
+    const matched = this.findProduct(products, entities?.productName);
+    const describe = (p: Product) => `${p.image ?? '🛒'} *${p.name}*`;
 
     switch (intent) {
       case BuyerIntent.GREETING:
-        return `Hi 👋 What would you like to do today?`;
+        return WELCOME_BODY_TEXT;
 
       case BuyerIntent.VIEW_CATALOG: {
         if (products.length === 0) {
-          return `🏪 Welcome to *${tenantName}*! Our catalog is currently empty. Please check back soon!`;
+          return `🏪 Welcome to *${store}*! Our catalog is currently empty. Please check back soon!`;
         }
-        const inStock = products.filter((p) => p.inStock);
         const outOfStock = products.filter((p) => !p.inStock);
-        const productList = inStock
-          .map((p) => `${p.image ?? '🛒'} *${p.name}*\n   💰 GH₵${p.price.toFixed(2)}`)
-          .join('\n\n');
-        const outList = outOfStock.length > 0
-          ? `\n\n❌ *Currently Out of Stock:*\n` + outOfStock.map((p) => `${p.image ?? '🛒'} ${p.name}`).join('\n')
+        const list = inStock.map((p) => `${describe(p)}\n   💰 ${ghCedis(p.price)}`).join('\n\n');
+        const outList = outOfStock.length
+          ? `\n\n❌ *Currently Out of Stock:*\n${outOfStock.map((p) => `${p.image ?? '🛒'} ${p.name}`).join('\n')}`
           : '';
-        return `🛍️ *${tenantName} — Product Catalog*\n\n${productList}${outList}\n\n_Reply with a product name to order or ask about it!_`;
+        return `🛍️ *${store} — Product Catalog*\n\n${list}${outList}\n\n_Reply with a product name to order or ask about it!_`;
       }
 
       case BuyerIntent.PRODUCT_INQUIRY:
-        if (extractedEntities?.productName) {
-          const matched = products.find(
-            (p) => p.name.toLowerCase().includes(extractedEntities.productName!.toLowerCase()),
-          );
-          if (matched) {
-            const stockLabel = matched.inStock ? '✅ In Stock' : '❌ Out of Stock';
-            return `${matched.image ?? '🛒'} *${matched.name}*\n💰 Price: GH₵${matched.price.toFixed(2)}\n📦 Status: ${stockLabel}\n\nWould you like to place an order? Just say _"I want to buy ${matched.name}"_`;
-          }
+        if (matched) {
+          const stockLabel = matched.inStock ? '✅ In Stock' : '❌ Out of Stock';
+          return `${describe(matched)}\n💰 Price: ${ghCedis(matched.price)}\n📦 Status: ${stockLabel}\n\nWould you like to place an order? Just say _"I want to buy ${matched.name}"_`;
         }
-        return `🔍 We couldn't find that exact product. Reply *"view catalog"* to see all available items at *${tenantName}*!`;
+        return `🔍 We couldn't find that exact product. Reply *"view catalog"* to see all available items at *${store}*!`;
 
       case BuyerIntent.STOCK_CHECK:
-        if (extractedEntities?.productName) {
-          const matched = products.find(
-            (p) => p.name.toLowerCase().includes(extractedEntities.productName!.toLowerCase()),
-          );
-          if (matched) {
-            return matched.inStock
-              ? `✅ Yes! ${matched.image ?? ''} *${matched.name}* is currently in stock at GH₵${matched.price.toFixed(2)}.`
-              : `❌ Sorry, ${matched.image ?? ''} *${matched.name}* is currently out of stock. Check back soon!`;
-          }
+        if (matched) {
+          return matched.inStock
+            ? `✅ Yes! ${describe(matched)} is currently in stock at ${ghCedis(matched.price)}.`
+            : `❌ Sorry, ${describe(matched)} is currently out of stock. Check back soon!`;
         }
-        const inStockCount = products.filter((p) => p.inStock).length;
-        return `📦 We currently have *${inStockCount} items* in stock and ready to ship! Reply *"view catalog"* to see the full list.`;
+        return `📦 We currently have *${inStock.length} items* in stock and ready to go! Reply *"view catalog"* to see the full list.`;
 
       case BuyerIntent.ORDER_INTENT: {
-        const qty = extractedEntities?.quantity || 1;
-        if (extractedEntities?.productName) {
-          const matched = products.find(
-            (p) => p.name.toLowerCase().includes(extractedEntities.productName!.toLowerCase()),
-          );
-          if (matched) {
-            if (!matched.inStock) {
-              const inStockItems = products.filter((p) => p.inStock);
-              const itemsList = inStockItems.length > 0
-                ? '\n\n📦 *Available Items in Stock:*\n' + inStockItems.map((p) => `• ${p.image ?? '🛒'} *${p.name}* — GH₵${p.price.toFixed(2)}`).join('\n')
-                : '';
-              return `❌ Sorry, ${matched.image ?? ''} *${matched.name}* is currently out of stock.${itemsList}\n\nReply with an item name to order!`;
-            }
-            const total = matched.price * qty;
-            return `🛒 *Order Summary*\n\n${matched.image ?? '🛒'} *${matched.name}*\n   • Quantity: ${qty}\n   • Unit Price: GH₵${matched.price.toFixed(2)}\n   • *Total: GH₵${total.toFixed(2)}*\n\nReply *CONFIRM* to complete your purchase with *${tenantName}*! 🎉`;
-          }
+        if (matched && !matched.inStock) {
+          const alternatives = inStock.length
+            ? `\n\n📦 *Available Items in Stock:*\n${inStock.map((p) => `• ${describe(p)} — ${ghCedis(p.price)}`).join('\n')}`
+            : '';
+          return `❌ Sorry, ${describe(matched)} is currently out of stock.${alternatives}\n\nReply with an item name to order!`;
         }
-
-        const availableProducts = products.filter((p) => p.inStock);
-        if (availableProducts.length === 0) {
-          return `🏪 Welcome to *${tenantName}*! We currently have no items in stock for ordering. Please check back later!`;
+        if (matched) {
+          const qty = entities?.quantity || 1;
+          return `🛒 *Order Summary*\n\n${describe(matched)}\n   • Quantity: ${qty}\n   • Unit Price: ${ghCedis(matched.price)}\n   • *Total: ${ghCedis(matched.price * qty)}*\n\nReply *CONFIRM* to complete your purchase with *${store}*! 🎉`;
         }
-
-        const itemsList = availableProducts
-          .map(
-            (p, index) =>
-              `${index + 1}. ${p.image ?? '🛒'} *${p.name}*\n   💰 Price: GH₵${p.price.toFixed(2)}`,
-          )
-          .join('\n\n');
-
-        return `🛒 *Place an Order — ${tenantName}*\n\nHere are the items available for purchase:\n\n${itemsList}\n\n👉 *To place your order*, reply with the product name and quantity (e.g., _"I want 2 ${availableProducts[0]?.name || 'items'}"_).`;
+        if (inStock.length === 0) {
+          return `🏪 Welcome to *${store}*! We currently have no items in stock for ordering. Please check back later!`;
+        }
+        const list = inStock.map((p, i) => `${i + 1}. ${describe(p)}\n   💰 Price: ${ghCedis(p.price)}`).join('\n\n');
+        return `🛒 *Place an Order — ${store}*\n\nHere are the items available for purchase:\n\n${list}\n\n👉 *To place your order*, reply with the product name and quantity (e.g., _"I want 2 ${inStock[0].name}"_).`;
       }
 
       case BuyerIntent.HUMAN_SUPPORT:
-        return `🤝 You've requested to speak with a representative from *${tenantName}*.\n\nA team member will join this chat shortly. Thank you for your patience! 🙏`;
+        return `🤝 You've requested to speak with a representative from *${store}*.\n\nA team member will join this chat shortly. Thank you for your patience! 🙏`;
 
-      case BuyerIntent.OUT_OF_BOUNDS:
       default:
-        return `👋 Thanks for reaching out to *${tenantName}*!\n\nI can help you with:\n🛍️ Browse catalog\n💬 Product inquiries\n📦 Place an order\n🤝 Talk to support\n\nWhat would you like to do?`;
+        return `👋 Thanks for reaching out to *${store}*!\n\nI can help you with:\n🛍️ Browse catalog\n💬 Product inquiries\n📦 Place an order\n🤝 Talk to support\n\nWhat would you like to do?`;
     }
   }
 
-  /**
-   * Helper to resolve the authenticated vendor user's tenant.
-   */
-  private async getTenantForUser(userId: string) {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { userId },
-    });
-    if (!tenant) {
-      throw new NotFoundException('You do not have a registered shop/tenant.');
-    }
-    return tenant;
+  private findProduct(products: Product[], name?: string | null): Product | undefined {
+    if (!name) return undefined;
+    const needle = name.toLowerCase();
+    return products.find((p) => p.name.toLowerCase().includes(needle));
   }
 
-  /**
-   * List all buyer chat sessions/conversations for the authenticated vendor's shop.
-   * Includes latest message preview and associated orders count.
-   */
-  async getSessionsForVendor(
-    userId: string,
-    page = 1,
-    limit = 20,
-    search?: string,
-  ) {
-    const tenant = await this.getTenantForUser(userId);
-    const skip = (Math.max(1, page) - 1) * limit;
+  private cooldownKey(tenantId: string, buyerPhone: string): string {
+    return `${tenantId}:${buyerPhone}`;
+  }
 
-    const whereClause: any = {
+  // ───────────────────────── Vendor dashboard queries ─────────────────────────
+
+  /**
+   * List buyer conversations for the authenticated vendor's shop.
+   */
+  async getSessionsForVendor(userId: string, page = 1, limit = 20, search?: string) {
+    const tenant = await this.tenantService.findByUser(userId);
+    const where = {
       tenantId: tenant.id,
-      ...(search
-        ? {
-          buyerPhone: { contains: search, mode: 'insensitive' },
-        }
-        : {}),
+      ...(search ? { buyerPhone: { contains: search, mode: 'insensitive' as const } } : {}),
     };
 
     const [total, sessions] = await Promise.all([
-      this.prisma.chatSession.count({ where: whereClause }),
+      this.prisma.chatSession.count({ where }),
       this.prisma.chatSession.findMany({
-        where: whereClause,
-        skip,
+        where,
+        skip: (Math.max(1, page) - 1) * limit,
         take: limit,
         orderBy: { updatedAt: 'desc' },
         include: {
-          messages: {
-            orderBy: { createdAt: 'desc' },
-            take: 1, // latest message preview
-          },
-          orders: {
-            orderBy: { createdAt: 'desc' },
-            include: {
-              items: true,
-            },
-          },
-          _count: {
-            select: {
-              messages: true,
-              orders: true,
-            },
-          },
+          messages: { orderBy: { createdAt: 'desc' }, take: 1 },
+          orders: { orderBy: { createdAt: 'desc' }, include: { items: true } },
+          _count: { select: { messages: true, orders: true } },
         },
       }),
     ]);
 
-    const formattedSessions = sessions.map((session) => ({
-      id: session.id,
-      buyerPhone: session.buyerPhone,
-      lastIntent: session.lastIntent,
-      orderCompleted: session.orderCompleted,
-      createdAt: session.createdAt,
-      updatedAt: session.updatedAt,
-      lastMessage: session.messages[0] || null,
-      totalMessages: session._count.messages,
-      totalOrders: session._count.orders,
-      orders: session.orders,
-    }));
-
     return {
-      data: formattedSessions,
-      meta: {
-        total,
-        page,
-        limit,
-        totalPages: Math.ceil(total / limit),
-      },
+      data: sessions.map((session) => ({
+        id: session.id,
+        buyerPhone: session.buyerPhone,
+        lastIntent: session.lastIntent,
+        orderCompleted: session.orderCompleted,
+        createdAt: session.createdAt,
+        updatedAt: session.updatedAt,
+        lastMessage: session.messages[0] || null,
+        totalMessages: session._count.messages,
+        totalOrders: session._count.orders,
+        orders: session.orders,
+      })),
+      meta: { total, page, limit, totalPages: Math.ceil(total / limit) },
     };
   }
 
   /**
-   * Get complete conversation and all placed orders for a single buyer session.
+   * Full conversation and orders for one session owned by the vendor.
    */
   async getSessionDetailForVendor(userId: string, sessionId: string) {
-    const tenant = await this.getTenantForUser(userId);
-
+    const tenant = await this.tenantService.findByUser(userId);
     const session = await this.prisma.chatSession.findFirst({
-      where: {
-        id: sessionId,
-        tenantId: tenant.id,
-      },
+      where: { id: sessionId, tenantId: tenant.id },
       include: {
-        messages: {
-          orderBy: { createdAt: 'asc' },
-        },
-        orders: {
-          orderBy: { createdAt: 'desc' },
-          include: {
-            items: true,
-          },
-        },
+        messages: { orderBy: { createdAt: 'asc' } },
+        orders: { orderBy: { createdAt: 'desc' }, include: { items: true } },
       },
     });
-
     if (!session) {
-      throw new NotFoundException(
-        `Conversation session "${sessionId}" not found for your shop.`,
-      );
+      throw new NotFoundException(`Conversation session "${sessionId}" not found for your shop.`);
     }
-
     return session;
   }
 
   /**
-   * Get full chat history for a buyer with a specific tenant.
+   * Latest chat history between the vendor's shop and a buyer.
    */
-  async getSessionHistory(tenantId: string, buyerPhone: string) {
+  async getSessionHistory(userId: string, buyerPhone: string) {
+    const tenant = await this.tenantService.findByUser(userId);
     const session = await this.prisma.chatSession.findFirst({
-      where: {
-        tenantId,
-        buyerPhone,
-      },
+      where: { tenantId: tenant.id, buyerPhone },
       orderBy: { createdAt: 'desc' },
-      include: {
-        messages: {
-          orderBy: { createdAt: 'asc' },
-        },
-      },
+      include: { messages: { orderBy: { createdAt: 'asc' } } },
     });
-
     if (!session) {
-      throw new NotFoundException(
-        `No chat history found for buyer "${buyerPhone}" with tenant "${tenantId}".`,
-      );
+      throw new NotFoundException(`No chat history found for buyer "${buyerPhone}".`);
     }
-
     return session;
-  }
-
-  /**
-   * Format the final order confirmation receipt message sent on WhatsApp.
-   * Includes order reference, itemized grocery breakdown with quantities and prices,
-   * items subtotal, delivery fee (for delivery orders), delivery address, grand total,
-   * and payment method instructions.
-   */
-  private formatOrderConfirmationMessage(
-    orderRef: string,
-    paymentMethod?: string,
-    momoNumber?: string,
-    buyerPhone?: string,
-    order?: {
-      totalAmount: number;
-      notes?: string | null;
-      items?: Array<{
-        productName: string;
-        quantity: number;
-        unitPrice: number;
-        totalPrice?: number;
-      }>;
-    } | null,
-  ): string {
-    const lines: string[] = [];
-
-    lines.push(`🧾 *Order ${orderRef} placed successfully!*\n`);
-
-    if (order?.items && order.items.length > 0) {
-      lines.push('📦 *Items Ordered:*');
-      let itemsSubtotal = 0;
-      for (const item of order.items) {
-        const itemTotal =
-          item.totalPrice != null
-            ? item.totalPrice
-            : item.quantity * item.unitPrice;
-        itemsSubtotal += itemTotal;
-        lines.push(`• ${item.quantity}x ${item.productName} — GH₵${itemTotal.toFixed(2)}`);
-      }
-      lines.push('');
-
-      // Check delivery details from order notes or difference
-      let isDelivery = false;
-      let deliveryFee = 0;
-      let deliveryAddress: string | null = null;
-
-      if (order.notes) {
-        if (order.notes.includes('Fulfillment: Delivery')) {
-          isDelivery = true;
-          const addrMatch = order.notes.match(/Address:\s*([^|]+)/i);
-          if (addrMatch) {
-            deliveryAddress = addrMatch[1].trim();
-          }
-        }
-        const feeMatch = order.notes.match(/Delivery Fee:\s*₵?([0-9.]+)/i);
-        if (feeMatch) {
-          deliveryFee = parseFloat(feeMatch[1]);
-        }
-      }
-
-      // If delivery fee wasn't explicitly found in notes, check if total exceeds items subtotal
-      if (!deliveryFee && order.totalAmount > itemsSubtotal) {
-        const diff = Number((order.totalAmount - itemsSubtotal).toFixed(2));
-        if (diff > 0.01) {
-          deliveryFee = diff;
-          isDelivery = true;
-        }
-      }
-
-      if (deliveryFee > 0 || isDelivery) {
-        lines.push(`🛒 *Items Subtotal:* GH₵${itemsSubtotal.toFixed(2)}`);
-        lines.push(`🛵 *Delivery Fee:* GH₵${deliveryFee.toFixed(2)}`);
-        lines.push(`💰 *Total Amount:* GH₵${order.totalAmount.toFixed(2)}`);
-        if (deliveryAddress) {
-          lines.push(`📍 *Delivery Address:* ${deliveryAddress}`);
-        }
-      } else if (order.notes?.includes('Fulfillment: Pickup')) {
-        lines.push(`💰 *Total Amount:* GH₵${order.totalAmount.toFixed(2)}`);
-        lines.push('🛍️ *Fulfillment:* Store Pickup (Free)');
-      } else {
-        lines.push(`💰 *Total Amount:* GH₵${order.totalAmount.toFixed(2)}`);
-      }
-
-      lines.push('');
-    }
-
-    if (paymentMethod === 'momo') {
-      const phone = momoNumber || buyerPhone || '';
-      lines.push(`💳 *Payment Method:* Mobile Money${phone ? ` (${phone})` : ''}`);
-      lines.push(`\nPlease approve the MoMo prompt sent to ${phone}. Your groceries will be delivered today!`);
-    } else if (paymentMethod === 'cod') {
-      lines.push('💳 *Payment Method:* Cash on Delivery');
-      lines.push('\nYour order has been confirmed for Cash on Delivery. Please have the exact amount ready upon delivery. Our rider will contact you on WhatsApp!');
-    } else if (paymentMethod === 'card') {
-      lines.push('💳 *Payment Method:* Card Payment');
-      lines.push('\nWe will send you a secure payment link on WhatsApp shortly.');
-    } else {
-      lines.push('\nYour order has been confirmed! Our team will contact you on WhatsApp with updates.');
-    }
-
-    return lines.join('\n');
   }
 }
-
-

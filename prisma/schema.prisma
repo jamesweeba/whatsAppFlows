@@ -3,9 +3,7 @@
 
 generator client {
   provider = "prisma-client-js"
-    
 }
-
 
 datasource db {
   provider = "postgresql"
@@ -48,6 +46,17 @@ enum BuyerIntent {
   OUT_OF_BOUNDS
 }
 
+enum PaymentMethod {
+  MOMO
+  CARD
+  COD
+}
+
+enum Fulfillment {
+  DELIVERY
+  PICKUP
+}
+
 enum OrderStatus {
   PENDING
   AWAITING_PAYMENT
@@ -71,6 +80,8 @@ model Tenant {
   wabaStatus            WabaStatus    @default(PENDING_REGISTRATION)
   wabaRegisteredAt      DateTime?
   description           String?
+  deliveryFee           Float         @default(5)
+  pickupNote            String?
   status                TenantStatus  @default(PENDING)
   userId                String        @unique
   user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -98,17 +109,18 @@ model ChatSession {
 }
 
 model ChatMessage {
-  id              String        @id @default(uuid())
-  sessionId       String
-  session         ChatSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
-  sender          MessageSender
-  source          MessageSource @default(TEXT)
-  text            String
-  flowData        Json?
-  detectedIntent  BuyerIntent?
-  confidenceScore Float?
-  rawAiResponse   Json?
-  createdAt       DateTime      @default(now())
+  id                String        @id @default(uuid())
+  sessionId         String
+  session           ChatSession   @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  sender            MessageSender
+  source            MessageSource @default(TEXT)
+  whatsappMessageId String?       @unique
+  text              String
+  flowData          Json?
+  detectedIntent    BuyerIntent?
+  confidenceScore   Float?
+  rawAiResponse     Json?
+  createdAt         DateTime      @default(now())
 }
 
 model Product {
@@ -136,19 +148,25 @@ model User {
 }
 
 model Order {
-  id          String      @id @default(uuid())
-  orderNumber String      @unique @default(uuid())
-  tenantId    String
-  tenant      Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  buyerPhone  String
-  sessionId   String?
-  session     ChatSession? @relation(fields: [sessionId], references: [id], onDelete: SetNull)
-  status      OrderStatus @default(PENDING)
-  totalAmount Float
-  notes       String?
-  items       OrderItem[]
-  createdAt   DateTime    @default(now())
-  updatedAt   DateTime    @updatedAt
+  id              String         @id @default(uuid())
+  orderNumber     String         @unique @default(uuid())
+  tenantId        String
+  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  buyerPhone      String
+  sessionId       String?
+  session         ChatSession?   @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  status          OrderStatus    @default(PENDING)
+  totalAmount     Float
+  paymentMethod   PaymentMethod?
+  paymentPhone    String?
+  momoNetwork     String?
+  fulfillment     Fulfillment?
+  deliveryAddress String?
+  deliveryFee     Float          @default(0)
+  notes           String?
+  items           OrderItem[]
+  createdAt       DateTime       @default(now())
+  updatedAt       DateTime       @updatedAt
 }
 
 model OrderItem {

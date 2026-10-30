@@ -17,15 +17,7 @@ export class EncryptedFlowRequestDto {
 export class SendFlowMessageDto {
   @IsString()
   @IsNotEmpty()
-  tenantId: string;
-
-  @IsString()
-  @IsNotEmpty()
   toPhone: string;
-
-  @IsString()
-  @IsOptional()
-  flowId?: string;
 
   @IsString()
   @IsOptional()
@@ -33,6 +25,5 @@ export class SendFlowMessageDto {
 
   @IsString()
   @IsOptional()
-  screen?: string;
+  bodyText?: string;
 }
-

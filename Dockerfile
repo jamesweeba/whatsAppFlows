@@ -12,7 +12,8 @@ COPY src/                    ./src/
 COPY prisma/schema.prisma    ./prisma/schema.prisma
 COPY prisma/migrations/      ./prisma/migrations/
 
-RUN npx prisma generate && npm run build
+RUN npx prisma generate && npm run build \
+ && npm prune --omit=dev
 
 # ── Stage 2: Production runner ───────────────────────────────────────────────
 FROM node:22-alpine AS runner
@@ -25,6 +26,8 @@ RUN apk add --no-cache openssl \
  && addgroup -g 1001 -S nodejs \
  && adduser  -S nestjs -u 1001
 
+# node_modules was pruned to production dependencies in the builder stage
+# (prisma CLI is a runtime dependency because the entrypoint runs migrations).
 COPY --from=builder /app/node_modules ./node_modules
 COPY --from=builder /app/dist         ./dist
 COPY package.json                     ./package.json

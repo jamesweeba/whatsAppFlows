@@ -17,26 +17,20 @@ import { ProcessMessageDto } from './dto/process-message.dto.js';
 
 @Controller('api/v1/chat')
 export class ChatController {
-  constructor(private readonly chatService: ChatService) { }
+  constructor(private readonly chatService: ChatService) {}
 
   /**
    * Process a text message or WhatsApp Flow response from a buyer.
-   * Runs AI intent classification, converts flow payloads to text,
-   * and saves the message to chat history.
-   *
-   * Protected by WebhookSecretGuard — caller must supply the shared secret
-   * in the `x-webhook-secret` request header (env: WEBHOOK_SECRET).
+   * Protected by WebhookSecretGuard: callers must supply the shared secret in `x-webhook-secret`.
    */
   @Post('')
   @UseGuards(WebhookSecretGuard)
   async processMessage(@Body() dto: ProcessMessageDto) {
-    console.log(dto)
-    console.log("wwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwwww")
     return this.chatService.processIncomingMessage(dto);
   }
 
   /**
-   * List all buyer conversations with latest message preview and orders.
+   * List buyer conversations for the vendor's shop.
    * GET /api/v1/chat/sessions?page=1&limit=20&search=+233
    */
   @Get('sessions')
@@ -51,7 +45,7 @@ export class ChatController {
   }
 
   /**
-   * Get full conversation thread and all orders placed for a specific session.
+   * Full conversation thread and orders for one session.
    * GET /api/v1/chat/sessions/:id
    */
   @Get('sessions/:id')
@@ -61,16 +55,12 @@ export class ChatController {
   }
 
   /**
-   * Retrieve chat history for a buyer-tenant session.
-   * Protected by JWT Guard (for vendor management dashboard).
+   * Latest chat history between the vendor's shop and a buyer.
+   * GET /api/v1/chat/history?buyerPhone=+233...
    */
   @Get('history')
   @UseGuards(JwtAuthGuard)
-  async getHistory(
-    @Query('tenantId') tenantId: string,
-    @Query('buyerPhone') buyerPhone: string,
-  ) {
-    return this.chatService.getSessionHistory(tenantId, buyerPhone);
+  async getHistory(@Request() req: any, @Query('buyerPhone') buyerPhone: string) {
+    return this.chatService.getSessionHistory(req.user.id, buyerPhone);
   }
 }
-

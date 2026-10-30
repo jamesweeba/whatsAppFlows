@@ -1,40 +1,26 @@
 import {
   BadRequestException,
-  ForbiddenException,
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
 import * as XLSX from 'xlsx';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { TenantService } from '../tenant/tenant.service.js';
 import { CreateProductDto } from './dto/create-product.dto.js';
 import { UpdateProductDto } from './dto/update-product.dto.js';
 
 @Injectable()
 export class ProductService {
-  constructor(private readonly prisma: PrismaService) {}
-
-  /**
-   * Resolve the tenant owned by the given user, or throw.
-   */
-  private async getTenantForUser(userId: string) {
-    const tenant = await this.prisma.tenant.findUnique({
-      where: { userId },
-    });
-
-    if (!tenant) {
-      throw new ForbiddenException(
-        'You must create a tenant before managing products.',
-      );
-    }
-
-    return tenant;
-  }
+  constructor(
+    private readonly prisma: PrismaService,
+    private readonly tenantService: TenantService,
+  ) {}
 
   /**
    * Create a single product for the authenticated user's tenant.
    */
   async create(userId: string, dto: CreateProductDto) {
-    const tenant = await this.getTenantForUser(userId);
+    const tenant = await this.tenantService.findByUser(userId);
 
     return this.prisma.product.create({
       data: {
@@ -54,7 +40,7 @@ export class ProductService {
    * Returns a summary of how many rows succeeded and any row-level errors.
    */
   async bulkCreateFromExcel(userId: string, fileBuffer: Buffer) {
-    const tenant = await this.getTenantForUser(userId);
+    const tenant = await this.tenantService.findByUser(userId);
 
     // Parse the Excel file
     const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
@@ -150,7 +136,7 @@ export class ProductService {
     limit: number = 5,
     search?: string,
   ) {
-    const tenant = await this.getTenantForUser(userId);
+    const tenant = await this.tenantService.findByUser(userId);
     const safePage = Math.max(page, 1);
     const safeLimit = Math.min(Math.max(limit, 1), 5);
 
@@ -195,16 +181,13 @@ export class ProductService {
    * Get a single product by ID (must belong to the user's tenant).
    */
   async findOne(userId: string, productId: string) {
-    const tenant = await this.getTenantForUser(userId);
-
+    const tenant = await this.tenantService.findByUser(userId);
     const product = await this.prisma.product.findFirst({
       where: { id: productId, tenantId: tenant.id },
     });
-
     if (!product) {
       throw new NotFoundException('Product not found.');
     }
-
     return product;
   }
 
@@ -212,16 +195,7 @@ export class ProductService {
    * Update a product by ID (must belong to the user's tenant).
    */
   async update(userId: string, productId: string, dto: UpdateProductDto) {
-    const tenant = await this.getTenantForUser(userId);
-
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId, tenantId: tenant.id },
-    });
-
-    if (!product) {
-      throw new NotFoundException('Product not found.');
-    }
-
+    await this.findOne(userId, productId);
     return this.prisma.product.update({
       where: { id: productId },
       data: {
@@ -237,16 +211,7 @@ export class ProductService {
    * Delete a product by ID (must belong to the user's tenant).
    */
   async remove(userId: string, productId: string) {
-    const tenant = await this.getTenantForUser(userId);
-
-    const product = await this.prisma.product.findFirst({
-      where: { id: productId, tenantId: tenant.id },
-    });
-
-    if (!product) {
-      throw new NotFoundException('Product not found.');
-    }
-
+    await this.findOne(userId, productId);
     await this.prisma.product.delete({
       where: { id: productId },
     });

@@ -1,12 +1,11 @@
+import 'dotenv/config';
 import { NestFactory } from '@nestjs/core';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module.js';
 
 async function bootstrap() {
+  // rawBody is required so webhook guards can verify HMAC signatures over the exact payload.
   const app = await NestFactory.create(AppModule, { rawBody: true });
-  // const app = await NestFactory.create(AppModule, {
-  //   instrument: ObserveInstrument,
-  // });
 
   app.useGlobalPipes(
     new ValidationPipe({

@@ -1,8 +1,10 @@
 import {
   IsNotEmpty,
+  IsNumber,
   IsOptional,
   IsString,
   Matches,
+  Min,
 } from 'class-validator';
 
 export class CreateTenantDto {
@@ -28,4 +30,15 @@ export class CreateTenantDto {
   @IsString()
   @IsOptional()
   description?: string;
+
+  /** Flat delivery fee in GHS added to delivery orders. */
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  deliveryFee?: number;
+
+  /** Shown to buyers who choose pickup, e.g. "Pick up at Osu branch, ready in 30 minutes." */
+  @IsString()
+  @IsOptional()
+  pickupNote?: string;
 }

@@ -136,6 +136,7 @@ describe('WabaService', () => {
 
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(result).toEqual({ messageId: 'wamid.test' });
+      expect(requestBody.to).toBe('233241234567');
       expect(requestBody.interactive.action.parameters.mode).toBe('draft');
       expect(requestBody.interactive.action.parameters.flow_message_version).toBe('3');
       expect(requestBody.interactive.action.parameters.flow_action_payload.data.products).toEqual([
@@ -144,15 +145,15 @@ describe('WabaService', () => {
     });
   });
 
-  describe('sendRequestContactInfo', () => {
-    it('sends Flow message to hidden-number buyer using recipient instead of to', async () => {
+  describe('sendFlowMessage to a hidden-number buyer', () => {
+    it('addresses business-scoped user ids with recipient instead of to', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({ messages: [{ id: 'wamid.hidden.test' }] }),
       });
       vi.stubGlobal('fetch', mockFetch);
 
-      const result = await service.sendRequestContactInfo({
+      const result = await service.sendFlowMessage({
         phoneNumberId: '1092837465',
         toPhone: 'GH.989894404158856',
         flowId: 'flow-hidden-123',
@@ -168,7 +169,7 @@ describe('WabaService', () => {
 
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
       expect(result).toEqual({ messageId: 'wamid.hidden.test' });
-      // Crucial requirement: hidden numbers must use "recipient" and not "to"
+      // Hidden numbers must use "recipient" and not "to"
       expect(requestBody.recipient).toBe('GH.989894404158856');
       expect(requestBody.to).toBeUndefined();
       expect(requestBody.recipient_type).toBe('individual');
@@ -176,11 +177,26 @@ describe('WabaService', () => {
       expect(requestBody.interactive.type).toBe('flow');
       expect(requestBody.interactive.header.text).toBe('Hidden Store');
       expect(requestBody.interactive.body.text).toBe('Welcome! Tap below to open catalog:');
+      expect(requestBody.interactive.footer).toBeUndefined();
       expect(requestBody.interactive.action.name).toBe('flow');
       expect(requestBody.interactive.action.parameters.flow_id).toBe('flow-hidden-123');
       expect(requestBody.interactive.action.parameters.flow_cta).toBe('Browse & Order');
       expect(requestBody.interactive.action.parameters.flow_action_payload.screen).toBe('PRODUCT_SELECT');
       expect(requestBody.interactive.action.parameters.flow_action_payload.data.products).toHaveLength(1);
+    });
+
+    it('still addresses hidden-number buyers with to for plain text', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({
+        ok: true,
+        json: async () => ({ messages: [{ id: 'wamid.text' }] }),
+      });
+      vi.stubGlobal('fetch', mockFetch);
+
+      await service.sendTextMessage('1092837465', 'GH.989894404158856', 'hello');
+
+      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(requestBody.to).toBe('GH.989894404158856');
+      expect(requestBody.recipient).toBeUndefined();
     });
   });
 

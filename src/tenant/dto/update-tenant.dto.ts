@@ -1,4 +1,4 @@
-import { IsOptional, IsString } from 'class-validator';
+import { IsNumber, IsOptional, IsString, Min } from 'class-validator';
 
 export class UpdateTenantDto {
   @IsString()
@@ -16,4 +16,13 @@ export class UpdateTenantDto {
   @IsString()
   @IsOptional()
   description?: string;
+
+  @IsNumber()
+  @Min(0)
+  @IsOptional()
+  deliveryFee?: number;
+
+  @IsString()
+  @IsOptional()
+  pickupNote?: string;
 }

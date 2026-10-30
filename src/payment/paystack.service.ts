@@ -1,11 +1,12 @@
 import { Injectable, Logger } from '@nestjs/common';
-import * as crypto from 'crypto';
+import { hmacHex, safeEqual } from '../common/crypto.util.js';
+import { toGhanaLocal } from '../common/phone.util.js';
 
 export interface InitiateMoMoChargeParams {
   amount: number; // in GHS (e.g. 25.50)
   momoNumber: string;
   provider: string; // 'mtn' | 'telecel' | 'airteltigo'
-  email: string; // Tenant user email
+  email: string;
   reference: string;
   metadata?: Record<string, any>;
 }
@@ -19,89 +20,63 @@ export interface PaystackChargeResult {
   rawResponse?: any;
 }
 
+export interface CardPaymentResult {
+  success: boolean;
+  authorizationUrl?: string;
+  message?: string;
+}
+
+/** Charge statuses Paystack returns once a Ghana mobile-money prompt has been dispatched. */
+const INITIATED_STATUSES = new Set(['send_otp', 'pay_offline', 'pending', 'send_pin', 'success']);
+
+export const DEFAULT_CUSTOMER_EMAIL = 'customer@orders.marketix.app';
+
 @Injectable()
 export class PaystackService {
   private readonly logger = new Logger(PaystackService.name);
   private readonly baseUrl = 'https://api.paystack.co';
 
   /**
-   * Map provider strings from WhatsApp Flow to Paystack provider codes:
-   * MTN -> 'mtn'
-   * Telecel (Vodafone) -> 'vod'
-   * AirtelTigo -> 'tgo'
+   * Map provider strings from WhatsApp to Paystack provider codes:
+   * MTN -> 'mtn', Telecel (Vodafone) -> 'vod', AirtelTigo -> 'tgo'
    */
   mapProvider(provider: string): 'mtn' | 'vod' | 'tgo' {
     const lower = (provider || '').toLowerCase().trim();
-    if (lower.includes('telecel') || lower.includes('vod')) {
-      return 'vod';
-    }
-    if (lower.includes('airtel') || lower.includes('tigo') || lower.includes('tgo')) {
-      return 'tgo';
-    }
+    if (lower.includes('telecel') || lower.includes('vod')) return 'vod';
+    if (lower.includes('airtel') || lower.includes('tigo') || lower.includes('tgo')) return 'tgo';
     return 'mtn';
   }
 
-  /**
-   * Normalize Ghanaian phone number to 10-digit local format (e.g. 0244123456)
-   * which Paystack Ghana Mobile Money expects.
-   */
+  /** Normalise to the 10-digit local format Paystack Ghana Mobile Money expects. */
   normalizeGhanaPhone(raw: string): string {
-    let clean = (raw || '').replace(/[^\d+]/g, '');
-    if (clean.startsWith('+233')) {
-      clean = '0' + clean.slice(4);
-    } else if (clean.startsWith('233') && clean.length === 12) {
-      clean = '0' + clean.slice(3);
-    } else if (!clean.startsWith('0') && clean.length === 9) {
-      clean = '0' + clean;
-    }
-    return clean;
+    return toGhanaLocal(raw);
   }
 
   /**
-   * Initiate a direct USSD Mobile Money push charge via Paystack Charge API.
-   * Prompts the buyer directly on their mobile phone to input their MoMo PIN.
+   * Initiate a direct USSD Mobile Money push charge via the Paystack Charge API.
+   * Prompts the buyer on their phone to enter their MoMo PIN.
    */
   async initiateMoMoCharge(params: InitiateMoMoChargeParams): Promise<PaystackChargeResult> {
-    const secretKey = process.env.PAYSTACK_SECRET_KEY;
+    const failed = (message: string, rawResponse?: any): PaystackChargeResult => ({
+      success: false,
+      status: 'failed',
+      reference: params.reference,
+      message,
+      rawResponse,
+    });
+
+    const keyError = this.secretKeyError();
+    if (keyError) return failed(keyError);
+
     const cleanPhone = this.normalizeGhanaPhone(params.momoNumber);
     const providerCode = this.mapProvider(params.provider);
-    const amountInPesewas = Math.round(params.amount * 100);
-
-    // If PAYSTACK_SECRET_KEY is not configured, simulate successful charge initiation
-    if (!secretKey) {
-      this.logger.warn(
-        `PAYSTACK_SECRET_KEY is not set. Simulating MoMo charge prompt for ${cleanPhone} (${providerCode}) - ₵${params.amount.toFixed(2)}.`,
-      );
-      return {
-        success: true,
-        status: 'pay_offline',
-        reference: params.reference,
-        message: 'Prompt simulated (set PAYSTACK_SECRET_KEY in .env for live integration)',
-        displayText: `Please authorize the prompt on ${cleanPhone}`,
-      };
-    }
-
-    if (secretKey.startsWith('pk_')) {
-      this.logger.error(
-        `PAYSTACK_SECRET_KEY is set to a Public Key (${secretKey.slice(0, 8)}...). The Paystack Charge API requires the Secret Key starting with "sk_test_" or "sk_live_".`,
-      );
-      return {
-        success: false,
-        status: 'failed',
-        reference: params.reference,
-        message: 'A Public Key (pk_...) was used instead of the Secret Key (sk_...). Please update PAYSTACK_SECRET_KEY in .env to your Secret Key.',
-      };
-    }
 
     const payload = {
-      amount: amountInPesewas,
-      email: params.email || 'customer@orders.marketix.app',
+      amount: this.toPesewas(params.amount),
+      email: params.email || DEFAULT_CUSTOMER_EMAIL,
       currency: 'GHS',
       reference: params.reference,
-      mobile_money: {
-        phone: cleanPhone,
-        provider: providerCode,
-      },
+      mobile_money: { phone: cleanPhone, provider: providerCode },
       metadata: {
         ...params.metadata,
         orderNumber: params.reference,
@@ -110,142 +85,104 @@ export class PaystackService {
       },
     };
 
-    try {
-      this.logger.log(
-        `Sending Paystack MoMo charge for reference ${params.reference} (${cleanPhone}, ${providerCode}, ₵${params.amount.toFixed(2)}) using tenant email: ${params.email}`,
-      );
+    this.logger.log(`Initiating Paystack MoMo charge ${params.reference} (${providerCode}, ₵${params.amount.toFixed(2)})`);
 
-      const response = await fetch(`${this.baseUrl}/charge`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${secretKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify(payload),
-      });
-
-      const data: any = await response.json();
-      this.logger.log(`Paystack Charge response: ${JSON.stringify(data)}`);
-
-      if (!response.ok || !data.status) {
-        return {
-          success: false,
-          status: 'failed',
-          reference: params.reference,
-          message: data.data?.message || data.message || 'Payment initiation failed',
-          rawResponse: data,
-        };
-      }
-
-      const chargeStatus = data.data?.status || 'pending';
-      const displayText = data.data?.display_text || 'Please complete authorization on your mobile phone.';
-
-      // Paystack Mobile Money in Ghana returns 'send_otp', 'pay_offline', 'pending', or 'send_pin' upon prompt dispatch
-      const isSuccess =
-        chargeStatus === 'send_otp' ||
-        chargeStatus === 'pay_offline' ||
-        chargeStatus === 'pending' ||
-        chargeStatus === 'send_pin' ||
-        chargeStatus === 'success';
-
-      return {
-        success: isSuccess,
-        status: isSuccess ? (chargeStatus as any) : 'failed',
-        reference: data.data?.reference || params.reference,
-        message: isSuccess ? 'Charge initiated' : (data.data?.gateway_response || data.message || 'Payment initiation failed'),
-        displayText,
-        rawResponse: data.data,
-      };
-    } catch (error: any) {
-      this.logger.error(`Error calling Paystack charge endpoint: ${error.message || error}`);
-      return {
-        success: false,
-        status: 'failed',
-        reference: params.reference,
-        message: error.message || 'Network error communicating with Paystack',
-      };
+    const { ok, data, error } = await this.post('/charge', payload);
+    if (error) return failed(error);
+    if (!ok || !data.status) {
+      return failed(data.data?.message || data.message || 'Payment initiation failed', data);
     }
+
+    const chargeStatus = data.data?.status || 'pending';
+    const initiated = INITIATED_STATUSES.has(chargeStatus);
+    this.logger.log(`Paystack charge ${params.reference} status: ${chargeStatus}`);
+
+    return {
+      success: initiated,
+      status: initiated ? (chargeStatus as PaystackChargeResult['status']) : 'failed',
+      reference: data.data?.reference || params.reference,
+      message: initiated
+        ? 'Charge initiated'
+        : data.data?.gateway_response || data.message || 'Payment initiation failed',
+      displayText: data.data?.display_text || 'Please complete authorization on your mobile phone.',
+      rawResponse: data.data,
+    };
   }
 
   /**
-   * Initialize a standard Paystack transaction to get an authorization/checkout URL for card payments.
+   * Initialise a standard Paystack transaction and return the hosted checkout URL for card payments.
    */
   async initializeCardPayment(params: {
     amount: number;
     email: string;
     reference: string;
     callbackUrl?: string;
-  }): Promise<{ success: boolean; authorizationUrl?: string; message?: string }> {
-    const secretKey = process.env.PAYSTACK_SECRET_KEY;
-    const amountInPesewas = Math.round(params.amount * 100);
+  }): Promise<CardPaymentResult> {
+    const keyError = this.secretKeyError();
+    if (keyError) return { success: false, message: keyError };
 
-    if (!secretKey || secretKey.startsWith('pk_')) {
-      return {
-        success: true,
-        authorizationUrl: `https://checkout.paystack.com/${params.reference}`,
-      };
+    const { ok, data, error } = await this.post('/transaction/initialize', {
+      amount: this.toPesewas(params.amount),
+      email: params.email || DEFAULT_CUSTOMER_EMAIL,
+      reference: params.reference,
+      currency: 'GHS',
+      callback_url: params.callbackUrl,
+    });
+
+    if (error) return { success: false, message: error };
+    if (!ok || !data.status || !data.data?.authorization_url) {
+      return { success: false, message: data.message || 'Payment initialization failed' };
     }
-
-    try {
-      const response = await fetch(`${this.baseUrl}/transaction/initialize`, {
-        method: 'POST',
-        headers: {
-          Authorization: `Bearer ${secretKey}`,
-          'Content-Type': 'application/json',
-        },
-        body: JSON.stringify({
-          amount: amountInPesewas,
-          email: params.email || 'customer@orders.marketix.app',
-          reference: params.reference,
-          currency: 'GHS',
-          callback_url: params.callbackUrl,
-        }),
-      });
-
-      const data: any = await response.json();
-      if (!response.ok || !data.status) {
-        return {
-          success: false,
-          message: data.message || 'Payment initialization failed',
-        };
-      }
-
-      return {
-        success: true,
-        authorizationUrl: data.data?.authorization_url,
-      };
-    } catch (err: any) {
-      return {
-        success: false,
-        message: err.message || 'Error initializing card payment',
-      };
-    }
+    return { success: true, authorizationUrl: data.data.authorization_url };
   }
 
   /**
-   * Verify HMAC SHA-512 webhook signature from Paystack (x-paystack-signature header).
+   * Verify the HMAC SHA-512 webhook signature Paystack sends in `x-paystack-signature`.
+   * Fails closed when the secret key is not configured.
    */
-  verifyWebhookSignature(rawBody: string | Buffer, signature: string): boolean {
+  verifyWebhookSignature(rawBody: string | Buffer, signature: string | undefined): boolean {
     const secretKey = process.env.PAYSTACK_SECRET_KEY;
     if (!secretKey) {
-      this.logger.warn('PAYSTACK_SECRET_KEY is not configured. Webhook signature verification bypassed.');
-      return true;
-    }
-
-    if (!signature) {
+      this.logger.error('PAYSTACK_SECRET_KEY is not configured. Rejecting webhook.');
       return false;
     }
+    if (!signature) return false;
+    return safeEqual(hmacHex('sha512', secretKey, rawBody), signature);
+  }
 
+  private toPesewas(amount: number): number {
+    return Math.round(amount * 100);
+  }
+
+  /** Returns a human-readable error when the secret key is missing or is a public key. */
+  private secretKeyError(): string | null {
+    const secretKey = process.env.PAYSTACK_SECRET_KEY;
+    if (!secretKey) {
+      this.logger.error('PAYSTACK_SECRET_KEY is not set. Payments cannot be initiated.');
+      return 'Payment gateway is not configured.';
+    }
+    if (secretKey.startsWith('pk_')) {
+      this.logger.error('PAYSTACK_SECRET_KEY is a public key (pk_...). The Charge API needs the secret key (sk_...).');
+      return 'Payment gateway is misconfigured.';
+    }
+    return null;
+  }
+
+  private async post(path: string, payload: Record<string, any>): Promise<{ ok: boolean; data: any; error?: string }> {
     try {
-      const hash = crypto
-        .createHmac('sha512', secretKey)
-        .update(rawBody)
-        .digest('hex');
-
-      return hash === signature;
-    } catch (e: any) {
-      this.logger.error(`Signature verification failed: ${e?.message || e}`);
-      return false;
+      const response = await fetch(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${process.env.PAYSTACK_SECRET_KEY}`,
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify(payload),
+      });
+      const data: any = await response.json();
+      return { ok: response.ok, data };
+    } catch (err: any) {
+      this.logger.error(`Paystack request to ${path} failed: ${err?.message || err}`);
+      return { ok: false, data: null, error: err?.message || 'Network error communicating with Paystack' };
     }
   }
 }

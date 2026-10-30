@@ -2,7 +2,6 @@ import {
   Body,
   Controller,
   Get,
-  Patch,
   Put,
   Post,
   Request,
@@ -16,7 +15,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 @Controller('api/v1/tenants')
 @UseGuards(JwtAuthGuard)
 export class TenantController {
-  constructor(private readonly tenantService: TenantService) { }
+  constructor(private readonly tenantService: TenantService) {}
 
   @Post()
   async create(@Request() req: any, @Body() dto: CreateTenantDto) {

@@ -1,11 +1,11 @@
 import { Module } from '@nestjs/common';
-import { PrismaModule } from '../prisma/prisma.module.js';
+import { OrderModule } from '../order/order.module.js';
 import { WabaModule } from '../waba/waba.module.js';
-import { PaystackService } from './paystack.service.js';
 import { PaymentController } from './payment.controller.js';
+import { PaystackService } from './paystack.service.js';
 
 @Module({
-  imports: [PrismaModule, WabaModule],
+  imports: [OrderModule, WabaModule],
   controllers: [PaymentController],
   providers: [PaystackService],
   exports: [PaystackService],
