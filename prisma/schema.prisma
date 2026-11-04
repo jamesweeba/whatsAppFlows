@@ -47,6 +47,9 @@ enum AuditAction {
   NUMBER_FREED
   NUMBER_REFRESHED
   DOCUMENT_VIEWED
+  NOTE_ADDED
+  NOTE_EDITED
+  NOTE_DELETED
 }
 
 /// A pool number's state. COOLING numbers count as FREE once released over 7 days ago.
@@ -163,6 +166,7 @@ model Tenant {
   reviewChecks          Json?
   documents             VendorDocument[]
   reviews               VendorReview[]
+  notes                 VendorNote[]
   number                WhatsappNumber?
   userId                String           @unique
   user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
@@ -275,17 +279,18 @@ model FlowCart {
 }
 
 model User {
-  id         String         @id @default(uuid())
-  email      String         @unique
-  password   String
-  firstName  String
-  lastName   String
+  id          String         @id @default(uuid())
+  email       String         @unique
+  password    String
+  firstName   String
+  lastName    String
   /// SUPER_ADMIN accounts are created by `npm run admin:create`, never by signup.
-  role       UserRole       @default(VENDOR)
-  tenant     Tenant?
-  reviews    VendorReview[]
-  createdAt  DateTime       @default(now())
-  modifiedAt DateTime       @updatedAt
+  role        UserRole       @default(VENDOR)
+  tenant      Tenant?
+  reviews     VendorReview[]
+  vendorNotes VendorNote[]
+  createdAt   DateTime       @default(now())
+  modifiedAt  DateTime       @updatedAt
 }
 
 /// A KYC file the vendor uploaded. One per type; uploading again replaces it.
@@ -319,6 +324,21 @@ model VendorReview {
   /// The pool number involved in an APPROVED or RELEASED decision.
   numberId   String?
   createdAt  DateTime       @default(now())
+
+  @@index([tenantId, createdAt])
+}
+
+/// An admin's private note on a shop (calls, promises, follow-ups). Never shown to the vendor.
+model VendorNote {
+  id        String    @id @default(uuid())
+  tenantId  String
+  tenant    Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  authorId  String
+  author    User      @relation(fields: [authorId], references: [id])
+  body      String
+  /// Set when the author edits the note.
+  editedAt  DateTime?
+  createdAt DateTime  @default(now())
 
   @@index([tenantId, createdAt])
 }

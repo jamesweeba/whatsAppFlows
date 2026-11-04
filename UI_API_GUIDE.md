@@ -442,7 +442,15 @@ Show a table with: shop, owner, market, product count, a KYC completeness bar (`
 }
 ```
 
-`products.sample` holds the first 10 products, with `category: { id, title }` and `measures`. `reviews` is newest first.
+`products.sample` holds the first 10 products, with `category: { id, title }`, `measures` and `photoUrl`. `reviews` is newest first.
+
+**`GET /admin/tenants/:id/products?search=tom&stock=all&page=1&limit=20`**: every product of the shop, in the order the vendor added them, so the reviewer can see all of what the shop wants to sell. `search` matches the product name; `stock` is `all` (default), `in` or `out`; `limit` 1–50 (default 20). Each product has `category: { id, title }`, `measures` and `photoUrl` (see 4.6; the photo is public). `404` "Shop not found.".
+
+```json
+{ "data": [Product, …], "meta": { "total": 42, "page": 1, "limit": 20, "totalPages": 3 }, "counts": { "all": 42, "in": 30, "out": 12 } }
+```
+
+`counts` are the stock tab badges: they follow `search` but not `stock`.
 
 **`GET /admin/tenants/:id/documents/:documentId/file`** streams a document (fetch it with the auth header; show images in a lightbox and PDFs in a viewer).
 
@@ -500,6 +508,30 @@ Approval errors (`409`), with the exact messages:
 - "That number is not free any more. Pick another." → reload the picker.
 - "Only a shop waiting for review can be approved; this one is ACTIVE." → someone else acted; refresh.
 
+#### Private notes
+
+Admins' notes on a shop: calls made, promises, follow-ups. **Vendors never see them**, and they are never sent on WhatsApp. Any admin can read and add; only the author can edit or delete their own note (`403` "You can only change your own notes." otherwise). Every add, edit and delete is written to the audit log (5.8), so deleted or edited text is never lost.
+
+| Method and path | Body | Returns |
+|---|---|---|
+| `GET /admin/tenants/:id/notes` | | Every note, newest first |
+| `POST /admin/tenants/:id/notes` | `{ "body": "Called Ama, Ghana Card coming tomorrow." }` | The new note (`201`) |
+| `PATCH /admin/tenants/:id/notes/:noteId` | `{ "body": "…" }` | The updated note |
+| `DELETE /admin/tenants/:id/notes/:noteId` | | `204` |
+
+```json
+{
+  "id": "uuid", "body": "Called Ama, Ghana Card coming tomorrow.",
+  "createdAt": "2026-11-04T10:00:00.000Z", "editedAt": null,
+  "author": { "id": "uuid", "name": "Steph Dua" },
+  "mine": true
+}
+```
+
+- `body` is trimmed; 1–2000 characters (`400` "Write something in the note." / "Notes can be at most 2000 characters.").
+- `mine` is `true` for the signed-in admin's own notes: show Edit and Delete only on those. `editedAt` is set once the note has been edited ("edited").
+- `404` "Shop not found." for an unknown shop; `404` "Note not found. It may have been deleted." when another tab already deleted it (refresh the list).
+
 ### 5.4 Vendors (every shop)
 
 The directory of every shop on the platform, with tabs, search, a market filter, sort and pagination. The review queue (5.2) stays for working through submissions; this page is for finding any shop.
@@ -530,7 +562,8 @@ The directory of every shop on the platform, with tabs, search, a market filter,
     "id": "uuid", "ref": "MX-V-0113", "name": "Adjoa Plantain Hub",
     "ownerFullName": "Adjoa Kyei", "ownerPhone": "0261813957", "market": "Kejetia, Kumasi",
     "status": "ACTIVE", "whatsappNumber": "0592001113",
-    "orders30d": 12, "lastOrderAt": "2026-11-03T08:12:00.000Z", "createdAt": "2026-09-27T10:00:00.000Z"
+    "orders30d": 12, "lastOrderAt": "2026-11-03T08:12:00.000Z", "createdAt": "2026-09-27T10:00:00.000Z",
+    "noteCount": 2
   }],
   "meta": { "total": 11, "page": 1, "limit": 10, "totalPages": 2 },
   "counts": { "all": 24, "not_submitted": 2, "pending_review": 6, "more_info": 2, "active": 11, "suspended": 1, "rejected": 2 }
@@ -539,6 +572,7 @@ The directory of every shop on the platform, with tabs, search, a market filter,
 
 - `counts` are the tab badges. They apply `search` and `market` (but not `tab`), so each badge matches what clicking that tab would show. `meta.total` equals `counts[tab]`.
 - `orders30d` and `lastOrderAt` count only paid orders, or ones past payment (`PAID`, `CONFIRMED`, `PROCESSING`, `OUT_FOR_DELIVERY`, `DELIVERED`, `COMPLETED`). `lastOrderAt` is the latest such order ever (not limited to 30 days); `null` means "No orders yet".
+- `noteCount` is the number of private admin notes on the shop (5.3); show it next to the ref when above 0.
 - `whatsappNumber` is `null` until the shop is approved. Phones are stored as typed; format them for display (e.g. `+233 59 200 1113`).
 - **View** opens the review screen: `GET /admin/tenants/:id`.
 
@@ -735,6 +769,9 @@ Every admin action: who did it, when, and why. Entries are written in the same t
 | `NUMBER_FREED` | Number freed early | `POST /admin/numbers/:id/free` | "+233 59 200 1183 freed before its 7 days of cooling ended." |
 | `NUMBER_REFRESHED` | Number refreshed | one number, or refresh all (one entry for the run, no number) | "Refreshed from Meta: quality green, 1K / day." / "Refreshed 15 of 16 numbers from Meta. Failed: +233 …" |
 | `DOCUMENT_VIEWED` | Document viewed | each open of a KYC file on the review screen | "Opened Ghana Card (front)." |
+| `NOTE_ADDED` | Note added | `POST /admin/tenants/:id/notes` | the note |
+| `NOTE_EDITED` | Note edited | `PATCH …/notes/:noteId` (only when the text changes) | 'Now: "…" Before: "…"' (`metadata.previous` has the old text) |
+| `NOTE_DELETED` | Note deleted | `DELETE …/notes/:noteId` | the deleted note |
 
 **`GET /admin/audit-log?search=ama&action=APPROVED,SUSPENDED&adminId=uuid&period=30d&page=1&limit=25`**
 

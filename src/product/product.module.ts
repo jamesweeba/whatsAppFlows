@@ -9,6 +9,6 @@ import { ProductPhotoService } from './product-photo.service.js';
   imports: [TenantModule, CategoryModule],
   controllers: [ProductController, ProductPhotoController],
   providers: [ProductService, ProductPhotoService],
-  exports: [ProductService],
+  exports: [ProductService, ProductPhotoService],
 })
 export class ProductModule {}

@@ -20,6 +20,9 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   NUMBER_FREED: 'Number freed early',
   NUMBER_REFRESHED: 'Number refreshed',
   DOCUMENT_VIEWED: 'Document viewed',
+  NOTE_ADDED: 'Note added',
+  NOTE_EDITED: 'Note edited',
+  NOTE_DELETED: 'Note deleted',
 };
 
 /** The most rows one CSV export returns. */

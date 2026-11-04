@@ -45,6 +45,7 @@ interface VendorRow {
   createdAt: Date;
   orders30d: number;
   lastOrderAt: Date | null;
+  noteCount: number;
 }
 
 /** The super admin's directory of every shop on the platform. */
@@ -67,7 +68,8 @@ export class VendorDirectoryService {
       this.prisma.$queryRaw<VendorRow[]>`
         SELECT t."id", t."refNumber", t."name", t."ownerFullName", t."ownerPhone", t."market", t."status",
                t."whatsappNumber", t."createdAt",
-               COALESCE(o."orders30d", 0)::int AS "orders30d", o."lastOrderAt"
+               COALESCE(o."orders30d", 0)::int AS "orders30d", o."lastOrderAt",
+               (SELECT COUNT(*)::int FROM "VendorNote" n WHERE n."tenantId" = t."id") AS "noteCount"
         FROM "Tenant" t
         LEFT JOIN (
           SELECT "tenantId",

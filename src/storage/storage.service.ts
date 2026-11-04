@@ -1,6 +1,6 @@
 import { Injectable, NotFoundException } from '@nestjs/common';
 import { createReadStream } from 'node:fs';
-import { mkdir, rm, stat, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { dirname, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
 import { optionalEnv } from '../common/config.js';
@@ -26,6 +26,11 @@ export class StorageService {
       throw new NotFoundException('File not found.');
     });
     return createReadStream(path);
+  }
+
+  /** The whole file in memory, or null when there is none. For small files only. */
+  async readBuffer(key: string): Promise<Buffer | null> {
+    return readFile(this.pathFor(key)).catch(() => null);
   }
 
   async remove(key: string): Promise<void> {

@@ -8,10 +8,21 @@ import { ReviewChecksDto, ReviewDecisionDto, UpdateReviewChecksDto } from './dto
 import { formatGhanaInternational } from '../common/phone.util.js';
 import { AuditService } from './audit.service.js';
 import { NumberPoolService } from './number-pool.service.js';
+import { withPhotoUrl } from '../product/product-photo.service.js';
 
 /** States a reviewer can decide on. */
 const REVIEWABLE: TenantStatus[] = [TenantStatus.STOCKED, TenantStatus.UNDER_REVIEW];
 const PRODUCT_SAMPLE_SIZE = 10;
+
+export const PRODUCT_STOCK_FILTERS = ['all', 'in', 'out'] as const;
+export type ProductStockFilter = (typeof PRODUCT_STOCK_FILTERS)[number];
+
+export interface ProductListQuery {
+  search?: string;
+  stock?: ProductStockFilter;
+  page?: number;
+  limit?: number;
+}
 const NOT_SUSPENDED = Object.values(TenantStatus).filter((s) => s !== TenantStatus.SUSPENDED);
 
 /** The due-diligence checks, as the reviewer sees them. */
@@ -135,7 +146,45 @@ export class ReviewService {
       ref: formatVendorRef(tenant.refNumber),
       documents: documents.map((d) => this.onboarding.publicDocument(d)),
       kyc: kycItems(tenant, documents),
-      products: { sample: products, inStock, uncategorised },
+      products: { sample: products.map(withPhotoUrl), inStock, uncategorised },
+    };
+  }
+
+  /**
+   * Every product of one shop, in the order the vendor added them, so a reviewer can see
+   * all of what the shop wants to sell (the detail page only carries a sample).
+   */
+  async products(tenantId: string, { search, stock = 'all', page = 1, limit = 20 }: ProductListQuery) {
+    const exists = await this.prisma.tenant.findUnique({ where: { id: tenantId }, select: { id: true } });
+    if (!exists) {
+      throw new NotFoundException('Shop not found.');
+    }
+    const safePage = Math.max(page, 1);
+    const safeLimit = Math.min(Math.max(limit, 1), 50);
+    const base: Prisma.ProductWhereInput = {
+      tenantId,
+      ...(search?.trim() && { name: { contains: search.trim(), mode: 'insensitive' } }),
+    };
+    const where: Prisma.ProductWhereInput = stock === 'all' ? base : { ...base, inStock: stock === 'in' };
+
+    const [products, total, all, inStock] = await Promise.all([
+      this.prisma.product.findMany({
+        where,
+        orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
+        skip: (safePage - 1) * safeLimit,
+        take: safeLimit,
+        include: { category: { select: { id: true, title: true } }, measures: { orderBy: { sortOrder: 'asc' } } },
+      }),
+      this.prisma.product.count({ where }),
+      this.prisma.product.count({ where: base }),
+      this.prisma.product.count({ where: { ...base, inStock: true } }),
+    ]);
+
+    return {
+      data: products.map(withPhotoUrl),
+      meta: { total, page: safePage, limit: safeLimit, totalPages: Math.ceil(total / safeLimit) },
+      // Tab badges; they follow `search` but not `stock`.
+      counts: { all, in: inStock, out: all - inStock },
     };
   }
 

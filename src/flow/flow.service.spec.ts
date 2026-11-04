@@ -1,6 +1,7 @@
 import { OrderStatus, PaymentMethod, Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CategoryService } from '../category/category.service.js';
+import { PLACEHOLDER_PHOTO } from './placeholder-image.js';
 import { FlowService } from './flow.service.js';
 
 const TOKEN = 'tenant-1:+233240000000:1';
@@ -60,6 +61,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
   let paystack: any;
   let orderService: any;
   let waba: any;
+  let productPhotos: any;
 
   const tenant = {
     id: 'tenant-1',
@@ -118,12 +120,14 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       markLocationRequested: vi.fn().mockResolvedValue(undefined),
     };
 
+    productPhotos = { flowPhotoBase64: vi.fn().mockResolvedValue(null), flowThumbnailBase64: vi.fn().mockResolvedValue(null) };
+
     waba = {
       sendFlowMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-flow' }),
       sendLocationRequest: vi.fn().mockResolvedValue({ messageId: 'wamid-loc' }),
     };
 
-    service = new FlowService(prisma as any, {} as any, paystack, orderService, waba, { orderAlert: vi.fn().mockResolvedValue(true) } as any, new CategoryService(prisma as any, {} as any));
+    service = new FlowService(prisma as any, {} as any, paystack, orderService, waba, { orderAlert: vi.fn().mockResolvedValue(true) } as any, new CategoryService(prisma as any, {} as any), productPhotos as any);
   });
 
   it('answers the health-check ping', async () => {
@@ -229,6 +233,32 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       ]);
     });
 
+    it("titles WELCOME and the Shop page with the vendor's shop name", async () => {
+      prisma.tenant.findUnique.mockResolvedValue({ ...tenant, name: 'Stylix' });
+      const welcome = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
+      expect(welcome.data.shop_name).toBe('Stylix');
+      expect((await act('open_category', { category: 'all' })).data.shop_name).toBe('Stylix');
+    });
+
+    it("shows the shop's own description under the category list, or a neutral line without one", async () => {
+      prisma.tenant.findUnique.mockResolvedValue({ ...tenant, name: 'Stylix', description: '  Nice\n fragrances ' });
+      expect((await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN })).data.shop_tagline).toBe('Nice fragrances');
+
+      prisma.tenant.findUnique.mockResolvedValue({ ...tenant, name: 'Stylix', description: null });
+      expect((await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN })).data.shop_tagline).toBe(
+        'Order from Stylix right here on WhatsApp.',
+      );
+
+      prisma.tenant.findUnique.mockResolvedValue({ ...tenant, description: 'x'.repeat(200) });
+      expect((await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN })).data.shop_tagline.length).toBeLessThanOrEqual(80);
+    });
+
+    it('cuts a very long shop name so the title bar stays on one line', async () => {
+      prisma.tenant.findUnique.mockResolvedValue({ ...tenant, name: 'The Very Best Fragrances And Cosmetics Shop Ltd' });
+      const welcome = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
+      expect(welcome.data.shop_name.length).toBeLessThanOrEqual(30);
+    });
+
     it('shows every in-stock product under "All products", categorised or not', async () => {
       const result = await act('open_category', { category: 'all' });
       expect(result.data.basket_bar[0]['main-content'].title).toBe('All products');
@@ -292,6 +322,16 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       expect(second.data.products.map((r: any) => r.id)).not.toContain('next_page');
     });
 
+    it('adds a thumbnail only to products that have a photo', async () => {
+      productPhotos.flowThumbnailBase64.mockImplementation(async (p: any) => (p.id === 'sku_tomatoes' ? 'dGh1bWI=' : null));
+      const result = await act('open_category', { category: 'all' });
+      const tomatoes = result.data.products.find((r: any) => r.id === 'sku_tomatoes');
+      expect(tomatoes.start).toEqual({ image: 'dGh1bWI=', 'alt-text': 'Tomatoes' });
+      const others = result.data.products.filter((r: any) => r.id !== 'sku_tomatoes');
+      expect(others.length).toBeGreaterThan(0);
+      others.forEach((r: any) => expect(r.start).toBeUndefined());
+    });
+
     it('shows a single "No products here yet" row for an empty category', async () => {
       const result = await act('open_category', { category: 'drinks' });
       expect(result.data.products).toEqual([expect.objectContaining({ id: 'none' })]);
@@ -307,7 +347,14 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       });
       expect(result.data.measures.map((m: any) => m.title)).toEqual(['Olonka · GH₵ 25', 'Basket · GH₵ 120', 'Table top · GH₵ 10']);
       expect(result.data.qty_options).toHaveLength(10);
-      expect(result.data.photo).toEqual(expect.any(String));
+      expect(result.data.photo).toBe(PLACEHOLDER_PHOTO);
+    });
+
+    it("shows the product's own photo when it has one", async () => {
+      productPhotos.flowPhotoBase64.mockResolvedValue('cmVhbC1waG90bw==');
+      const result = await act('open_product', { sku: 'sku_tomatoes' });
+      expect(result.data.photo).toBe('cmVhbC1waG90bw==');
+      expect(productPhotos.flowPhotoBase64).toHaveBeenCalledWith(expect.objectContaining({ id: 'sku_tomatoes' }));
     });
 
     it('adds a line and returns to CATALOGUE with the basket counters updated', async () => {

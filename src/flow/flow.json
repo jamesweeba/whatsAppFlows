@@ -24,8 +24,16 @@
   "screens": [
     {
       "id": "WELCOME",
-      "title": "MarketiX Tech",
+      "title": "${data.shop_name}",
       "data": {
+        "shop_name": {
+          "type": "string",
+          "__example__": "MarketiX Tech"
+        },
+        "shop_tagline": {
+          "type": "string",
+          "__example__": "Groceries delivered in Kumasi within 1 hour."
+        },
         "categories": {
           "type": "array",
           "items": {
@@ -199,7 +207,7 @@
             "type": "NavigationList",
             "name": "categories",
             "label": "What would you like today?",
-            "description": "Groceries delivered in Kumasi within 1 hour.",
+            "description": "${data.shop_tagline}",
             "list-items": "${data.categories}"
           }
         ]
@@ -207,8 +215,12 @@
     },
     {
       "id": "CATALOGUE",
-      "title": "Shop",
+      "title": "${data.shop_name}",
       "data": {
+        "shop_name": {
+          "type": "string",
+          "__example__": "MarketiX Tech"
+        },
         "category": {
           "type": "string",
           "__example__": "veg_fruits"
@@ -660,8 +672,8 @@
           {
             "type": "Image",
             "src": "${data.photo}",
-            "height": 200,
-            "scale-type": "cover",
+            "height": 260,
+            "scale-type": "contain",
             "alt-text": "Product photo"
           },
           {

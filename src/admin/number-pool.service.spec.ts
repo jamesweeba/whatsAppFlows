@@ -26,7 +26,7 @@ describe('NumberPoolService', () => {
       $queryRaw: vi.fn(),
     };
     prisma.$transaction = vi.fn(async (fn: any) => fn(prisma));
-    waba = { getPhoneNumberDetails: vi.fn() };
+    waba = { getPhoneNumberDetails: vi.fn(), ensureFlowEncryptionKey: vi.fn().mockResolvedValue('UPLOADED') };
     audit = { log: vi.fn() };
     service = new NumberPoolService(prisma, waba, audit);
   });
@@ -77,6 +77,20 @@ describe('NumberPoolService', () => {
 
     waba.getPhoneNumberDetails.mockResolvedValueOnce({ displayPhoneNumber: '+233 20 599 9999' });
     await expect(service.add('admin-1', dto)).rejects.toThrow('as +233 20 599 9999, not 0205000000');
+    expect(prisma.whatsappNumber.create).not.toHaveBeenCalled();
+  });
+
+  it('sets up the Flow key before adding, and refuses the number if Meta rejects it', async () => {
+    const dto = { phoneNumberId: '111222333', displayNumber: '0205000000', wabaId: 'waba-1' };
+    waba.getPhoneNumberDetails.mockResolvedValue({ displayPhoneNumber: '+233 20 500 0000' });
+
+    await service.add('admin-1', dto);
+    expect(waba.ensureFlowEncryptionKey).toHaveBeenCalledWith('111222333');
+    expect(audit.log.mock.calls[0][1].metadata).toMatchObject({ flowKey: 'UPLOADED' });
+
+    prisma.whatsappNumber.create.mockClear();
+    waba.ensureFlowEncryptionKey.mockRejectedValueOnce(new Error('status MISMATCH'));
+    await expect(service.add('admin-1', dto)).rejects.toThrow('Could not set up the Flow encryption key on 0205000000. status MISMATCH');
     expect(prisma.whatsappNumber.create).not.toHaveBeenCalled();
   });
 
@@ -140,5 +154,16 @@ describe('NumberPoolService', () => {
 
     prisma.$queryRaw.mockResolvedValueOnce([]);
     await expect(service.claim(prisma, 'n9')).rejects.toThrow('not free any more');
+  });
+
+  it('checks the Flow key on the claimed number and blocks the approval if it cannot be set up', async () => {
+    prisma.whatsappNumber.findUniqueOrThrow.mockResolvedValue({ id: 'n1', phoneNumberId: '555', displayNumber: '0550413188' });
+    prisma.$queryRaw.mockResolvedValueOnce([{ id: 'n1' }]);
+    await service.claim(prisma);
+    expect(waba.ensureFlowEncryptionKey).toHaveBeenCalledWith('555');
+
+    prisma.$queryRaw.mockResolvedValueOnce([{ id: 'n1' }]);
+    waba.ensureFlowEncryptionKey.mockRejectedValueOnce(new Error('status MISMATCH'));
+    await expect(service.claim(prisma)).rejects.toThrow('not ready for the ordering Flow, so the shop was not approved');
   });
 });

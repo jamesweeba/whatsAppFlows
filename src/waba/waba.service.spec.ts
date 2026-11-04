@@ -1,5 +1,6 @@
+import { generateKeyPairSync } from 'crypto';
 import { Test, TestingModule } from '@nestjs/testing';
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { WabaService } from './waba.service.js';
 
 describe('WabaService', () => {
@@ -234,6 +235,70 @@ describe('WabaService', () => {
 
     it('preserves WhatsApp BSUID intact', () => {
       expect(service.formatRecipientPhone('GH.989894404158856')).toBe('GH.989894404158856');
+    });
+  });
+
+  describe('ensureFlowEncryptionKey', () => {
+    const { privateKey, publicKey } = generateKeyPairSync('rsa', {
+      modulusLength: 2048,
+      privateKeyEncoding: { type: 'pkcs8', format: 'pem' },
+      publicKeyEncoding: { type: 'spki', format: 'pem' },
+    });
+    const keyResponse = (key: string, status: string) => ({ ok: true, json: async () => ({ data: [{ business_public_key: key, business_public_key_signature_status: status }] }) });
+    const ok = { ok: true, json: async () => ({ success: true }) };
+    let previous: string | undefined;
+
+    beforeEach(() => {
+      previous = process.env.META_FLOW_PRIVATE_KEY;
+      // Stored the way .env usually has it: one line with literal \n.
+      process.env.META_FLOW_PRIVATE_KEY = privateKey.replace(/\n/g, '\\n');
+    });
+    afterEach(() => {
+      process.env.META_FLOW_PRIVATE_KEY = previous;
+    });
+
+    it('derives the public key from META_FLOW_PRIVATE_KEY', () => {
+      expect(service.flowPublicKey()).toBe(publicKey);
+    });
+
+    it('does nothing when the number already has the right key', async () => {
+      const mockFetch = vi.fn().mockResolvedValueOnce(keyResponse(publicKey, 'VALID'));
+      vi.stubGlobal('fetch', mockFetch);
+
+      await expect(service.ensureFlowEncryptionKey('555')).resolves.toBe('ALREADY_VALID');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
+    });
+
+    it('uploads the key when Meta reports MISMATCH, then checks it is VALID', async () => {
+      const mockFetch = vi.fn()
+        .mockResolvedValueOnce(keyResponse('', 'MISMATCH'))
+        .mockResolvedValueOnce(ok)
+        .mockResolvedValueOnce(keyResponse(publicKey, 'VALID'));
+      vi.stubGlobal('fetch', mockFetch);
+
+      await expect(service.ensureFlowEncryptionKey('555')).resolves.toBe('UPLOADED');
+      const [url, init] = mockFetch.mock.calls[1];
+      expect(url).toContain('/555/whatsapp_business_encryption');
+      expect(init.method).toBe('POST');
+      expect(JSON.parse(init.body).business_public_key).toBe(publicKey);
+    });
+
+    it('throws when Meta still does not report the key as VALID after upload', async () => {
+      vi.stubGlobal('fetch', vi.fn()
+        .mockResolvedValueOnce(keyResponse('', 'MISMATCH'))
+        .mockResolvedValueOnce(ok)
+        .mockResolvedValueOnce(keyResponse('', 'MISMATCH')));
+
+      await expect(service.ensureFlowEncryptionKey('555')).rejects.toThrow('did not accept the Flow encryption key');
+    });
+
+    it('skips when Flows are not set up', async () => {
+      delete process.env.META_FLOW_PRIVATE_KEY;
+      const mockFetch = vi.fn();
+      vi.stubGlobal('fetch', mockFetch);
+
+      await expect(service.ensureFlowEncryptionKey('555')).resolves.toBe('SKIPPED');
+      expect(mockFetch).not.toHaveBeenCalled();
     });
   });
 });

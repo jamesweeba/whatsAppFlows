@@ -1,6 +1,7 @@
 import { BadRequestException, ForbiddenException, NotFoundException } from '@nestjs/common';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { photoUrl, ProductPhotoService, sniffImageType } from './product-photo.service.js';
+import sharp from 'sharp';
+import { FLOW_PHOTO_LIMITS, photoUrl, ProductPhotoService, sniffImageType } from './product-photo.service.js';
 
 const JPEG = Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]);
 const PNG = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0, 0]);
@@ -44,7 +45,7 @@ describe('ProductPhotoService', () => {
         update: vi.fn(async ({ data }: any) => ({ id: 'p1', tenantId: 'tenant-1', ...data })),
       },
     };
-    storage = { save: vi.fn(), remove: vi.fn(), read: vi.fn().mockResolvedValue('stream') };
+    storage = { save: vi.fn(), remove: vi.fn(), read: vi.fn().mockResolvedValue('stream'), readBuffer: vi.fn().mockResolvedValue(null) };
     tenantService = {
       findByUser: vi.fn().mockResolvedValue({ id: 'tenant-1', status: 'ACTIVE' }),
       assertEditable: vi.fn((tenant: any) => {
@@ -98,5 +99,50 @@ describe('ProductPhotoService', () => {
 
     prisma.product.findUnique.mockResolvedValueOnce({ id: 'p1', tenantId: 'tenant-1', photoMimeType: null });
     await expect(service.open('p1')).rejects.toThrow(NotFoundException);
+  });
+
+  describe('flowPhotoBase64', () => {
+    const product = { id: 'p1', tenantId: 'tenant-1', photoMimeType: 'image/png' };
+
+    it('shrinks the whole original (no cropping) to fit 600x600 once, saves it, and returns base64', async () => {
+      const original = await sharp({ create: { width: 2400, height: 3200, channels: 3, background: '#c0392b' } }).png().toBuffer();
+      storage.readBuffer.mockImplementation(async (key: string) => (key === 'products/tenant-1/p1' ? original : null));
+
+      const base64 = await service.flowPhotoBase64(product);
+      const small = Buffer.from(base64!, 'base64');
+      const meta = await sharp(small).metadata();
+      // 2400x3200 portrait keeps its 3:4 shape.
+      expect(meta).toMatchObject({ format: 'jpeg', width: 450, height: 600 });
+      expect(small.length).toBeLessThan(FLOW_PHOTO_LIMITS.photo);
+      expect(storage.save).toHaveBeenCalledWith('products/tenant-1/p1.flow-v2.jpg', small);
+    });
+
+    it('reuses the saved copy without resizing again', async () => {
+      storage.readBuffer.mockImplementation(async (key: string) => (key.endsWith('.flow-v2.jpg') ? Buffer.from('small') : null));
+      await expect(service.flowPhotoBase64(product)).resolves.toBe(Buffer.from('small').toString('base64'));
+      expect(storage.save).not.toHaveBeenCalled();
+    });
+
+    it('returns null without a photo, or when the file cannot be read as an image', async () => {
+      await expect(service.flowPhotoBase64({ ...product, photoMimeType: null })).resolves.toBeNull();
+      storage.readBuffer.mockImplementation(async (key: string) => (key.endsWith('.flow-v2.jpg') ? null : Buffer.from('not an image')));
+      await expect(service.flowPhotoBase64(product)).resolves.toBeNull();
+    });
+
+    it('makes a small square thumbnail of the whole photo for list rows', async () => {
+      const original = await sharp({ create: { width: 900, height: 1200, channels: 3, background: '#c0392b' } }).jpeg().toBuffer();
+      storage.readBuffer.mockImplementation(async (key: string) => (key === 'products/tenant-1/p1' ? original : null));
+
+      const thumb = Buffer.from((await service.flowThumbnailBase64(product))!, 'base64');
+      expect(await sharp(thumb).metadata()).toMatchObject({ format: 'jpeg', width: 144, height: 144 });
+      expect(thumb.length).toBeLessThan(FLOW_PHOTO_LIMITS.thumb);
+      expect(storage.save).toHaveBeenCalledWith('products/tenant-1/p1.thumb-v1.jpg', thumb);
+    });
+
+    it('drops every saved copy when the photo is replaced', async () => {
+      await service.upload('user-1', 'p1', file(JPEG));
+      expect(storage.remove).toHaveBeenCalledWith('products/tenant-1/p1.flow-v2.jpg');
+      expect(storage.remove).toHaveBeenCalledWith('products/tenant-1/p1.thumb-v1.jpg');
+    });
   });
 });

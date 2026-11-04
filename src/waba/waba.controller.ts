@@ -132,9 +132,16 @@ export class WabaController {
       },
     );
 
+    // The number is registered either way; a missing Flow key is reported, not fatal.
+    let flowKeyWarning: string | undefined;
+    await this.wabaService.ensureFlowEncryptionKey(tenant.whatsappPhoneNumberId).catch((err: Error) => {
+      flowKeyWarning = `The ordering Flow will not open on this number until its encryption key is set up: ${err.message}`;
+    });
+
     return {
       message: 'WhatsApp number successfully verified and registered with Meta WABA!',
       tenant: updatedTenant,
+      ...(flowKeyWarning ? { flowKeyWarning } : {}),
     };
   }
 

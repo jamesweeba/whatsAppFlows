@@ -104,6 +104,11 @@ export class NumberPoolService {
       );
     }
 
+    // Without its own Flow key the number would show buyers "Something went wrong".
+    const flowKey = await this.wabaService.ensureFlowEncryptionKey(dto.phoneNumberId).catch((err: Error) => {
+      throw new BadRequestException(`Could not set up the Flow encryption key on ${dto.displayNumber}. ${err.message}`);
+    });
+
     return this.prisma.$transaction(async (tx) => {
       const number = await tx.whatsappNumber.create({
         data: {
@@ -121,7 +126,7 @@ export class NumberPoolService {
         action: AuditAction.NUMBER_ADDED,
         numberId: number.id,
         details: `Registered under WABA ${wabaId} (${qualitySummary(number.qualityRating, number.messagingLimit)}).`,
-        metadata: { phoneNumberId: number.phoneNumberId, wabaId },
+        metadata: { phoneNumberId: number.phoneNumberId, wabaId, flowKey },
       });
       return number;
     });
@@ -196,6 +201,8 @@ export class NumberPoolService {
   /**
    * Lock a free number for assignment inside an approve transaction: the given one, or the
    * oldest free one. Row locks mean two admins approving at once never get the same number.
+   * The number's Flow key is checked (and uploaded if needed) before it is handed over, which
+   * also repairs numbers added before keys were set up on add; a failure rolls back the approval.
    */
   async claim(tx: Tx, numberId?: string): Promise<WhatsappNumber> {
     const rows = numberId
@@ -210,7 +217,13 @@ export class NumberPoolService {
         numberId ? 'That number is not free any more. Pick another.' : 'No free WhatsApp numbers left in the pool. Add one first.',
       );
     }
-    return tx.whatsappNumber.findUniqueOrThrow({ where: { id: rows[0].id } });
+    const number = await tx.whatsappNumber.findUniqueOrThrow({ where: { id: rows[0].id } });
+    await this.wabaService.ensureFlowEncryptionKey(number.phoneNumberId).catch((err: Error) => {
+      throw new BadRequestException(
+        `${formatGhanaInternational(number.displayNumber)} is not ready for the ordering Flow, so the shop was not approved. ${err.message}`,
+      );
+    });
+    return number;
   }
 
   private async findOrThrow(id: string) {

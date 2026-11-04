@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  DefaultValuePipe,
   Get,
   HttpCode,
   HttpStatus,
   Param,
+  ParseIntPipe,
   ParseUUIDPipe,
   Post,
   Put,
@@ -16,10 +18,10 @@ import {
 import { TenantStatus, UserRole } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { contentDisposition } from '../common/http.util.js';
-import { parseEnumList } from '../common/query.util.js';
+import { parseChoice, parseEnumList } from '../common/query.util.js';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard.js';
 import { ReviewDecisionDto, SuspendTenantDto, UpdateReviewChecksDto } from './dto/review-decision.dto.js';
-import { ReviewService } from './review.service.js';
+import { PRODUCT_STOCK_FILTERS, ReviewService } from './review.service.js';
 
 @Controller('api/v1/admin')
 @UseGuards(JwtAuthGuard, RolesGuard)
@@ -49,6 +51,21 @@ export class AdminTenantsController {
   @Get('tenants/:id')
   detail(@Param('id', ParseUUIDPipe) id: string) {
     return this.reviewService.detail(id);
+  }
+
+  /**
+   * Every product of a shop, oldest first, with photos, measures and stock tab counts.
+   * GET /admin/tenants/:id/products?search=tom&stock=all|in|out&page=1&limit=20
+   */
+  @Get('tenants/:id/products')
+  products(
+    @Param('id', ParseUUIDPipe) id: string,
+    @Query('search') search?: string,
+    @Query('stock') stock?: string,
+    @Query('page', new DefaultValuePipe(1), ParseIntPipe) page?: number,
+    @Query('limit', new DefaultValuePipe(20), ParseIntPipe) limit?: number,
+  ) {
+    return this.reviewService.products(id, { search, stock: parseChoice(stock, PRODUCT_STOCK_FILTERS, 'stock'), page, limit });
   }
 
   /** Every view is written to the audit log. GET /admin/tenants/:id/documents/:documentId/file */

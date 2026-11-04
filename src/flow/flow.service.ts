@@ -35,6 +35,7 @@ import { isLive } from '../tenant/tenant.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { DecryptedFlowPayload, EncryptedFlowRequest, FlowCryptoService } from './flow-crypto.service.js';
 import { PLACEHOLDER_PHOTO } from './placeholder-image.js';
+import { ProductPhotoService } from '../product/product-photo.service.js';
 
 /** One basket line as stored on the FlowCart. Prices are never stored: they are read from the DB at render time. */
 export interface CartLineRef {
@@ -96,6 +97,8 @@ const MAX_QTY = 10;
 /** Text caps enforced by the Flow validator (see the endpoint contract). */
 const LIMIT = {
   navTitle: 30,
+  screenTitle: 30,
+  listDescription: 80,
   navDescription: 20,
   navMetadata: 80,
   navEnd: 10,
@@ -128,6 +131,20 @@ const PAYMENT_METHODS: Option[] = [
 ];
 
 const QTY_OPTIONS = Array.from({ length: MAX_QTY }, (_, i) => ({ id: String(i + 1), title: String(i + 1) }));
+
+/** The vendor's shop name for a screen title bar; long names are cut so the bar stays on one line. */
+function shopName(tenant: Pick<Tenant, 'name'>): string {
+  return truncate(tenant.name?.trim() || 'Shop', LIMIT.screenTitle);
+}
+
+/**
+ * The line under "What would you like today?" on WELCOME: the vendor's own shop description,
+ * or a neutral line when they have not written one (Meta rejects an empty description).
+ */
+function shopTagline(tenant: Pick<Tenant, 'name' | 'description'>): string {
+  const description = tenant.description?.replace(/\s+/g, ' ').trim();
+  return truncate(description || `Order from ${tenant.name?.trim() || 'us'} right here on WhatsApp.`, LIMIT.listDescription);
+}
 
 function screen(name: string, data: Record<string, any>): Record<string, any> {
   return { version: FLOW_VERSION, screen: name, data };
@@ -177,6 +194,7 @@ export class FlowService implements OnModuleInit {
     private readonly wabaService: WabaService,
     private readonly notifications: NotificationService,
     private readonly categoryService: CategoryService,
+    private readonly productPhotos: ProductPhotoService,
   ) {}
 
   /**
@@ -607,7 +625,7 @@ export class FlowService implements OnModuleInit {
       },
       'on-click-action': navAction('open_category', { category: option.id, page: 1 }),
     }));
-    return screen('WELCOME', { categories: rows });
+    return screen('WELCOME', { shop_name: shopName(tenant), shop_tagline: shopTagline(tenant), categories: rows });
   }
 
   private lastOrderFor(tenantId: string, buyerPhone: string) {
@@ -695,7 +713,9 @@ export class FlowService implements OnModuleInit {
       'on-click-action': navAction('open_basket', { category, page }),
     };
 
-    const rows: Record<string, any>[] = products.map((product) => this.productRow(product, lines, category, page));
+    // Thumbnails only for products with a photo; rows without one simply have no image.
+    const thumbnails = await Promise.all(products.map((product) => this.productPhotos.flowThumbnailBase64(product)));
+    const rows: Record<string, any>[] = products.map((product, i) => this.productRow(product, lines, category, page, thumbnails[i]));
 
     if (rows.length === 0) {
       rows.push({
@@ -720,10 +740,10 @@ export class FlowService implements OnModuleInit {
       });
     }
 
-    return screen('CATALOGUE', { category, page: String(page), basket_bar: [basketBar], products: rows });
+    return screen('CATALOGUE', { shop_name: shopName(tenant), category, page: String(page), basket_bar: [basketBar], products: rows });
   }
 
-  private productRow(product: CatalogProduct, lines: PricedLine[], category: string, page: number) {
+  private productRow(product: CatalogProduct, lines: PricedLine[], category: string, page: number, thumbnail: string | null) {
     const measures = this.measuresOf(product);
     const cheapest = Math.min(...measures.map((m) => m.price));
     const inBasket = lines.filter((l) => l.sku === product.id);
@@ -740,6 +760,7 @@ export class FlowService implements OnModuleInit {
         description: `from ${ghsCompact(cheapest, LIMIT.navDescription - 5)}`,
         metadata: truncate(metadata, LIMIT.navMetadata),
       },
+      ...(thumbnail ? { start: { image: thumbnail, 'alt-text': truncate(product.name, LIMIT.navTitle) } } : {}),
       'on-click-action': navAction('open_product', { sku: product.id, category, page }),
     };
   }
@@ -776,7 +797,7 @@ export class FlowService implements OnModuleInit {
       page: String(page),
       sku: product.id,
       name: truncate(product.name, LIMIT.subheading),
-      photo: PLACEHOLDER_PHOTO,
+      photo: (await this.productPhotos.flowPhotoBase64(product)) ?? PLACEHOLDER_PHOTO,
       note: truncate(product.note?.trim() || 'Choose a measure and how many you want.', LIMIT.caption),
       measures: options,
       qty_options: QTY_OPTIONS,

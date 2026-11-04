@@ -155,6 +155,41 @@ describe('ReviewService', () => {
     expect(tenant.status).toBe(TenantStatus.STOCKED);
   });
 
+  describe('products (every product of a shop)', () => {
+    beforeEach(() => {
+      prisma.product.findMany = vi.fn().mockResolvedValue([
+        { id: 'p1', name: 'Tomatoes', photoUpdatedAt: new Date(1700000000000) },
+        { id: 'p2', name: 'Onions', photoUpdatedAt: null },
+      ]);
+      prisma.product.count = vi.fn(async ({ where }: any) => (where.inStock === true ? 30 : where.inStock === false ? 12 : 42));
+    });
+
+    it('pages through them oldest first, with photo URLs and stock counts', async () => {
+      const result = await service.products('tenant-1', { page: 2, limit: 20 });
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ where: { tenantId: 'tenant-1' }, skip: 20, take: 20, orderBy: [{ createdAt: 'asc' }, { id: 'asc' }] }),
+      );
+      expect(result.data.map((p: any) => p.photoUrl)).toEqual(['/api/v1/products/p1/photo?v=1700000000000', null]);
+      expect(result.meta).toEqual({ total: 42, page: 2, limit: 20, totalPages: 3 });
+      expect(result.counts).toEqual({ all: 42, in: 30, out: 12 });
+    });
+
+    it('filters by name and stock, and caps the page size at 50', async () => {
+      await service.products('tenant-1', { search: ' tom ', stock: 'out', limit: 500 });
+      expect(prisma.product.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { tenantId: 'tenant-1', name: { contains: 'tom', mode: 'insensitive' }, inStock: false },
+          take: 50,
+        }),
+      );
+    });
+
+    it('404s for an unknown shop', async () => {
+      prisma.tenant.findUnique.mockResolvedValueOnce(null);
+      await expect(service.products('nope', {})).rejects.toThrow('Shop not found.');
+    });
+  });
+
   describe('releaseNumber (from the pool page)', () => {
     beforeEach(() => {
       prisma.whatsappNumber.findUnique = vi.fn().mockResolvedValue({ id: 'n1', tenantId: 'tenant-1' });

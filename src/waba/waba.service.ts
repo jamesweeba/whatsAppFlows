@@ -4,6 +4,7 @@ import {
   InternalServerErrorException,
   Logger,
 } from '@nestjs/common';
+import * as crypto from 'crypto';
 import { isBsuid, toInternationalDigits } from '../common/phone.util.js';
 
 export interface AddPhoneNumberOptions {
@@ -55,6 +56,14 @@ export const WELCOME_BODY_TEXT = 'Hi 👋 What would you like to do today?';
 /** WhatsApp caps interactive reply-button titles and CTA labels at 20 characters. */
 const BUTTON_TITLE_MAX = 20;
 const REPLY_BUTTON_LIMIT = 3;
+
+/** Meta's view of the Flow encryption key on one phone number. */
+export type FlowKeyResult = 'ALREADY_VALID' | 'UPLOADED' | 'SKIPPED';
+
+/** The PEM body only, so keys compare equal regardless of headers, line breaks or spacing. */
+function pemBody(pem: string): string {
+  return pem.replace(/-----[^-]+-----/g, '').replace(/\s/g, '');
+}
 
 type MessagesResponse = { messages?: Array<{ id: string }> };
 
@@ -333,6 +342,63 @@ export class WabaService {
       qualityRating: data.quality_rating,
       messagingLimit: data.messaging_limit_tier,
     };
+  }
+
+  // ───────────────────────── Flow encryption key ─────────────────────────
+
+  /**
+   * The public half of META_FLOW_PRIVATE_KEY, as PEM. Null when Flows are not set up,
+   * so callers can skip the key step instead of failing.
+   */
+  flowPublicKey(): string | null {
+    let privatePem = (process.env.META_FLOW_PRIVATE_KEY || '').trim();
+    if (!privatePem || privatePem.includes('YOUR_RSA_2048_PRIVATE_KEY_HERE')) {
+      return null;
+    }
+    if (privatePem.includes('\\n')) {
+      privatePem = privatePem.replace(/\\n/g, '\n');
+    }
+    const privateKey = crypto.createPrivateKey({ key: privatePem, passphrase: process.env.META_FLOW_PASSPHRASE || undefined });
+    return crypto.createPublicKey(privateKey).export({ type: 'spki', format: 'pem' }).toString();
+  }
+
+  /** GET /{PHONE_NUMBER_ID}/whatsapp_business_encryption */
+  async getFlowEncryptionKey(phoneNumberId: string): Promise<{ publicKey: string; status: string }> {
+    const res = await this.request<{ data?: Array<{ business_public_key?: string; business_public_key_signature_status?: string }> }>(
+      `${this.baseUrl}/${phoneNumberId}/whatsapp_business_encryption`,
+      { method: 'GET' },
+    );
+    const entry = res.data?.[0];
+    return { publicKey: entry?.business_public_key ?? '', status: entry?.business_public_key_signature_status ?? 'MISSING' };
+  }
+
+  /**
+   * Make sure Meta can encrypt Flow requests for this number. The key is registered per
+   * phone number, and a number without it shows buyers "Something went wrong" when they
+   * open the Flow. Uploads only when Meta's key is missing or different, then reads it
+   * back and throws unless Meta reports it VALID.
+   */
+  async ensureFlowEncryptionKey(phoneNumberId: string): Promise<FlowKeyResult> {
+    const publicKey = this.flowPublicKey();
+    if (!publicKey) {
+      return 'SKIPPED';
+    }
+
+    const current = await this.getFlowEncryptionKey(phoneNumberId);
+    if (current.status === 'VALID' && pemBody(current.publicKey) === pemBody(publicKey)) {
+      return 'ALREADY_VALID';
+    }
+
+    await this.post(`${this.baseUrl}/${phoneNumberId}/whatsapp_business_encryption`, { business_public_key: publicKey });
+
+    const after = await this.getFlowEncryptionKey(phoneNumberId);
+    if (after.status !== 'VALID' || pemBody(after.publicKey) !== pemBody(publicKey)) {
+      throw new BadRequestException(
+        `Meta did not accept the Flow encryption key for phone number id ${phoneNumberId} (status ${after.status}).`,
+      );
+    }
+    this.logger.log(`Uploaded the Flow encryption key to phone number id ${phoneNumberId}.`);
+    return 'UPLOADED';
   }
 
   private post<T>(url: string, body: Record<string, any>): Promise<T> {
