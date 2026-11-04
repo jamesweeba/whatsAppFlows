@@ -1,7 +1,7 @@
 import { OrderStatus } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TenantService } from '../tenant/tenant.service.js';
-import { OrderService } from './order.service.js';
+import { OrderService, orderReceivedTap } from './order.service.js';
 
 describe('OrderService', () => {
   let service: OrderService;
@@ -18,10 +18,14 @@ describe('OrderService', () => {
         findFirst: vi.fn(),
         update: vi.fn(),
         delete: vi.fn(),
+        updateMany: vi.fn(),
       },
     };
 
-    waba = { sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-1' }) };
+    waba = {
+      sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-1' }),
+      sendInteractiveButtons: vi.fn().mockResolvedValue({ messageId: 'wamid-2' }),
+    };
     service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba);
   });
 
@@ -135,11 +139,78 @@ describe('OrderService', () => {
     expect(prisma.order.update).toHaveBeenCalledWith(
       expect.objectContaining({ data: expect.objectContaining({ riderName: 'Kofi', riderPhone: '0244000000' }) }),
     );
-    expect(waba.sendTextMessage).toHaveBeenCalledWith(
-      'phone-1',
-      '+233240000000',
-      expect.stringMatching(/MX-ABC123\* is on its way![\s\S]*Rider: Kofi, 0244000000[\s\S]*GH₵250\.00\* ready in cash/),
-    );
+    expect(waba.sendInteractiveButtons).toHaveBeenCalledWith({
+      phoneNumberId: 'phone-1',
+      toPhone: '+233240000000',
+      bodyText: expect.stringMatching(/MX-ABC123\* is on its way![\s\S]*Rider: Kofi, 0244000000[\s\S]*GH₵250\.00\* ready in cash/),
+      buttons: [{ id: 'order_received:MX-ABC123', title: '✅ I got my order' }],
+    });
+    expect(waba.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('falls back to plain text when WhatsApp refuses the button message', async () => {
+    prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', userId: 'user-1' });
+    prisma.order.findFirst.mockResolvedValue({ id: 'order-1', tenantId: 'tenant-1', status: OrderStatus.PROCESSING });
+    prisma.order.update.mockResolvedValue(updatedOrder(OrderStatus.OUT_FOR_DELIVERY));
+    waba.sendInteractiveButtons.mockRejectedValue(new Error('outside the 24h window'));
+
+    await service.updateStatus('user-1', 'order-1', { status: OrderStatus.OUT_FOR_DELIVERY });
+    expect(waba.sendTextMessage).toHaveBeenCalledWith('phone-1', '+233240000000', expect.stringContaining('is on its way'));
+  });
+
+  describe('buyer taps "I got my order"', () => {
+    const order = (status: OrderStatus, extra: Record<string, unknown> = {}) => ({
+      id: 'order-1', tenantId: 'tenant-1', orderNumber: 'MX-ABC123', buyerPhone: '+233240000000', status, deliveryConfirmedAt: null, ...extra,
+    });
+
+    it('reads the order number from the button id', () => {
+      expect(orderReceivedTap('order_received:MX-ABC123')).toBe('MX-ABC123');
+      expect(orderReceivedTap('order received please')).toBeNull();
+    });
+
+    it('marks an out-for-delivery order DELIVERED, matching the phone in any format', async () => {
+      prisma.order.findFirst.mockResolvedValue(order(OrderStatus.OUT_FOR_DELIVERY));
+      prisma.order.updateMany.mockResolvedValue({ count: 1 });
+
+      const reply = await service.confirmReceivedByBuyer('tenant-1', '233240000000', 'MX-ABC123');
+      expect(reply).toContain('marked as received');
+      expect(prisma.order.updateMany).toHaveBeenCalledWith({
+        where: { id: 'order-1', status: OrderStatus.OUT_FOR_DELIVERY },
+        data: { status: OrderStatus.DELIVERED, deliveryConfirmedAt: expect.any(Date) },
+      });
+      expect(prisma.order.findFirst).toHaveBeenCalledWith({ where: { tenantId: 'tenant-1', orderNumber: 'MX-ABC123' } });
+    });
+
+    it("ignores a tap from someone else's number (e.g. a forwarded message)", async () => {
+      prisma.order.findFirst.mockResolvedValue(order(OrderStatus.OUT_FOR_DELIVERY));
+      const reply = await service.confirmReceivedByBuyer('tenant-1', '+233209999999', 'MX-ABC123');
+      expect(reply).toContain("couldn't find order");
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
+      expect(prisma.order.update).not.toHaveBeenCalled();
+    });
+
+    it('records the confirmation on an order the vendor already marked delivered', async () => {
+      prisma.order.findFirst.mockResolvedValue(order(OrderStatus.DELIVERED));
+      expect(await service.confirmReceivedByBuyer('tenant-1', '+233240000000', 'MX-ABC123')).toContain('already marked as received');
+      expect(prisma.order.update).toHaveBeenCalledWith({ where: { id: 'order-1' }, data: { deliveryConfirmedAt: expect.any(Date) } });
+    });
+
+    it('changes nothing on a cancelled order or one not yet dispatched', async () => {
+      prisma.order.findFirst.mockResolvedValue(order(OrderStatus.CANCELLED));
+      expect(await service.confirmReceivedByBuyer('tenant-1', '+233240000000', 'MX-ABC123')).toContain('was cancelled');
+      prisma.order.findFirst.mockResolvedValue(order(OrderStatus.PROCESSING));
+      expect(await service.confirmReceivedByBuyer('tenant-1', '+233240000000', 'MX-ABC123')).toContain("isn't out for delivery yet");
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
+      expect(prisma.order.update).not.toHaveBeenCalled();
+    });
+
+    it('treats a second tap (the race lost) as already received', async () => {
+      prisma.order.findFirst
+        .mockResolvedValueOnce(order(OrderStatus.OUT_FOR_DELIVERY))
+        .mockResolvedValueOnce(order(OrderStatus.DELIVERED, { deliveryConfirmedAt: new Date() }));
+      prisma.order.updateMany.mockResolvedValue({ count: 0 });
+      expect(await service.confirmReceivedByBuyer('tenant-1', '+233240000000', 'MX-ABC123')).toContain('already marked as received');
+    });
   });
 
   it('sends packed and delivered updates, but nothing when the status is unchanged', async () => {

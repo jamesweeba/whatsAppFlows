@@ -54,6 +54,7 @@ describe('ChatModule', () => {
     linkSession: vi.fn(),
     findLatestForBuyer: vi.fn(),
     attachLocation: vi.fn(),
+    confirmReceivedByBuyer: vi.fn(),
   };
 
   const mockWabaService = {
@@ -391,6 +392,19 @@ describe('ChatModule', () => {
         expect.objectContaining({ data: expect.objectContaining({ source: 'LOCATION' }) }),
       );
       expect(result.systemResponse!.text).toContain('saved this pin for order *MX-7*');
+    });
+
+    it('confirms receipt when the buyer taps "I got my order", without asking the AI', async () => {
+      mockOrderService.confirmReceivedByBuyer.mockResolvedValue('✅ Thank you! Order *MX-7* is marked as received.');
+
+      const result = await chatService.processIncomingMessage(buyerMessage('order_received:MX-7'));
+
+      expect(mockOrderService.confirmReceivedByBuyer).toHaveBeenCalledWith('tenant-abc', '+233240000000', 'MX-7');
+      expect(mockPrismaService.chatMessage.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ text: '✅ I got my order (MX-7)' }) }),
+      );
+      expect(result.classification).toBeNull();
+      expect(result.systemResponse!.text).toContain('marked as received');
     });
 
     it('does not link an order that belongs to another tenant', async () => {

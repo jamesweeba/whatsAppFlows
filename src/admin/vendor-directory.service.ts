@@ -28,6 +28,8 @@ export interface VendorListQuery {
   tab?: VendorTab;
   search?: string;
   market?: string;
+  /** Only shops with a banner waiting for approval. */
+  bannerPending?: boolean;
   sort?: VendorSort;
   page?: number;
   limit?: number;
@@ -46,6 +48,7 @@ interface VendorRow {
   orders30d: number;
   lastOrderAt: Date | null;
   noteCount: number;
+  bannerPending: boolean;
 }
 
 /** The super admin's directory of every shop on the platform. */
@@ -69,7 +72,8 @@ export class VendorDirectoryService {
         SELECT t."id", t."refNumber", t."name", t."ownerFullName", t."ownerPhone", t."market", t."status",
                t."whatsappNumber", t."createdAt",
                COALESCE(o."orders30d", 0)::int AS "orders30d", o."lastOrderAt",
-               (SELECT COUNT(*)::int FROM "VendorNote" n WHERE n."tenantId" = t."id") AS "noteCount"
+               (SELECT COUNT(*)::int FROM "VendorNote" n WHERE n."tenantId" = t."id") AS "noteCount",
+               t."bannerPendingAt" IS NOT NULL AS "bannerPending"
         FROM "Tenant" t
         LEFT JOIN (
           SELECT "tenantId",
@@ -110,8 +114,8 @@ export class VendorDirectoryService {
     return rows;
   }
 
-  /** Search (shop, owner, phone, WhatsApp number or ref) and market, shared by the page and the counts. */
-  private filterSql({ search, market }: VendorListQuery): Prisma.Sql {
+  /** Search (shop, owner, phone, WhatsApp number or ref), market and banner, shared by the page and the counts. */
+  private filterSql({ search, market, bannerPending }: VendorListQuery): Prisma.Sql {
     return whereSql([
       searchSql(search, {
         text: [Prisma.sql`t."name"`, Prisma.sql`t."ownerFullName"`],
@@ -119,6 +123,7 @@ export class VendorDirectoryService {
         ref: Prisma.sql`t."refNumber"`,
       }),
       market?.trim() ? Prisma.sql`LOWER(TRIM(t."market")) = ${market.trim().toLowerCase()}` : null,
+      bannerPending ? Prisma.sql`t."bannerPendingAt" IS NOT NULL` : null,
     ]);
   }
 }

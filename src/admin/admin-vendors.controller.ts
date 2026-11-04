@@ -15,7 +15,7 @@ export class AdminVendorsController {
 
   /**
    * Every shop on the platform, with tab counts.
-   * GET /admin/vendors?tab=active&search=ama&market=Kejetia,%20Kumasi&sort=orders&page=1&limit=10
+   * GET /admin/vendors?tab=active&search=ama&market=Kejetia,%20Kumasi&banner=pending&sort=orders&page=1&limit=10
    */
   @Get()
   list(
@@ -23,10 +23,13 @@ export class AdminVendorsController {
     @Query('search') search?: string,
     @Query('market') market?: string,
     @Query('sort') sort?: string,
+    @Query('banner') banner?: string,
     @Query('page', new DefaultValuePipe(1), ParseIntPipe) page?: number,
     @Query('limit', new DefaultValuePipe(10), ParseIntPipe) limit?: number,
   ) {
-    return this.directory.list({ tab: parseChoice(tab, TABS, 'tab'), search, market, sort: parseChoice(sort, VENDOR_SORTS, 'sort'), page, limit });
+    return this.directory.list({ tab: parseChoice(tab, TABS, 'tab'), search, market,
+      bannerPending: parseChoice(banner, ['pending'] as const, 'banner') === 'pending',
+      sort: parseChoice(sort, VENDOR_SORTS, 'sort'), page, limit });
   }
 
   /** Markets for the filter dropdown. GET /admin/vendors/markets */

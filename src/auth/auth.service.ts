@@ -9,12 +9,14 @@ import { hash, compare } from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SignupDto } from './dto/signup.dto.js';
 import { LoginDto } from './dto/login.dto.js';
+import { LoginThrottleService } from './login-throttle.service.js';
 
 @Injectable()
 export class AuthService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly jwtService: JwtService,
+    private readonly throttle: LoginThrottleService,
   ) {}
 
   async signup(dto: SignupDto) {
@@ -56,22 +58,22 @@ export class AuthService {
     };
   }
 
-  async login(dto: LoginDto) {
-    // Find user by email
+  /** `ip` is the caller's address, for the per-IP limit on failed attempts. */
+  async login(dto: LoginDto, ip?: string) {
+    // Refuse while locked out, before even checking the password.
+    this.throttle.assertAllowed(dto.email, ip);
+
     const user = await this.prisma.user.findUnique({
       where: { email: dto.email },
     });
 
-    if (!user) {
+    // Same error, and a failure counted, whether the email or the password was wrong.
+    const isPasswordValid = user ? await compare(dto.password, user.password) : false;
+    if (!user || !isPasswordValid) {
+      this.throttle.recordFailure(dto.email, ip);
       throw new UnauthorizedException('Invalid email or password');
     }
-
-    // Compare passwords
-    const isPasswordValid = await compare(dto.password, user.password);
-
-    if (!isPasswordValid) {
-      throw new UnauthorizedException('Invalid email or password');
-    }
+    this.throttle.recordSuccess(dto.email);
 
     // Generate JWT token
     const token = await this.generateToken(user.id, user.email, user.role);

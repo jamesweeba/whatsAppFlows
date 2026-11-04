@@ -50,6 +50,9 @@ enum AuditAction {
   NOTE_ADDED
   NOTE_EDITED
   NOTE_DELETED
+  BANNER_APPROVED
+  BANNER_REJECTED
+  BANNER_REMOVED
 }
 
 /// A pool number's state. COOLING numbers count as FREE once released over 7 days ago.
@@ -162,6 +165,12 @@ model Tenant {
   /// MoMo payout number and the name it is registered to (checked during review).
   momoNumber            String?
   momoName              String?
+  /// Approved banner shown to buyers on the order form (file in storage). Null: no banner.
+  bannerUpdatedAt       DateTime?
+  /// A banner the vendor uploaded that an admin has not approved yet.
+  bannerPendingAt       DateTime?
+  /// Why an admin turned down the last uploaded banner (shown to the vendor until they upload again).
+  bannerRejectedReason  String?
   /// The reviewer's due-diligence ticks while UNDER_REVIEW; cleared on each decision.
   reviewChecks          Json?
   documents             VendorDocument[]
@@ -400,6 +409,8 @@ model Order {
   locationName        String?
   locationAddress     String?
   locationReceivedAt  DateTime?
+  /// When the buyer tapped "I got my order" on the out-for-delivery message (moves it to DELIVERED).
+  deliveryConfirmedAt DateTime?
   riderName           String?
   riderPhone          String?
   flowCartId          String?        @unique

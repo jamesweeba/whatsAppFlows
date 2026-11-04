@@ -35,6 +35,7 @@ import { isLive } from '../tenant/tenant.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { DecryptedFlowPayload, EncryptedFlowRequest, FlowCryptoService } from './flow-crypto.service.js';
 import { PLACEHOLDER_PHOTO } from './placeholder-image.js';
+import { ShopBannerService } from '../tenant/shop-banner.service.js';
 import { ProductPhotoService } from '../product/product-photo.service.js';
 
 /** One basket line as stored on the FlowCart. Prices are never stored: they are read from the DB at render time. */
@@ -92,6 +93,8 @@ const PRODUCTS_PER_PAGE = 15;
 /** BASKET shows the 20 most recent lines (NavigationList caps at 20). */
 const BASKET_LINES_SHOWN = 20;
 const MAX_WELCOME_OPTIONS = 20;
+/** WELCOME row id of the shop's own logo row (category ids are UUIDs, "all" or "reorder_last"). */
+const SHOP_ROW_ID = 'shop';
 const MAX_QTY = 10;
 
 /** Text caps enforced by the Flow validator (see the endpoint contract). */
@@ -195,6 +198,7 @@ export class FlowService implements OnModuleInit {
     private readonly notifications: NotificationService,
     private readonly categoryService: CategoryService,
     private readonly productPhotos: ProductPhotoService,
+    private readonly banners: ShopBannerService,
   ) {}
 
   /**
@@ -613,8 +617,12 @@ export class FlowService implements OnModuleInit {
 
   private async welcomeScreen(tenant: Tenant, buyerPhone: string | null): Promise<Record<string, any>> {
     const categories = await this.listCategories(tenant.id);
-    const reorder = buyerPhone ? await this.reorderOption(tenant.id, buyerPhone) : null;
-    const options = (reorder ? [reorder, ...categories] : categories).slice(0, MAX_WELCOME_OPTIONS);
+    const [reorder, logo] = await Promise.all([
+      buyerPhone ? this.reorderOption(tenant.id, buyerPhone) : null,
+      this.banners.flowThumbnailBase64(tenant),
+    ]);
+    const shopRow = logo ? this.shopRow(tenant, logo) : null;
+    const options = (reorder ? [reorder, ...categories] : categories).slice(0, MAX_WELCOME_OPTIONS - (shopRow ? 1 : 0));
 
     // A NavigationList, so choosing where to start is a single tap.
     const rows = options.map((option) => ({
@@ -625,7 +633,29 @@ export class FlowService implements OnModuleInit {
       },
       'on-click-action': navAction('open_category', { category: option.id, page: 1 }),
     }));
-    return screen('WELCOME', { shop_name: shopName(tenant), shop_tagline: shopTagline(tenant), categories: rows });
+    return screen('WELCOME', {
+      shop_name: shopName(tenant),
+      shop_tagline: shopTagline(tenant),
+      categories: shopRow ? [shopRow, ...rows] : rows,
+    });
+  }
+
+  /**
+   * The top WELCOME row for a shop with an approved banner: its image as a square
+   * thumbnail beside the shop name, so buyers can see whose shop this is. Meta allows
+   * nothing but lists on this screen, so a full-width banner is not possible here.
+   * Tapping it opens every product.
+   */
+  private shopRow(tenant: Tenant, logo: string) {
+    return {
+      id: SHOP_ROW_ID,
+      'main-content': {
+        title: truncate(shopName(tenant), LIMIT.navTitle),
+        metadata: 'Approved on MarketiX · tap to see everything we sell',
+      },
+      start: { image: logo, 'alt-text': truncate(shopName(tenant), LIMIT.navTitle) },
+      'on-click-action': navAction('open_category', { category: ALL_PRODUCTS_ID, page: 1 }),
+    };
   }
 
   private lastOrderFor(tenantId: string, buyerPhone: string) {

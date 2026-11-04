@@ -3,7 +3,7 @@ import { BuyerIntent, MessageSender, MessageSource, Product, Tenant } from '@pri
 import { ghCedis } from '../common/money.util.js';
 import { isHiddenNumber } from '../common/phone.util.js';
 import { FlowService } from '../flow/flow.service.js';
-import { OrderService } from '../order/order.service.js';
+import { ORDER_RECEIVED_BUTTON_TITLE, orderReceivedTap, OrderService } from '../order/order.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { isLive, TenantService } from '../tenant/tenant.service.js';
 import { WabaService, WELCOME_BODY_TEXT, WELCOME_BUTTON_IDS } from '../waba/waba.service.js';
@@ -122,6 +122,11 @@ export class ChatService implements OnModuleInit {
     if (dto.location) {
       const pinned = await this.handleLocationPin(tenant, session, dto, messageText);
       if (pinned) return pinned;
+    }
+
+    const receivedOrder = orderReceivedTap(messageText);
+    if (receivedOrder) {
+      return this.handleOrderReceived(tenant, session, dto, receivedOrder);
     }
 
     if (isHiddenNumber(dto.buyerPhone) && !orderRef) {
@@ -299,6 +304,28 @@ export class ChatService implements OnModuleInit {
       kind: 'text',
       text: `📍 Thanks! We've saved this pin for order *${order.orderNumber}*. Our rider will use it to find you.`,
     };
+    if (tenant.whatsappPhoneNumberId) {
+      reply = await this.dispatch(tenant, dto.buyerPhone, reply);
+    }
+    const systemResponse = await this.saveMessage(session.id, {
+      sender: MessageSender.SYSTEM,
+      source: MessageSource.TEXT,
+      text: reply.text,
+    });
+
+    return { duplicate: false, session, message: buyerMessage, classification: null, systemResponse };
+  }
+
+  /** The buyer tapped "I got my order" on the out-for-delivery message. No AI call needed. */
+  private async handleOrderReceived(tenant: TenantWithProducts, session: { id: string }, dto: ProcessMessageDto, orderNumber: string) {
+    const buyerMessage = await this.saveMessage(session.id, {
+      sender: dto.sender || MessageSender.BUYER,
+      source: MessageSource.TEXT,
+      text: `${ORDER_RECEIVED_BUTTON_TITLE} (${orderNumber})`,
+      whatsappMessageId: dto.incomingMessageId,
+    });
+
+    let reply: Reply = { kind: 'text', text: await this.orderService.confirmReceivedByBuyer(tenant.id, dto.buyerPhone, orderNumber) };
     if (tenant.whatsappPhoneNumberId) {
       reply = await this.dispatch(tenant, dto.buyerPhone, reply);
     }

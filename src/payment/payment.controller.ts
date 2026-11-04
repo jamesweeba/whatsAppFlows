@@ -10,8 +10,8 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import type { Request } from 'express';
-import { OrderStatus } from '@prisma/client';
 import { ghCedis } from '../common/money.util.js';
+import { CANCELLED_ORDER_STATUSES, UNPAID_ORDER_STATUSES } from '../order/order-status-groups.js';
 import { OrderService } from '../order/order.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { PaystackService } from './paystack.service.js';
@@ -60,18 +60,38 @@ export class PaymentController {
       return { status: 'ORDER_NOT_FOUND', reference };
     }
 
-    if (order.status === OrderStatus.PAID) {
+    if (CANCELLED_ORDER_STATUSES.includes(order.status)) {
+      // Money arrived for an order that was cancelled: leave it alone, flag it for a refund.
+      this.logger.error(`Payment received for ${order.status} order ${reference}. Check it and refund the buyer if needed.`);
+      return { status: 'ORDER_CLOSED', reference };
+    }
+    if (!UNPAID_ORDER_STATUSES.includes(order.status)) {
       return { status: 'ALREADY_PAID', reference };
     }
 
-    const amountPaid = data.amount ? data.amount / 100 : order.totalAmount;
+    // The signature proves Paystack sent this, not that the buyer paid the full price in
+    // cedis: check both before accepting it. Paystack amounts are in pesewas.
+    const expectedPesewas = Math.round(order.totalAmount * 100);
+    const paidPesewas = Number(data.amount);
+    const currency = String(data.currency ?? '').toUpperCase();
+    if (currency !== 'GHS' || !Number.isFinite(paidPesewas) || paidPesewas < expectedPesewas) {
+      this.logger.error(
+        `Rejected payment for ${reference}: got ${data.amount ?? 'no amount'} ${currency || 'no currency'}, expected ${expectedPesewas} GHS (pesewas). Order left unpaid.`,
+      );
+      return { status: 'AMOUNT_MISMATCH', reference };
+    }
+
+    const amountPaid = paidPesewas / 100;
     const channel = data.channel || 'mobile_money';
     const paidAt = data.paid_at || new Date().toISOString();
     const note = [order.notes, `Paystack verified: ${ghCedis(amountPaid)} via ${channel} (${paidAt})`]
       .filter(Boolean)
       .join(' | ');
 
-    await this.orderService.markPaid(order.id, note);
+    if (!(await this.orderService.markPaid(order.id, note))) {
+      // A duplicate webhook (or a status change) got there first.
+      return { status: 'ALREADY_PAID', reference };
+    }
     this.logger.log(`Order ${order.orderNumber} marked as PAID.`);
 
     if (order.tenant?.whatsappPhoneNumberId && order.buyerPhone) {

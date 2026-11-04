@@ -8,6 +8,7 @@ import { ReviewChecksDto, ReviewDecisionDto, UpdateReviewChecksDto } from './dto
 import { formatGhanaInternational } from '../common/phone.util.js';
 import { AuditService } from './audit.service.js';
 import { NumberPoolService } from './number-pool.service.js';
+import { bannerState } from '../tenant/shop-banner.service.js';
 import { withPhotoUrl } from '../product/product-photo.service.js';
 
 /** States a reviewer can decide on. */
@@ -81,13 +82,14 @@ export class ReviewService {
 
   /** Tiles at the top of the review queue. */
   async summary() {
-    const [waiting, moreInfo, freeNumbers, activeShops] = await Promise.all([
+    const [waiting, moreInfo, freeNumbers, activeShops, pendingBanners] = await Promise.all([
       this.prisma.tenant.count({ where: { status: { in: REVIEWABLE } } }),
       this.prisma.tenant.count({ where: { status: TenantStatus.MORE_INFO } }),
       this.numberPool.countFree(),
       this.prisma.tenant.count({ where: { status: TenantStatus.ACTIVE } }),
+      this.prisma.tenant.count({ where: { bannerPendingAt: { not: null } } }),
     ]);
-    return { waiting, moreInfo, freeNumbers, activeShops };
+    return { waiting, moreInfo, freeNumbers, activeShops, pendingBanners };
   }
 
   /** The review queue: oldest submission first. Defaults to shops waiting for review. */
@@ -147,6 +149,7 @@ export class ReviewService {
       documents: documents.map((d) => this.onboarding.publicDocument(d)),
       kyc: kycItems(tenant, documents),
       products: { sample: products.map(withPhotoUrl), inStock, uncategorised },
+      banner: bannerState(tenant),
     };
   }
 

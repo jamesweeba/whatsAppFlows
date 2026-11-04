@@ -15,7 +15,7 @@ describe('PaymentController', () => {
 
   beforeEach(() => {
     paystack = { verifyWebhookSignature: vi.fn().mockReturnValue(true) };
-    orders = { findByOrderNumber: vi.fn(), markPaid: vi.fn().mockResolvedValue({}) };
+    orders = { findByOrderNumber: vi.fn(), markPaid: vi.fn().mockResolvedValue(true) };
     waba = { sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-confirm' }) };
 
     controller = new PaymentController(paystack, orders, waba);
@@ -33,7 +33,7 @@ describe('PaymentController', () => {
     });
 
     const result = await controller.handlePaystackWebhook(
-      webhook({ reference: 'MX-4567', amount: 3500, channel: 'mobile_money', paid_at: '2026-10-19T17:00:00Z' }),
+      webhook({ reference: 'MX-4567', amount: 3500, currency: 'GHS', channel: 'mobile_money', paid_at: '2026-10-19T17:00:00Z' }),
       'valid-signature',
     );
 
@@ -50,6 +50,56 @@ describe('PaymentController', () => {
     expect(result).toEqual({ status: 'ALREADY_PAID', reference: 'MX-4567' });
     expect(orders.markPaid).not.toHaveBeenCalled();
     expect(waba.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  describe('checks the payment before accepting it', () => {
+    const unpaid = (extra: Record<string, unknown> = {}) => ({
+      id: 'order-123', orderNumber: 'MX-4567', totalAmount: 35.0, status: OrderStatus.AWAITING_PAYMENT, buyerPhone: '+233240000000', notes: null,
+      tenant: { name: 'Fresh Market', whatsappPhoneNumberId: 'phone-id-123' }, ...extra,
+    });
+
+    it.each([
+      ['less than the order total', { amount: 100, currency: 'GHS' }],
+      ['another currency', { amount: 3500, currency: 'NGN' }],
+      ['no amount', { currency: 'GHS' }],
+      ['no currency', { amount: 3500 }],
+    ])('leaves the order unpaid when Paystack reports %s', async (_label, data) => {
+      orders.findByOrderNumber.mockResolvedValue(unpaid());
+      const result = await controller.handlePaystackWebhook(webhook({ reference: 'MX-4567', ...data }), 'sig');
+      expect(result).toEqual({ status: 'AMOUNT_MISMATCH', reference: 'MX-4567' });
+      expect(orders.markPaid).not.toHaveBeenCalled();
+      expect(waba.sendTextMessage).not.toHaveBeenCalled();
+    });
+
+    it('never marks a cancelled or refunded order as paid', async () => {
+      for (const status of [OrderStatus.CANCELLED, OrderStatus.REFUNDED]) {
+        orders.findByOrderNumber.mockResolvedValue(unpaid({ status }));
+        const result = await controller.handlePaystackWebhook(webhook({ reference: 'MX-4567', amount: 3500, currency: 'GHS' }), 'sig');
+        expect(result).toEqual({ status: 'ORDER_CLOSED', reference: 'MX-4567' });
+      }
+      expect(orders.markPaid).not.toHaveBeenCalled();
+    });
+
+    it('does not pull an order that moved on (e.g. out for delivery) back to PAID', async () => {
+      orders.findByOrderNumber.mockResolvedValue(unpaid({ status: OrderStatus.OUT_FOR_DELIVERY }));
+      const result = await controller.handlePaystackWebhook(webhook({ reference: 'MX-4567', amount: 3500, currency: 'GHS' }), 'sig');
+      expect(result).toEqual({ status: 'ALREADY_PAID', reference: 'MX-4567' });
+      expect(orders.markPaid).not.toHaveBeenCalled();
+    });
+
+    it('sends one confirmation when two webhooks for the same payment race', async () => {
+      orders.findByOrderNumber.mockResolvedValue(unpaid());
+      orders.markPaid.mockResolvedValue(false); // the other webhook updated it first
+      const result = await controller.handlePaystackWebhook(webhook({ reference: 'MX-4567', amount: 3500, currency: 'GHS' }), 'sig');
+      expect(result).toEqual({ status: 'ALREADY_PAID', reference: 'MX-4567' });
+      expect(waba.sendTextMessage).not.toHaveBeenCalled();
+    });
+
+    it('accepts paying more than the total (rounding, fees)', async () => {
+      orders.findByOrderNumber.mockResolvedValue(unpaid());
+      const result = await controller.handlePaystackWebhook(webhook({ reference: 'MX-4567', amount: 3600, currency: 'ghs' }), 'sig');
+      expect(result).toEqual({ status: 'PROCESSED', reference: 'MX-4567' });
+    });
   });
 
   it('rejects webhooks with an invalid signature before touching any order', async () => {

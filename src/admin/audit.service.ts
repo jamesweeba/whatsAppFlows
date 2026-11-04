@@ -23,6 +23,9 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   NOTE_ADDED: 'Note added',
   NOTE_EDITED: 'Note edited',
   NOTE_DELETED: 'Note deleted',
+  BANNER_APPROVED: 'Banner approved',
+  BANNER_REJECTED: 'Banner rejected',
+  BANNER_REMOVED: 'Banner removed',
 };
 
 /** The most rows one CSV export returns. */

@@ -62,6 +62,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
   let orderService: any;
   let waba: any;
   let productPhotos: any;
+  let banners: any;
 
   const tenant = {
     id: 'tenant-1',
@@ -120,6 +121,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       markLocationRequested: vi.fn().mockResolvedValue(undefined),
     };
 
+    banners = { flowThumbnailBase64: vi.fn().mockResolvedValue(null) };
     productPhotos = { flowPhotoBase64: vi.fn().mockResolvedValue(null), flowThumbnailBase64: vi.fn().mockResolvedValue(null) };
 
     waba = {
@@ -127,7 +129,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       sendLocationRequest: vi.fn().mockResolvedValue({ messageId: 'wamid-loc' }),
     };
 
-    service = new FlowService(prisma as any, {} as any, paystack, orderService, waba, { orderAlert: vi.fn().mockResolvedValue(true) } as any, new CategoryService(prisma as any, {} as any), productPhotos as any);
+    service = new FlowService(prisma as any, {} as any, paystack, orderService, waba, { orderAlert: vi.fn().mockResolvedValue(true) } as any, new CategoryService(prisma as any, {} as any), productPhotos as any, banners);
   });
 
   it('answers the health-check ping', async () => {
@@ -231,6 +233,26 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
         ['all', { title: 'All products', metadata: 'Everything in stock · 3 products' }],
         ['veg_fruits', { title: 'Vegetables & fruits', metadata: 'Tomatoes, onions, pepper' }],
       ]);
+    });
+
+    it('adds no shop row for a shop without an approved banner', async () => {
+      const result = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
+      expect(result.data.categories[0].id).toBe('all');
+    });
+
+    it("puts the shop's approved banner as a logo row on top, which opens every product", async () => {
+      banners.flowThumbnailBase64.mockResolvedValue('bG9nbw==');
+      const result = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
+      const [shop, next] = result.data.categories;
+      expect(shop).toMatchObject({
+        id: 'shop',
+        'main-content': { title: 'MarketiX Tech' },
+        start: { image: 'bG9nbw==', 'alt-text': 'MarketiX Tech' },
+      });
+      expect(shop['on-click-action'].payload).toMatchObject({ step: 'open_category', category: 'all', page: '1' });
+      expect(next.id).toBe('all');
+      expect(banners.flowThumbnailBase64).toHaveBeenCalledWith(expect.objectContaining({ id: 'tenant-1' }));
+      expect(result.data.categories.length).toBeLessThanOrEqual(20);
     });
 
     it("titles WELCOME and the Shop page with the vendor's shop name", async () => {

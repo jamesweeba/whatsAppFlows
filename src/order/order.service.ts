@@ -2,12 +2,13 @@ import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { OrderStatus, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 import { ghCedis } from '../common/money.util.js';
-import { isHiddenNumber } from '../common/phone.util.js';
+import { isHiddenNumber, toE164 } from '../common/phone.util.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TenantService } from '../tenant/tenant.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto.js';
+import { UNPAID_ORDER_STATUSES } from './order-status-groups.js';
 import { lineTotal, normalizeQuantity, orderTotals } from './order-totals.util.js';
 
 /** Characters used in order references; ambiguous glyphs (0/O, 1/I) are excluded. */
@@ -16,6 +17,19 @@ const REFERENCE_LENGTH = 6;
 const MAX_REFERENCE_ATTEMPTS = 5;
 /** A location pin is attached to the newest order that asked for one within this window. */
 const LOCATION_PIN_WINDOW_MS = 30 * 60 * 1000;
+
+/**
+ * The reply button on the "on its way" message: its id is this prefix plus the order
+ * number, which WhatsApp sends back when the buyer taps it.
+ */
+export const ORDER_RECEIVED_BUTTON_PREFIX = 'order_received:';
+export const ORDER_RECEIVED_BUTTON_TITLE = '✅ I got my order';
+const ORDER_RECEIVED_PATTERN = /^order_received:(\S+)$/;
+
+/** The order number in an "I got my order" button tap, or null for any other message. */
+export function orderReceivedTap(text: string): string | null {
+  return ORDER_RECEIVED_PATTERN.exec(text.trim())?.[1] ?? null;
+}
 
 /** Delivery and Flow details that only the server sets, never the vendor-facing DTO. */
 export type OrderDetails = Pick<
@@ -140,12 +154,17 @@ export class OrderService {
     return this.prisma.order.update({ where: { id: orderId }, data: { sessionId } });
   }
 
-  /** Record a verified payment. */
-  markPaid(orderId: string, note: string) {
-    return this.prisma.order.update({
-      where: { id: orderId },
+  /**
+   * Record a verified payment. Only an unpaid order moves to PAID, so a repeated webhook
+   * can't pull an order that has moved on (or was cancelled) back to PAID. Returns false
+   * when nothing changed.
+   */
+  async markPaid(orderId: string, note: string): Promise<boolean> {
+    const { count } = await this.prisma.order.updateMany({
+      where: { id: orderId, status: { in: UNPAID_ORDER_STATUSES } },
       data: { status: OrderStatus.PAID, notes: note },
     });
+    return count === 1;
   }
 
   /** Mark the MoMo prompt as sent. Returns false if another request already claimed it. */
@@ -302,10 +321,66 @@ export class OrderService {
     if (!message || !phoneNumberId || !order.buyerPhone || isHiddenNumber(order.buyerPhone)) return;
 
     try {
-      await this.wabaService.sendTextMessage(phoneNumberId, order.buyerPhone, message);
+      if (order.status === OrderStatus.OUT_FOR_DELIVERY) {
+        await this.sendOutForDelivery(phoneNumberId, order.buyerPhone, order.orderNumber, message);
+      } else {
+        await this.wabaService.sendTextMessage(phoneNumberId, order.buyerPhone, message);
+      }
     } catch (err: any) {
       this.logger.warn(`Failed to send ${order.status} update for ${order.orderNumber}: ${err?.message || err}`);
     }
+  }
+
+  /** "On its way" with an "I got my order" button; plain text if WhatsApp refuses the button. */
+  private async sendOutForDelivery(phoneNumberId: string, buyerPhone: string, orderNumber: string, message: string) {
+    try {
+      await this.wabaService.sendInteractiveButtons({
+        phoneNumberId,
+        toPhone: buyerPhone,
+        bodyText: `${message}\n\nTap the button when you have your order.`,
+        buttons: [{ id: `${ORDER_RECEIVED_BUTTON_PREFIX}${orderNumber}`, title: ORDER_RECEIVED_BUTTON_TITLE }],
+      });
+    } catch (err: any) {
+      this.logger.warn(`Out-for-delivery button for ${orderNumber} failed (${err?.message || err}); sending text instead.`);
+      await this.wabaService.sendTextMessage(phoneNumberId, buyerPhone, message);
+    }
+  }
+
+  /**
+   * The buyer tapped "I got my order". Only the buyer's own number can confirm, and only an
+   * order that is out for delivery moves to DELIVERED. Returns the reply for the buyer.
+   */
+  async confirmReceivedByBuyer(tenantId: string, buyerPhone: string, orderNumber: string): Promise<string> {
+    const order = await this.prisma.order.findFirst({ where: { tenantId, orderNumber } });
+    if (!order || toE164(order.buyerPhone) !== toE164(buyerPhone)) {
+      this.logger.warn(`Ignored "I got my order" for ${orderNumber}: not this buyer's order.`);
+      return `We couldn't find order *${orderNumber}* on your number. If you need help, just reply here.`;
+    }
+
+    if (order.status === OrderStatus.OUT_FOR_DELIVERY) {
+      // Conditional, so a double tap or a vendor update at the same moment can't apply twice.
+      const { count } = await this.prisma.order.updateMany({
+        where: { id: order.id, status: OrderStatus.OUT_FOR_DELIVERY },
+        data: { status: OrderStatus.DELIVERED, deliveryConfirmedAt: new Date() },
+      });
+      if (count === 1) {
+        this.logger.log(`Buyer confirmed receipt of ${orderNumber}; marked DELIVERED.`);
+        return `✅ Thank you! Order *${orderNumber}* is marked as received. Enjoy, and thanks for shopping with us!`;
+      }
+      return this.confirmReceivedByBuyer(tenantId, buyerPhone, orderNumber);
+    }
+
+    if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.COMPLETED) {
+      if (!order.deliveryConfirmedAt) {
+        await this.prisma.order.update({ where: { id: order.id }, data: { deliveryConfirmedAt: new Date() } });
+      }
+      return `✅ Order *${orderNumber}* is already marked as received. Thanks for confirming!`;
+    }
+
+    if (order.status === OrderStatus.CANCELLED || order.status === OrderStatus.REFUNDED) {
+      return `Order *${orderNumber}* was cancelled, so there's nothing to confirm. If that's wrong, just reply here.`;
+    }
+    return `Order *${orderNumber}* isn't out for delivery yet. We'll message you when it's on its way.`;
   }
 
   private statusMessage(order: { orderNumber: string; status: OrderStatus; riderName: string | null; riderPhone: string | null; totalAmount: number; paymentMethod: string | null }): string | null {

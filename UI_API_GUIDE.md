@@ -108,6 +108,8 @@ Approve works from `STOCKED` or `UNDER_REVIEW`. Suspend works from any status.
 
 **`POST /auth/login`**, public: `{ "email", "password" }`
 
+After 5 failed logins for one email, or 20 from one IP address, within 15 minutes, login answers `429` "Too many failed login attempts. Try again in N minutes." until the 15 minutes pass, even with the right password. Show the message as is. A correct login resets that email's count.
+
 Both return:
 
 ```json
@@ -363,7 +365,7 @@ Most orders arrive from buyers through WhatsApp; the vendor manages them here.
   "fulfillment": "DELIVERY", "deliveryArea": "KNUST Campus", "landmark": "Unity Hall, Block C",
   "deliveryAddress": "KNUST Campus — Unity Hall, Block C", "deliverySlot": "Now · within 1 hour",
   "locationLatitude": 6.6745, "locationLongitude": -1.5716, "locationName": "Unity Hall", "locationReceivedAt": "…",
-  "riderName": null, "riderPhone": null, "notes": null,
+  "riderName": null, "riderPhone": null, "deliveryConfirmedAt": null, "notes": null,
   "items": [{ "id": "uuid", "productId": "uuid", "productName": "Tomatoes (Basket)", "measureCode": "basket", "unitPrice": 120, "quantity": 2, "totalPrice": 240 }]
 }
 ```
@@ -381,6 +383,8 @@ Most orders arrive from buyers through WhatsApp; the vendor manages them here.
 
 The buyer automatically gets a WhatsApp message when the status changes to `PROCESSING` ("packed"), `OUT_FOR_DELIVERY` (with the rider's name and phone, and a cash reminder for COD) or `DELIVERED`. UI: show the next action as one big button ("Mark as packed" → "Send rider" (asks for rider name and phone) → "Mark delivered"), with the full status list in a secondary menu.
 
+The `OUT_FOR_DELIVERY` message carries a **"✅ I got my order"** button. When the buyer taps it, the order moves to `DELIVERED` and `deliveryConfirmedAt` is set (no UI call needed: it arrives through the WhatsApp webhook). Only a tap from the buyer's own number counts, so a forwarded copy can't confirm someone else's order; a tap on an order that is already delivered just records `deliveryConfirmedAt`, and a cancelled or not-yet-dispatched order is left alone. Show "Buyer confirmed on WhatsApp" with the time when `deliveryConfirmedAt` is set (vendor order view and admin order detail). If WhatsApp refuses the button message, the update is sent as plain text instead. Neither gets through more than 24 hours after the buyer's last message (WhatsApp's customer-service window, which already applied to these updates): that needs an approved message template, not built yet.
+
 **`DELETE /orders/:id`**: delete an order (confirm first).
 
 **`POST /orders`**: create an order manually (e.g. phone orders). Body: `buyerPhone`, `items[]` (`productName`, `unitPrice`, `quantity`, optional `productId`, `measureCode`), optional `paymentMethod`, `fulfillment`, `deliveryAddress`, `deliveryFee`, `notes`, `status`. Totals are calculated by the server.
@@ -396,6 +400,32 @@ Read-only: vendors cannot reply from the app yet.
 
 ---
 
+### 4.10 Shop banner
+
+A photo (shop sign, logo or stall) that buyers see beside the shop name on the first screen of the WhatsApp order form, so they know they are buying from the right vendor. **A new upload waits for an admin's approval**; buyers only ever see the approved one. Show it on the Shop details screen.
+
+| Method and path | Body | Returns |
+|---|---|---|
+| `GET /tenants/banner` | | Banner state |
+| `POST /tenants/banner` | multipart `file`: JPEG, PNG or WebP, max 5 MB, at least 300 px on each side | Banner state (now pending). Replaces an earlier pending upload and clears `rejectedReason`. |
+| `GET /tenants/banner/pending` | | The pending image (JPEG). Needs the token: fetch it as a blob. |
+| `DELETE /tenants/banner/pending` | | Banner state: withdraws the pending upload |
+| `DELETE /tenants/banner` | | Banner state: takes the live banner down at once (no approval needed) |
+| `GET /shops/:tenantId/banner?v=…` | | The live image, **public** (no token), cached for good: use `url` as is |
+
+Banner state:
+
+```json
+{ "url": "/api/v1/shops/uuid/banner?v=1762268400000", "pendingAt": "2026-11-04T15:00:00.000Z", "rejectedReason": null }
+```
+
+- `url`: the approved banner (null: none). Prefix the API host, as for product photos.
+- `pendingAt`: when the upload waiting for approval was made (null: nothing waiting). Buyers keep seeing the old banner meanwhile.
+- `rejectedReason`: why an admin turned down or took down the last banner. Show it until the vendor uploads again.
+- On the order form it is the top row of the WELCOME list: a **square cropped from the centre** (144×144) beside the shop name, "Approved on MarketiX · tap to see everything we sell". Tapping it opens all products. Preview it in a square frame with `object-fit: cover`, so vendors see what buyers will.
+- A full-width banner is not possible there: Meta allows nothing but lists on WELCOME. Shops without an approved banner get no row.
+- `400`: "Upload a JPEG, PNG or WebP image.", "Banners must be 5 MB or smaller.", "Use an image at least 300 pixels on each side, so it looks sharp on phones." `403` for a suspended shop (upload and remove).
+
 ## 5. Admin app
 
 Every route below requires a `SUPER_ADMIN` token; vendors get `403`. Base path: `/admin`.
@@ -405,7 +435,7 @@ Every route below requires a `SUPER_ADMIN` token; vendors get `403`. Base path: 
 **`GET /admin/summary`**
 
 ```json
-{ "waiting": 3, "moreInfo": 1, "freeNumbers": 2, "activeShops": 14 }
+{ "waiting": 3, "moreInfo": 1, "freeNumbers": 2, "activeShops": 14, "pendingBanners": 1 }
 ```
 
 Four tiles. Turn **Free numbers** amber when it is 2 or fewer: approval fails when it reaches 0.
@@ -532,6 +562,21 @@ Admins' notes on a shop: calls made, promises, follow-ups. **Vendors never see t
 - `mine` is `true` for the signed-in admin's own notes: show Edit and Delete only on those. `editedAt` is set once the note has been edited ("edited").
 - `404` "Shop not found." for an unknown shop; `404` "Note not found. It may have been deleted." when another tab already deleted it (refresh the list).
 
+#### Shop banner
+
+`GET /admin/tenants/:id` includes `banner` (same shape as the vendor's banner state in 4.10). Show the pending upload next to the live one, with Approve and Reject; a live banner can be taken down. Each decision is written to the audit log.
+
+| Method and path | Body | Result |
+|---|---|---|
+| `GET /admin/tenants/:id/banner/pending` | | The pending image (JPEG, needs the token) |
+| `POST /admin/tenants/:id/banner/approve` | `{ "pendingAt": "<banner.pendingAt>" }` | It goes live; returns the banner state |
+| `POST /admin/tenants/:id/banner/reject` | `{ "pendingAt": "…", "reason": "Shows another shop's name." }` | Pending upload deleted; the vendor sees `reason` |
+| `POST /admin/tenants/:id/banner/remove` | `{ "reason": "…" }` | Live banner taken down; the vendor sees `reason` |
+
+- `pendingAt` is the upload you looked at. If the vendor has uploaded a newer one since, approve and reject return `409` "The vendor has uploaded a newer banner since you opened this page." (reload and look again). `409` "There is no banner waiting for approval any more." when someone else already decided.
+- `reason`: 1–500 characters (`400` "Say why, so the vendor knows what to change.").
+- `GET /admin/summary` includes `pendingBanners` (shops with a banner waiting); `GET /admin/vendors?banner=pending` lists only those.
+
 ### 5.4 Vendors (every shop)
 
 The directory of every shop on the platform, with tabs, search, a market filter, sort and pagination. The review queue (5.2) stays for working through submissions; this page is for finding any shop.
@@ -563,7 +608,7 @@ The directory of every shop on the platform, with tabs, search, a market filter,
     "ownerFullName": "Adjoa Kyei", "ownerPhone": "0261813957", "market": "Kejetia, Kumasi",
     "status": "ACTIVE", "whatsappNumber": "0592001113",
     "orders30d": 12, "lastOrderAt": "2026-11-03T08:12:00.000Z", "createdAt": "2026-09-27T10:00:00.000Z",
-    "noteCount": 2
+    "noteCount": 2, "bannerPending": false
   }],
   "meta": { "total": 11, "page": 1, "limit": 10, "totalPages": 2 },
   "counts": { "all": 24, "not_submitted": 2, "pending_review": 6, "more_info": 2, "active": 11, "suspended": 1, "rejected": 2 }
@@ -573,6 +618,7 @@ The directory of every shop on the platform, with tabs, search, a market filter,
 - `counts` are the tab badges. They apply `search` and `market` (but not `tab`), so each badge matches what clicking that tab would show. `meta.total` equals `counts[tab]`.
 - `orders30d` and `lastOrderAt` count only paid orders, or ones past payment (`PAID`, `CONFIRMED`, `PROCESSING`, `OUT_FOR_DELIVERY`, `DELIVERED`, `COMPLETED`). `lastOrderAt` is the latest such order ever (not limited to 30 days); `null` means "No orders yet".
 - `noteCount` is the number of private admin notes on the shop (5.3); show it next to the ref when above 0.
+- `bannerPending` is `true` when the shop has a banner waiting for approval. Add `banner=pending` to list only those (the tab counts narrow too).
 - `whatsappNumber` is `null` until the shop is approved. Phones are stored as typed; format them for display (e.g. `+233 59 200 1113`).
 - **View** opens the review screen: `GET /admin/tenants/:id`.
 
@@ -741,7 +787,7 @@ Read-only: admins see orders, vendors change them (4.8).
   "paymentMethod": "COD", "paymentPhone": null, "momoNetwork": null,
   "fulfillment": "DELIVERY", "deliveryArea": "Other area", "landmark": "Near the church", "deliveryAddress": "…", "deliverySlot": "asap",
   "locationLatitude": 6.6885, "locationLongitude": -1.6244, "locationName": null, "locationAddress": null, "locationReceivedAt": "…",
-  "riderName": null, "riderPhone": null, "notes": null, "createdAt": "…", "updatedAt": "…",
+  "riderName": null, "riderPhone": null, "deliveryConfirmedAt": null, "notes": null, "createdAt": "…", "updatedAt": "…",
   "items": [{ "id": "uuid", "productName": "Tomatoes", "measureCode": "basket", "unitPrice": 15, "quantity": 1, "totalPrice": 15 }],
   "tenant": { "id": "uuid", "ref": "MX-V-0001", "name": "Marketix", "market": null, "status": "ACTIVE", "whatsappNumber": "0205960861" }
 }
@@ -772,6 +818,9 @@ Every admin action: who did it, when, and why. Entries are written in the same t
 | `NOTE_ADDED` | Note added | `POST /admin/tenants/:id/notes` | the note |
 | `NOTE_EDITED` | Note edited | `PATCH …/notes/:noteId` (only when the text changes) | 'Now: "…" Before: "…"' (`metadata.previous` has the old text) |
 | `NOTE_DELETED` | Note deleted | `DELETE …/notes/:noteId` | the deleted note |
+| `BANNER_APPROVED` | Banner approved | `POST …/banner/approve` | "Banner approved; buyers now see it." |
+| `BANNER_REJECTED` | Banner rejected | `POST …/banner/reject` | the reason |
+| `BANNER_REMOVED` | Banner removed | `POST …/banner/remove` | the reason |
 
 **`GET /admin/audit-log?search=ama&action=APPROVED,SUSPENDED&adminId=uuid&period=30d&page=1&limit=25`**
 
