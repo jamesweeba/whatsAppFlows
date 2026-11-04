@@ -21,6 +21,11 @@ export class CreateOrderItemDto {
   @IsNotEmpty()
   productName: string;
 
+  /** Measure the item was sold in (e.g. "basket"); lets the Flow repeat a past order. */
+  @IsString()
+  @IsOptional()
+  measureCode?: string;
+
   @IsNumber()
   @Min(0)
   unitPrice: number;

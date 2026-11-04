@@ -66,3 +66,31 @@ export function toGhanaLocal(phone: string): string {
   }
   return digits;
 }
+
+const GHANA_MOMO_PREFIXES: Record<string, 'mtn' | 'telecel' | 'airteltigo'> = {
+  '024': 'mtn', '025': 'mtn', '053': 'mtn', '054': 'mtn', '055': 'mtn', '059': 'mtn',
+  '020': 'telecel', '050': 'telecel',
+  '026': 'airteltigo', '027': 'airteltigo', '056': 'airteltigo', '057': 'airteltigo',
+};
+
+/** Infer the mobile-money network from a Ghana number's prefix, or null when unknown. */
+export function ghanaMomoNetwork(phone: string): 'mtn' | 'telecel' | 'airteltigo' | null {
+  return GHANA_MOMO_PREFIXES[toGhanaLocal(phone).slice(0, 3)] ?? null;
+}
+
+/** True for a dialable 10-digit Ghana number such as `0244111222`. */
+export function isGhanaMobile(phone: string): boolean {
+  return /^0\d{9}$/.test(toGhanaLocal(phone));
+}
+
+/** Human-friendly Ghana local format, e.g. `024 411 1222`. */
+export function formatGhanaLocal(phone: string): string {
+  const local = toGhanaLocal(phone);
+  return local.length === 10 ? `${local.slice(0, 3)} ${local.slice(3, 6)} ${local.slice(6)}` : local;
+}
+
+/** International Ghana format for admin screens and logs, e.g. `+233 59 200 1176`. */
+export function formatGhanaInternational(phone: string): string {
+  const local = toGhanaLocal(phone);
+  return local.length === 10 ? `+233 ${local.slice(1, 3)} ${local.slice(3, 6)} ${local.slice(6)}` : phone;
+}

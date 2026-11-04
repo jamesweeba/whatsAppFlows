@@ -8,4 +8,13 @@ export class UpdateOrderStatusDto {
   @IsString()
   @IsOptional()
   notes?: string;
+
+  /** Shared with the buyer when the order goes OUT_FOR_DELIVERY. */
+  @IsString()
+  @IsOptional()
+  riderName?: string;
+
+  @IsString()
+  @IsOptional()
+  riderPhone?: string;
 }

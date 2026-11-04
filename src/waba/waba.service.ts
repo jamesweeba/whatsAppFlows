@@ -242,6 +242,21 @@ export class WabaService {
   }
 
   /**
+   * Ask the buyer to share a location pin with WhatsApp's native map picker.
+   * The pin comes back as an inbound `location` message.
+   */
+  async sendLocationRequest(phoneNumberId: string, toPhone: string, bodyText: string): Promise<{ messageId: string }> {
+    return this.sendMessage(phoneNumberId, toPhone, {
+      type: 'interactive',
+      interactive: {
+        type: 'location_request_message',
+        body: { text: bodyText },
+        action: { name: 'send_location' },
+      },
+    });
+  }
+
+  /**
    * Mark an incoming message as read and show a typing indicator.
    * Falls back to a plain read receipt if typing indicators are unsupported.
    */
@@ -300,15 +315,39 @@ export class WabaService {
   /**
    * Authenticated JSON POST to the Graph API with uniform error handling.
    */
-  private async post<T>(url: string, body: Record<string, any>): Promise<T> {
+  /**
+   * Quality rating and messaging tier for one number. GET /{phone-number-id}
+   * Read-only; used by the admin number pool's refresh.
+   */
+  async getPhoneNumberDetails(phoneNumberId: string): Promise<{
+    displayPhoneNumber?: string;
+    verifiedName?: string;
+    qualityRating?: string;
+    messagingLimit?: string;
+  }> {
+    const fields = 'display_phone_number,verified_name,quality_rating,messaging_limit_tier';
+    const data = await this.request<any>(`${this.baseUrl}/${phoneNumberId}?fields=${fields}`, { method: 'GET' });
+    return {
+      displayPhoneNumber: data.display_phone_number,
+      verifiedName: data.verified_name,
+      qualityRating: data.quality_rating,
+      messagingLimit: data.messaging_limit_tier,
+    };
+  }
+
+  private post<T>(url: string, body: Record<string, any>): Promise<T> {
+    return this.request<T>(url, { method: 'POST', body: JSON.stringify(body) });
+  }
+
+  private async request<T>(url: string, init: { method: 'GET' | 'POST'; body?: string }): Promise<T> {
     try {
       const res = await fetch(url, {
-        method: 'POST',
+        method: init.method,
         headers: {
           'Content-Type': 'application/json',
           Authorization: `Bearer ${this.accessToken}`,
         },
-        body: JSON.stringify(body),
+        body: init.body,
       });
       const data = await res.json();
 

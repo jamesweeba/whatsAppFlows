@@ -10,6 +10,9 @@ import { ChatModule } from './chat/chat.module.js';
 import { FlowModule } from './flow/flow.module.js';
 import { OrderModule } from './order/order.module.js';
 import { PaymentModule } from './payment/payment.module.js';
+import { StorageModule } from './storage/storage.module.js';
+import { NotificationModule } from './notification/notification.module.js';
+import { AdminModule } from './admin/admin.module.js';
 
 @Module({
   imports: [
@@ -22,6 +25,9 @@ import { PaymentModule } from './payment/payment.module.js';
     FlowModule,
     OrderModule,
     PaymentModule,
+    StorageModule,
+    NotificationModule,
+    AdminModule,
   ],
   controllers: [AppController],
   providers: [AppService],

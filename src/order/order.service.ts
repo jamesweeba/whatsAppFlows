@@ -1,8 +1,11 @@
 import { Injectable, Logger, NotFoundException } from '@nestjs/common';
 import { OrderStatus, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
+import { ghCedis } from '../common/money.util.js';
+import { isHiddenNumber } from '../common/phone.util.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TenantService } from '../tenant/tenant.service.js';
+import { WabaService } from '../waba/waba.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto.js';
 import { lineTotal, normalizeQuantity, orderTotals } from './order-totals.util.js';
@@ -11,6 +14,21 @@ import { lineTotal, normalizeQuantity, orderTotals } from './order-totals.util.j
 const REFERENCE_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const REFERENCE_LENGTH = 6;
 const MAX_REFERENCE_ATTEMPTS = 5;
+/** A location pin is attached to the newest order that asked for one within this window. */
+const LOCATION_PIN_WINDOW_MS = 30 * 60 * 1000;
+
+/** Delivery and Flow details that only the server sets, never the vendor-facing DTO. */
+export type OrderDetails = Pick<
+  Prisma.OrderUncheckedCreateInput,
+  'customerName' | 'deliveryArea' | 'landmark' | 'contactPhone' | 'deliverySlot' | 'flowCartId'
+>;
+
+export interface DeliveryLocation {
+  latitude: number;
+  longitude: number;
+  name?: string;
+  address?: string;
+}
 
 @Injectable()
 export class OrderService {
@@ -19,6 +37,7 @@ export class OrderService {
   constructor(
     private readonly prisma: PrismaService,
     private readonly tenantService: TenantService,
+    private readonly wabaService: WabaService,
   ) {}
 
   /**
@@ -38,13 +57,14 @@ export class OrderService {
    * Create an order with line items for a tenant. Totals are computed server-side.
    * Retries with a fresh reference if the generated order number already exists.
    */
-  async createOrder(tenantId: string, dto: CreateOrderDto) {
+  async createOrder(tenantId: string, dto: CreateOrderDto, details: OrderDetails = {}) {
     const items = dto.items.map((item) => {
       const quantity = normalizeQuantity(item.quantity);
       const unitPrice = Number(item.unitPrice || 0);
       return {
         productId: item.productId || null,
         productName: item.productName,
+        measureCode: item.measureCode ?? null,
         unitPrice,
         quantity,
         totalPrice: lineTotal({ unitPrice, quantity }),
@@ -70,6 +90,7 @@ export class OrderService {
             fulfillment: dto.fulfillment ?? null,
             deliveryAddress: dto.deliveryAddress ?? null,
             notes: dto.notes || null,
+            ...details,
             items: { create: items },
           },
           include: { items: true, session: true },
@@ -100,6 +121,11 @@ export class OrderService {
     });
   }
 
+  /** Look up the order a Flow cart was checked out into, if any. */
+  findByFlowCart(flowCartId: string) {
+    return this.prisma.order.findUnique({ where: { flowCartId }, include: { items: true } });
+  }
+
   /** Latest order a buyer placed with a tenant, used for "track my order". */
   findLatestForBuyer(tenantId: string, buyerPhone: string) {
     return this.prisma.order.findFirst({
@@ -119,6 +145,60 @@ export class OrderService {
     return this.prisma.order.update({
       where: { id: orderId },
       data: { status: OrderStatus.PAID, notes: note },
+    });
+  }
+
+  /** Mark the MoMo prompt as sent. Returns false if another request already claimed it. */
+  async claimPaymentRequest(orderId: string): Promise<boolean> {
+    const { count } = await this.prisma.order.updateMany({
+      where: { id: orderId, paymentRequestedAt: null },
+      data: { paymentRequestedAt: new Date() },
+    });
+    return count === 1;
+  }
+
+  /** Mark a Flow order's confirmation as sent. Returns false if another request already claimed it. */
+  async claimConfirmation(orderId: string): Promise<boolean> {
+    const { count } = await this.prisma.order.updateMany({
+      where: { id: orderId, confirmationSentAt: null },
+      data: { confirmationSentAt: new Date() },
+    });
+    return count === 1;
+  }
+
+  /** Release the claim so the vendor can retry after the MoMo prompt failed to start. */
+  releasePaymentRequest(orderId: string) {
+    return this.prisma.order.update({ where: { id: orderId }, data: { paymentRequestedAt: null } });
+  }
+
+  markLocationRequested(orderId: string) {
+    return this.prisma.order.update({ where: { id: orderId }, data: { locationRequestedAt: new Date() } });
+  }
+
+  /**
+   * Attach a shared location pin to the buyer's newest order that asked for one in the
+   * last 30 minutes. Returns the order, or null when no order is waiting for a pin.
+   */
+  async attachLocation(tenantId: string, buyerPhone: string, location: DeliveryLocation) {
+    const order = await this.prisma.order.findFirst({
+      where: {
+        tenantId,
+        buyerPhone,
+        locationRequestedAt: { gte: new Date(Date.now() - LOCATION_PIN_WINDOW_MS) },
+      },
+      orderBy: { locationRequestedAt: 'desc' },
+    });
+    if (!order) return null;
+
+    return this.prisma.order.update({
+      where: { id: order.id },
+      data: {
+        locationLatitude: location.latitude,
+        locationLongitude: location.longitude,
+        locationName: location.name ?? null,
+        locationAddress: location.address ?? null,
+        locationReceivedAt: new Date(),
+      },
     });
   }
 
@@ -193,15 +273,55 @@ export class OrderService {
    * Update order status or notes.
    */
   async updateStatus(userId: string, orderId: string, dto: UpdateOrderStatusDto) {
-    await this.findOwnedOrder(userId, orderId);
-    return this.prisma.order.update({
+    const previous = await this.findOwnedOrder(userId, orderId);
+    const order = await this.prisma.order.update({
       where: { id: orderId },
       data: {
         status: dto.status,
         ...(dto.notes ? { notes: dto.notes } : {}),
+        ...(dto.riderName !== undefined && { riderName: dto.riderName }),
+        ...(dto.riderPhone !== undefined && { riderPhone: dto.riderPhone }),
       },
-      include: { items: true },
+      include: { items: true, tenant: true },
     });
+
+    if (previous.status !== order.status) {
+      await this.notifyStatusChange(order);
+    }
+    const { tenant: _, ...result } = order;
+    return result;
+  }
+
+  /**
+   * WhatsApp the buyer when their order is packed, dispatched or delivered.
+   * Failures are logged, never surfaced: the status change itself already succeeded.
+   */
+  private async notifyStatusChange(order: Prisma.OrderGetPayload<{ include: { tenant: true } }>) {
+    const message = this.statusMessage(order);
+    const phoneNumberId = order.tenant.whatsappPhoneNumberId;
+    if (!message || !phoneNumberId || !order.buyerPhone || isHiddenNumber(order.buyerPhone)) return;
+
+    try {
+      await this.wabaService.sendTextMessage(phoneNumberId, order.buyerPhone, message);
+    } catch (err: any) {
+      this.logger.warn(`Failed to send ${order.status} update for ${order.orderNumber}: ${err?.message || err}`);
+    }
+  }
+
+  private statusMessage(order: { orderNumber: string; status: OrderStatus; riderName: string | null; riderPhone: string | null; totalAmount: number; paymentMethod: string | null }): string | null {
+    switch (order.status) {
+      case OrderStatus.PROCESSING:
+        return `📦 Your order *${order.orderNumber}* is packed and will be on its way shortly.`;
+      case OrderStatus.OUT_FOR_DELIVERY: {
+        const rider = [order.riderName, order.riderPhone].filter(Boolean).join(', ');
+        const cash = order.paymentMethod === 'COD' ? `\nPlease have *${ghCedis(order.totalAmount)}* ready in cash.` : '';
+        return `🛵 Your order *${order.orderNumber}* is on its way!${rider ? `\nRider: ${rider}` : ''}${cash}`;
+      }
+      case OrderStatus.DELIVERED:
+        return `✅ Your order *${order.orderNumber}* has been delivered. Thank you for shopping with us!`;
+      default:
+        return null;
+    }
   }
 
   /**

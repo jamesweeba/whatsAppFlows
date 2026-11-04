@@ -4,6 +4,7 @@ import {
   UnauthorizedException,
 } from '@nestjs/common';
 import { JwtService } from '@nestjs/jwt';
+import { UserRole } from '@prisma/client';
 import { hash, compare } from 'bcryptjs';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { SignupDto } from './dto/signup.dto.js';
@@ -40,7 +41,7 @@ export class AuthService {
     });
 
     // Generate JWT token
-    const token = await this.generateToken(user.id, user.email);
+    const token = await this.generateToken(user.id, user.email, user.role);
 
     return {
       user: {
@@ -48,6 +49,7 @@ export class AuthService {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        role: user.role,
         createdAt: user.createdAt,
       },
       accessToken: token,
@@ -72,7 +74,7 @@ export class AuthService {
     }
 
     // Generate JWT token
-    const token = await this.generateToken(user.id, user.email);
+    const token = await this.generateToken(user.id, user.email, user.role);
 
     return {
       user: {
@@ -80,14 +82,15 @@ export class AuthService {
         email: user.email,
         firstName: user.firstName,
         lastName: user.lastName,
+        role: user.role,
         createdAt: user.createdAt,
       },
       accessToken: token,
     };
   }
 
-  private async generateToken(userId: string, email: string): Promise<string> {
-    const payload = { sub: userId, email };
+  private async generateToken(userId: string, email: string, role: UserRole): Promise<string> {
+    const payload = { sub: userId, email, role };
     return this.jwtService.signAsync(payload);
   }
 }

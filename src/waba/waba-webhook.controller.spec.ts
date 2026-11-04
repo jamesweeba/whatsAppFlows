@@ -2,12 +2,14 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatService } from '../chat/chat.service.js';
 import { TenantService } from '../tenant/tenant.service.js';
+import { WabaService } from './waba.service.js';
 import { WabaWebhookController } from './waba-webhook.controller.js';
 
 describe('WabaWebhookController', () => {
   let controller: WabaWebhookController;
   let chatService: { processIncomingMessage: ReturnType<typeof vi.fn> };
-  let tenantService: { findByPhoneNumberId: ReturnType<typeof vi.fn> };
+  let tenantService: { findByPhoneNumberId: ReturnType<typeof vi.fn>; findPoolNumber: ReturnType<typeof vi.fn> };
+  let wabaService: { sendTextMessage: ReturnType<typeof vi.fn> };
 
   const envelope = (value: Record<string, any>) => ({
     object: 'whatsapp_business_account',
@@ -20,15 +22,19 @@ describe('WabaWebhookController', () => {
       findByPhoneNumberId: vi.fn().mockResolvedValue({
         id: 'tenant-123',
         name: 'Test Tenant',
+        status: 'ACTIVE',
         whatsappPhoneNumberId: '1404916169377344',
       }),
+      findPoolNumber: vi.fn().mockResolvedValue(null),
     };
+    wabaService = { sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid.reply' }) };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [WabaWebhookController],
       providers: [
         { provide: ChatService, useValue: chatService },
         { provide: TenantService, useValue: tenantService },
+        { provide: WabaService, useValue: wabaService },
       ],
     }).compile();
 
@@ -102,14 +108,37 @@ describe('WabaWebhookController', () => {
             from: '233245655799',
             id: 'wamid.flow',
             type: 'interactive',
-            interactive: { type: 'nfm_reply', nfm_reply: { response_json: '{"order_ref":"MX-1"}' } },
+            interactive: { type: 'nfm_reply', nfm_reply: { response_json: '{"order_id":"MX-1"}' } },
           },
         ],
       }),
     );
 
     expect(chatService.processIncomingMessage).toHaveBeenCalledWith(
-      expect.objectContaining({ text: 'WhatsApp Flow Submitted', flowData: { order_ref: 'MX-1' } }),
+      expect.objectContaining({ text: 'WhatsApp Flow Submitted', flowData: { order_id: 'MX-1' } }),
+    );
+  });
+
+  it('passes shared location pins through to the chat service', async () => {
+    await controller.processPayload(
+      envelope({
+        metadata: { phone_number_id: '1404916169377344' },
+        messages: [
+          {
+            from: '233245655799',
+            id: 'wamid.loc',
+            type: 'location',
+            location: { latitude: 6.6745, longitude: -1.5716, name: 'Unity Hall' },
+          },
+        ],
+      }),
+    );
+
+    expect(chatService.processIncomingMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: '📍 Location shared: Unity Hall (6.6745, -1.5716)',
+        location: { latitude: 6.6745, longitude: -1.5716, name: 'Unity Hall' },
+      }),
     );
   });
 
@@ -124,6 +153,44 @@ describe('WabaWebhookController', () => {
     );
 
     expect(chatService.processIncomingMessage).not.toHaveBeenCalled();
+    expect(wabaService.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  const hello = (phoneNumberId: string) =>
+    envelope({
+      metadata: { phone_number_id: phoneNumberId },
+      messages: [{ from: '0245655799', id: 'wamid.h', type: 'text', text: { body: 'Hello' } }],
+    });
+
+  it('tells buyers a suspended shop is temporarily closed, without running the chat', async () => {
+    tenantService.findByPhoneNumberId.mockResolvedValue({ id: 'tenant-123', name: 'Ama Groceries', status: 'SUSPENDED' });
+
+    await controller.processPayload(hello('1404916169377344'));
+
+    expect(chatService.processIncomingMessage).not.toHaveBeenCalled();
+    expect(wabaService.sendTextMessage).toHaveBeenCalledWith(
+      '1404916169377344',
+      '+233245655799',
+      'Sorry, Ama Groceries is temporarily closed. Please check back later.',
+    );
+  });
+
+  it('tells buyers a shop that is not approved yet is not open', async () => {
+    tenantService.findByPhoneNumberId.mockResolvedValue({ id: 'tenant-123', name: 'New Shop', status: 'UNDER_REVIEW' });
+
+    await controller.processPayload(hello('1404916169377344'));
+
+    expect(chatService.processIncomingMessage).not.toHaveBeenCalled();
+    expect(wabaService.sendTextMessage).toHaveBeenCalledWith('1404916169377344', '+233245655799', expect.stringContaining("isn't open"));
+  });
+
+  it('replies from a pool number that no shop has yet (free or cooling)', async () => {
+    tenantService.findByPhoneNumberId.mockResolvedValue(null);
+    tenantService.findPoolNumber.mockResolvedValue({ id: 'n1', status: 'COOLING' });
+
+    await controller.processPayload(hello('999000999'));
+
+    expect(wabaService.sendTextMessage).toHaveBeenCalledWith('999000999', '+233245655799', expect.stringContaining("isn't open"));
   });
 
   it('keeps processing other messages when one fails', async () => {

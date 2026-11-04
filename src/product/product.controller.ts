@@ -1,15 +1,18 @@
 import {
+  BadRequestException,
   Body,
   Controller,
   DefaultValuePipe,
   Delete,
   Get,
+  Header,
   Param,
   ParseIntPipe,
   Patch,
   Post,
   Query,
   Request,
+  StreamableFile,
   UploadedFile,
   UseGuards,
   UseInterceptors,
@@ -20,11 +23,16 @@ import { CreateProductDto } from './dto/create-product.dto.js';
 import { UpdateProductDto } from './dto/update-product.dto.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { ParseExcelFilePipe } from './pipes/parse-excel-file.pipe.js';
+import { BulkUploadDto } from './dto/bulk-upload.dto.js';
+import { MAX_PHOTO_BYTES, ProductPhotoService } from './product-photo.service.js';
 
 @Controller('api/v1/products')
 @UseGuards(JwtAuthGuard)
 export class ProductController {
-  constructor(private readonly productService: ProductService) { }
+  constructor(
+    private readonly productService: ProductService,
+    private readonly photoService: ProductPhotoService,
+  ) { }
 
   /**
    * Create a single product.
@@ -36,7 +44,9 @@ export class ProductController {
   }
 
   /**
-   * Bulk-create products from an uploaded Excel file (.xlsx / .xls).
+   * Bulk-create products from an uploaded Excel file (.xlsx / .xls) laid out like the
+   * template. Multipart form: `file`, plus an optional `categoryId` for rows with no
+   * category. All or nothing: any invalid row means nothing is imported (400 with the list).
    * POST /products/upload
    */
   @Post('upload')
@@ -44,8 +54,21 @@ export class ProductController {
   async bulkUpload(
     @Request() req: any,
     @UploadedFile(ParseExcelFilePipe) file: Express.Multer.File,
+    @Body() dto: BulkUploadDto,
   ) {
-    return this.productService.bulkCreateFromExcel(req.user.id, file.buffer);
+    return this.productService.bulkCreateFromExcel(req.user.id, file.buffer, dto.categoryId);
+  }
+
+  /**
+   * The Excel template for bulk upload, with an example row and the list of categories.
+   * GET /products/upload/template
+   */
+  @Get('upload/template')
+  async uploadTemplate() {
+    return new StreamableFile(await this.productService.uploadTemplate(), {
+      type: 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+      disposition: 'attachment; filename="marketix-products-template.xlsx"',
+    });
   }
 
   /**
@@ -88,11 +111,55 @@ export class ProductController {
   }
 
   /**
+   * Upload or replace a product's photo. Multipart form: `file` (JPEG, PNG or WebP, max 5 MB).
+   * Returns `{ photoUrl }`.
+   * POST /products/:id/photo
+   */
+  @Post(':id/photo')
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_PHOTO_BYTES } }))
+  async uploadPhoto(@Request() req: any, @Param('id') id: string, @UploadedFile() file: Express.Multer.File) {
+    if (!file) {
+      throw new BadRequestException('Attach the photo as the "file" field.');
+    }
+    return this.photoService.upload(req.user.id, id, file);
+  }
+
+  /**
+   * Remove a product's photo. Returns `{ photoUrl: null }`.
+   * DELETE /products/:id/photo
+   */
+  @Delete(':id/photo')
+  async removePhoto(@Request() req: any, @Param('id') id: string) {
+    return this.photoService.remove(req.user.id, id);
+  }
+
+  /**
    * Delete a product by ID.
    * DELETE /products/:id
    */
   @Delete(':id')
   async remove(@Request() req: any, @Param('id') id: string) {
     return this.productService.remove(req.user.id, id);
+  }
+}
+
+/**
+ * Product photos are public: buyers' browsers and WhatsApp load them without a token.
+ * Kept apart from ProductController, whose routes all require a login.
+ */
+@Controller('api/v1/products')
+export class ProductPhotoController {
+  constructor(private readonly photoService: ProductPhotoService) { }
+
+  /**
+   * A product's photo. The URL carries a version (`?v=`), so it can be cached for good.
+   * GET /products/:id/photo
+   */
+  @Get(':id/photo')
+  @Header('Cache-Control', 'public, max-age=31536000, immutable')
+  @Header('X-Content-Type-Options', 'nosniff')
+  async photo(@Param('id') id: string) {
+    const { mimeType, stream } = await this.photoService.open(id);
+    return new StreamableFile(stream, { type: mimeType, disposition: 'inline' });
   }
 }

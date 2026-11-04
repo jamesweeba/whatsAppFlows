@@ -35,4 +35,9 @@ export class ProcessMessageDto {
   @IsString()
   @IsOptional()
   incomingMessageId?: string;
+
+  /** A location pin the buyer shared: { latitude, longitude, name?, address? }. */
+  @IsObject()
+  @IsOptional()
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
 }

@@ -10,11 +10,66 @@ datasource db {
   url      = env("DATABASE_URL")
 }
 
+/// Vendor lifecycle (see VENDOR_ONBOARDING.md). Only ACTIVE shops can message buyers.
 enum TenantStatus {
-  ACTIVE
-  INACTIVE
-  SUSPENDED
+  /// Signed up, no in-stock product yet.
   PENDING
+  /// Has at least one in-stock product; waiting in the review queue.
+  STOCKED
+  /// A super admin has started reviewing it.
+  UNDER_REVIEW
+  /// Reviewer asked for changes; the vendor resubmits to go back to STOCKED.
+  MORE_INFO
+  /// Not approved; the vendor can fix things and resubmit.
+  REJECTED
+  /// Approved and assigned a WhatsApp number.
+  ACTIVE
+  /// Closed by a super admin; read-only.
+  SUSPENDED
+}
+
+enum UserRole {
+  VENDOR
+  SUPER_ADMIN
+}
+
+/// Every admin action, for the audit log.
+enum AuditAction {
+  REVIEW_STARTED
+  CHECKLIST_UPDATED
+  APPROVED
+  MORE_INFO_REQUESTED
+  REJECTED
+  SUSPENDED
+  NUMBER_RELEASED
+  REINSTATED
+  NUMBER_ADDED
+  NUMBER_FREED
+  NUMBER_REFRESHED
+  DOCUMENT_VIEWED
+}
+
+/// A pool number's state. COOLING numbers count as FREE once released over 7 days ago.
+enum NumberStatus {
+  FREE
+  ASSIGNED
+  COOLING
+}
+
+enum ReviewDecision {
+  APPROVED
+  MORE_INFO
+  REJECTED
+  SUSPENDED
+  RELEASED
+  REINSTATED
+}
+
+enum DocumentType {
+  GHANA_CARD_FRONT
+  GHANA_CARD_BACK
+  STALL_PHOTO
+  BUSINESS_REG
 }
 
 enum WabaStatus {
@@ -34,6 +89,7 @@ enum MessageSource {
   TEXT
   FLOW_SELECTION
   MEDIA
+  LOCATION
 }
 
 enum BuyerIntent {
@@ -71,25 +127,51 @@ enum OrderStatus {
 }
 
 model Tenant {
-  id                    String        @id @default(uuid())
+  id                    String           @id @default(uuid())
+  /// Sequential vendor number, shown to admins as MX-V-0001.
+  refNumber             Int              @unique @default(autoincrement())
   name                  String
-  slug                  String        @unique
-  whatsappNumber        String        @unique
-  countryCode           String        @default("233")
-  whatsappPhoneNumberId String?       @unique
-  wabaStatus            WabaStatus    @default(PENDING_REGISTRATION)
+  slug                  String           @unique
+  /// The buyer-facing number. Set on approval from the pool (or by own-number OTP onboarding).
+  whatsappNumber        String?          @unique
+  countryCode           String           @default("233")
+  /// Meta's id for whatsappNumber; routes webhooks and sends replies. Kept in sync with the
+  /// assigned WhatsappNumber row on approve and release.
+  whatsappPhoneNumberId String?          @unique
+  wabaStatus            WabaStatus       @default(PENDING_REGISTRATION)
   wabaRegisteredAt      DateTime?
   description           String?
-  deliveryFee           Float         @default(5)
+  deliveryFee           Float            @default(5)
   pickupNote            String?
-  status                TenantStatus  @default(PENDING)
-  userId                String        @unique
-  user                  User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  /// Delivery areas offered on the Flow CHECKOUT screen: [{ id, title }].
+  deliveryAreas         Json?
+  /// Delivery slots offered on the Flow CHECKOUT screen: [{ id, title, description? }]. Always includes "asap".
+  deliverySlots         Json?
+  status                TenantStatus     @default(PENDING)
+  /// When the shop last entered STOCKED; the review queue is ordered by it.
+  submittedAt           DateTime?
+  /// Shop owner details for KYC. Nullable only for shops created before onboarding existed.
+  ownerFullName         String?
+  /// The vendor's own phone: welcome, review and order alerts go here.
+  ownerPhone            String?
+  market                String?
+  stallLocation         String?
+  /// MoMo payout number and the name it is registered to (checked during review).
+  momoNumber            String?
+  momoName              String?
+  /// The reviewer's due-diligence ticks while UNDER_REVIEW; cleared on each decision.
+  reviewChecks          Json?
+  documents             VendorDocument[]
+  reviews               VendorReview[]
+  number                WhatsappNumber?
+  userId                String           @unique
+  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
   products              Product[]
   chatSessions          ChatSession[]
   orders                Order[]
-  createdAt             DateTime      @default(now())
-  modifiedAt            DateTime      @updatedAt
+  flowCarts             FlowCart[]
+  createdAt             DateTime         @default(now())
+  modifiedAt            DateTime         @updatedAt
 }
 
 model ChatSession {
@@ -123,50 +205,189 @@ model ChatMessage {
   createdAt         DateTime      @default(now())
 }
 
+/// Platform-wide product categories. Vendors pick one per product; the list is seeded by migration.
+model Category {
+  /// Stable, readable id used by the API and the Flow, e.g. "veg_fruits".
+  id          String    @id
+  title       String
+  description String?
+  sortOrder   Int       @default(0)
+  products    Product[]
+  createdAt   DateTime  @default(now())
+  modifiedAt  DateTime  @updatedAt
+}
+
 model Product {
-  id         String      @id @default(uuid())
-  name       String
-  image      String?
-  price      Float
-  inStock    Boolean     @default(true)
+  id             String           @id @default(uuid())
+  name           String
+  /// An emoji shown before the name in WhatsApp text lists (e.g. "🍅"), not a photo.
+  image          String?
+  /// Set when the vendor uploaded a photo. The file is stored at products/<tenantId>/<id>
+  /// and served publicly at GET /products/:id/photo.
+  photoMimeType  String?
+  photoUpdatedAt DateTime?
+  /// Base price; the cheapest measure's price when measures exist.
+  price          Float
+  inStock        Boolean          @default(true)
+  /// Short line shown under the product name in the Flow, e.g. "Olonka ≈ 2 kg".
+  note           String?
+  /// Required by the API; nullable only so products created before categories existed stay valid.
+  categoryId     String?
+  category       Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
+  measures       ProductMeasure[]
+  tenantId       String
+  tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  orderItems     OrderItem[]
+  createdAt      DateTime         @default(now())
+  modifiedAt     DateTime         @updatedAt
+}
+
+/// A way a product is sold (olonka, basket, table top...), each with its own price.
+model ProductMeasure {
+  id          String  @id @default(uuid())
+  productId   String
+  product     Product @relation(fields: [productId], references: [id], onDelete: Cascade)
+  code        String
+  label       String
+  description String?
+  price       Float
+  sortOrder   Int     @default(0)
+
+  @@unique([productId, code])
+}
+
+/// Server-side basket for one WhatsApp Flow session, keyed by flow_token.
+model FlowCart {
+  id         String   @id @default(uuid())
+  flowToken  String   @unique
   tenantId   String
-  tenant     Tenant      @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  orderItems OrderItem[]
-  createdAt  DateTime    @default(now())
-  modifiedAt DateTime    @updatedAt
+  tenant     Tenant   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  buyerPhone String
+  /// [{ sku, measure, qty }] in the order they were added.
+  lines      Json     @default("[]")
+  /// The line being edited on PRODUCT: { sku, measure, fromBasket }.
+  editing    Json?
+  order      Order?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@index([updatedAt])
 }
 
 model User {
-  id         String   @id @default(uuid())
-  email      String   @unique
+  id         String         @id @default(uuid())
+  email      String         @unique
   password   String
   firstName  String
   lastName   String
+  /// SUPER_ADMIN accounts are created by `npm run admin:create`, never by signup.
+  role       UserRole       @default(VENDOR)
   tenant     Tenant?
-  createdAt  DateTime @default(now())
-  modifiedAt DateTime @updatedAt
+  reviews    VendorReview[]
+  createdAt  DateTime       @default(now())
+  modifiedAt DateTime       @updatedAt
+}
+
+/// A KYC file the vendor uploaded. One per type; uploading again replaces it.
+model VendorDocument {
+  id         String       @id @default(uuid())
+  tenantId   String
+  tenant     Tenant       @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  type       DocumentType
+  /// Where StorageService keeps the file, e.g. "kyc/<tenantId>/<uuid>.jpg". Never a public URL.
+  storageKey String
+  fileName   String
+  mimeType   String
+  size       Int
+  uploadedAt DateTime     @default(now())
+
+  @@unique([tenantId, type])
+}
+
+/// Audit trail: one row per super admin decision on a shop.
+model VendorReview {
+  id         String         @id @default(uuid())
+  tenantId   String
+  tenant     Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  reviewerId String
+  reviewer   User           @relation(fields: [reviewerId], references: [id])
+  decision   ReviewDecision
+  /// { ghanaCardMatches, momoNameMatches, calledOwner, productsLookGenuine } as ticked.
+  checks     Json?
+  /// Shown to the vendor on MORE_INFO and REJECTED.
+  notes      String?
+  /// The pool number involved in an APPROVED or RELEASED decision.
+  numberId   String?
+  createdAt  DateTime       @default(now())
+
+  @@index([tenantId, createdAt])
+}
+
+/// A WhatsApp number registered under the MarketiX WABA, assigned to at most one shop.
+model WhatsappNumber {
+  id             String       @id @default(uuid())
+  /// Meta's phone number id.
+  phoneNumberId  String       @unique
+  displayNumber  String       @unique
+  /// Null only for numbers carried over from shops that onboarded before the pool existed.
+  wabaId         String?
+  status         NumberStatus @default(FREE)
+  tenantId       String?      @unique
+  tenant         Tenant?      @relation(fields: [tenantId], references: [id], onDelete: SetNull)
+  /// WhatsApp display name for the shop; recorded on approve (submission to Meta is manual for now).
+  displayName    String?
+  /// From Meta on refresh: GREEN, YELLOW, RED or UNKNOWN.
+  qualityRating  String?
+  /// From Meta on refresh, e.g. TIER_1K.
+  messagingLimit String?
+  refreshedAt    DateTime?
+  assignedAt     DateTime?
+  releasedAt     DateTime?
+  createdAt      DateTime     @default(now())
+  modifiedAt     DateTime     @updatedAt
+
+  @@index([status])
 }
 
 model Order {
-  id              String         @id @default(uuid())
-  orderNumber     String         @unique @default(uuid())
-  tenantId        String
-  tenant          Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
-  buyerPhone      String
-  sessionId       String?
-  session         ChatSession?   @relation(fields: [sessionId], references: [id], onDelete: SetNull)
-  status          OrderStatus    @default(PENDING)
-  totalAmount     Float
-  paymentMethod   PaymentMethod?
-  paymentPhone    String?
-  momoNetwork     String?
-  fulfillment     Fulfillment?
-  deliveryAddress String?
-  deliveryFee     Float          @default(0)
-  notes           String?
-  items           OrderItem[]
-  createdAt       DateTime       @default(now())
-  updatedAt       DateTime       @updatedAt
+  id                  String         @id @default(uuid())
+  orderNumber         String         @unique @default(uuid())
+  tenantId            String
+  tenant              Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  buyerPhone          String
+  sessionId           String?
+  session             ChatSession?   @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  status              OrderStatus    @default(PENDING)
+  totalAmount         Float
+  paymentMethod       PaymentMethod?
+  paymentPhone        String?
+  momoNetwork         String?
+  fulfillment         Fulfillment?
+  deliveryAddress     String?
+  deliveryFee         Float          @default(0)
+  customerName        String?
+  deliveryArea        String?
+  landmark            String?
+  contactPhone        String?
+  deliverySlot        String?
+  /// Set once the MoMo prompt is sent, so it is never sent twice.
+  paymentRequestedAt  DateTime?
+  /// Set once the receipt, MoMo prompt and pin request went out for a Flow order (on place_order or Done).
+  confirmationSentAt  DateTime?
+  locationRequestedAt DateTime?
+  locationLatitude    Float?
+  locationLongitude   Float?
+  locationName        String?
+  locationAddress     String?
+  locationReceivedAt  DateTime?
+  riderName           String?
+  riderPhone          String?
+  flowCartId          String?        @unique
+  flowCart            FlowCart?      @relation(fields: [flowCartId], references: [id], onDelete: SetNull)
+  notes               String?
+  items               OrderItem[]
+  createdAt           DateTime       @default(now())
+  updatedAt           DateTime       @updatedAt
 }
 
 model OrderItem {
@@ -176,8 +397,33 @@ model OrderItem {
   productId   String?
   product     Product? @relation(fields: [productId], references: [id], onDelete: SetNull)
   productName String
+  measureCode String?
   unitPrice   Float
   quantity    Int
   totalPrice  Float
   createdAt   DateTime @default(now())
+}
+
+/// Append-only record of admin actions. A database trigger refuses UPDATE and DELETE.
+/// No foreign keys on purpose: names are copied in, so an entry outlives the shop, number
+/// or admin it mentions.
+model AuditLog {
+  id            String      @id @default(uuid())
+  actorId       String
+  actorName     String
+  action        AuditAction
+  tenantId      String?
+  tenantName    String?
+  numberId      String?
+  displayNumber String?
+  /// Human-readable, e.g. "Assigned +233 59 200 1128." or the reviewer's notes.
+  details       String?
+  /// Structured extras: checks ticked, document type, Meta quality before and after.
+  metadata      Json?
+  createdAt     DateTime    @default(now())
+
+  @@index([createdAt])
+  @@index([tenantId, createdAt])
+  @@index([actorId, createdAt])
+  @@index([action, createdAt])
 }

@@ -8,6 +8,8 @@ export interface ReceiptOrder {
   deliveryFee?: number | null;
   fulfillment?: Fulfillment | null;
   deliveryAddress?: string | null;
+  deliverySlot?: string | null;
+  customerName?: string | null;
   paymentMethod?: PaymentMethod | null;
   paymentPhone?: string | null;
   items?: Array<{
@@ -47,8 +49,14 @@ export function formatOrderReceipt(order: ReceiptOrder): string {
       lines.push(`🛒 *Items Subtotal:* ${ghCedis(subtotal)}`);
       lines.push(`🛵 *Delivery Fee:* ${ghCedis(deliveryFee)}`);
       lines.push(`💰 *Total Amount:* ${ghCedis(order.totalAmount)}`);
+      if (order.customerName) {
+        lines.push(`👤 *Name:* ${order.customerName}`);
+      }
       if (order.deliveryAddress) {
         lines.push(`📍 *Delivery Address:* ${order.deliveryAddress}`);
+      }
+      if (order.deliverySlot) {
+        lines.push(`🕒 *Delivery Time:* ${order.deliverySlot}`);
       }
     } else if (order.fulfillment === Fulfillment.PICKUP) {
       lines.push(`💰 *Total Amount:* ${ghCedis(order.totalAmount)}`);

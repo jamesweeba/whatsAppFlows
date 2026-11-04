@@ -10,16 +10,17 @@ import {
   Query,
   UseGuards,
 } from '@nestjs/common';
-import { MessageSender } from '@prisma/client';
+import { MessageSender, Tenant, TenantStatus } from '@prisma/client';
 import { MetaSignatureGuard } from '../auth/guards/meta-signature.guard.js';
 import { ChatService } from '../chat/chat.service.js';
 import { isBsuid, toE164 } from '../common/phone.util.js';
-import { TenantService } from '../tenant/tenant.service.js';
-import { WELCOME_BUTTON_IDS } from './waba.service.js';
+import { isLive, TenantService } from '../tenant/tenant.service.js';
+import { WabaService, WELCOME_BUTTON_IDS } from './waba.service.js';
 
 interface IncomingContent {
   text: string;
   flowData?: Record<string, any>;
+  location?: { latitude: number; longitude: number; name?: string; address?: string };
 }
 
 @Controller('api/v1/webhook')
@@ -29,6 +30,7 @@ export class WabaWebhookController {
   constructor(
     private readonly tenantService: TenantService,
     private readonly chatService: ChatService,
+    private readonly wabaService: WabaService,
   ) {}
 
   /**
@@ -89,8 +91,8 @@ export class WabaWebhookController {
 
         const phoneNumberId: string | undefined = value.metadata?.phone_number_id;
         const tenant = phoneNumberId ? await this.tenantService.findByPhoneNumberId(phoneNumberId) : null;
-        if (!tenant) {
-          this.logger.warn(`Dropping webhook event: no tenant owns phone number id "${phoneNumberId}".`);
+        if (!tenant || !isLive(tenant)) {
+          await this.replyShopUnavailable(phoneNumberId, tenant, value);
           continue;
         }
 
@@ -102,12 +104,13 @@ export class WabaWebhookController {
                 this.logger.warn(`Dropping message ${message.id}: no sender identifier.`);
                 return;
               }
-              const { text, flowData } = this.extractContent(message);
+              const { text, flowData, location } = this.extractContent(message);
               await this.chatService.processIncomingMessage({
                 tenantId: tenant.id,
                 buyerPhone,
                 text,
                 flowData,
+                location,
                 sender: MessageSender.BUYER,
                 incomingMessageId: message.id,
               });
@@ -117,6 +120,35 @@ export class WabaWebhookController {
           }),
         );
       }
+    }
+  }
+
+  /**
+   * Only ACTIVE shops reach the chat logic. A suspended shop, one not yet approved, or a
+   * pool number no shop has yet gets a one-line reply; any other number is dropped.
+   */
+  private async replyShopUnavailable(phoneNumberId: string | undefined, tenant: Tenant | null, value: any) {
+    if (!phoneNumberId) {
+      this.logger.warn('Dropping webhook event: no phone number id.');
+      return;
+    }
+    if (!tenant && !(await this.tenantService.findPoolNumber(phoneNumberId))) {
+      this.logger.warn(`Dropping webhook event: no tenant owns phone number id "${phoneNumberId}".`);
+      return;
+    }
+
+    const text =
+      tenant?.status === TenantStatus.SUSPENDED
+        ? `Sorry, ${tenant.name} is temporarily closed. Please check back later.`
+        : "This shop isn't open on MarketiX yet. Please check back soon.";
+    this.logger.log(`Shop on ${phoneNumberId} is ${tenant?.status ?? 'unassigned'}; replying that it is unavailable.`);
+
+    for (const message of value.messages) {
+      const buyerPhone = this.extractBuyerPhone(message, value.contacts ?? []);
+      if (!buyerPhone) continue;
+      await this.wabaService
+        .sendTextMessage(phoneNumberId, buyerPhone, text)
+        .catch((err) => this.logger.warn(`Unavailable-shop reply to ${buyerPhone} failed: ${err?.message || err}`));
     }
   }
 
@@ -162,6 +194,21 @@ export class WabaWebhookController {
 
     if (sharedContactInfo) {
       return { text: WELCOME_BUTTON_IDS.SHOP };
+    }
+
+    if (message.type === 'location' && message.location) {
+      const { latitude, longitude, name, address } = message.location;
+      if (Number.isFinite(Number(latitude)) && Number.isFinite(Number(longitude))) {
+        return {
+          text: `📍 Location shared${name || address ? `: ${[name, address].filter(Boolean).join(', ')}` : ''} (${latitude}, ${longitude})`,
+          location: {
+            latitude: Number(latitude),
+            longitude: Number(longitude),
+            ...(name ? { name: String(name) } : {}),
+            ...(address ? { address: String(address) } : {}),
+          },
+        };
+      }
     }
 
     if (message.type === 'text' && message.text?.body) {

@@ -1,26 +1,30 @@
 {
+  "version": "7.3",
   "data_api_version": "3.0",
   "routing_model": {
-    "PRODUCT_SELECT": [
-      "QUANTITIES"
+    "WELCOME": [
+      "CATALOGUE",
+      "BASKET"
     ],
-    "QUANTITIES": [
-      "SUMMARY"
+    "CATALOGUE": [
+      "PRODUCT",
+      "BASKET"
     ],
-    "SUMMARY": [
-      "PAYMENT"
+    "PRODUCT": [
+      "BASKET"
     ],
-    "PAYMENT": [
-      "DONE"
+    "BASKET": [
+      "CHECKOUT"
     ],
-    "DONE": []
+    "CHECKOUT": [
+      "ORDER_RECEIVED"
+    ],
+    "ORDER_RECEIVED": []
   },
-  "version": "6.1",
   "screens": [
     {
-      "id": "PRODUCT_SELECT",
-      "title": "1 of 4 · Choose items",
-      "refresh_on_back": true,
+      "id": "WELCOME",
+      "title": "MarketiX Tech",
       "data": {
         "categories": {
           "type": "array",
@@ -30,39 +34,190 @@
               "id": {
                 "type": "string"
               },
-              "title": {
+              "main-content": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  }
+                }
+              },
+              "start": {
+                "type": "object",
+                "properties": {
+                  "image": {
+                    "type": "string"
+                  },
+                  "alt-text": {
+                    "type": "string"
+                  }
+                }
+              },
+              "end": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              },
+              "badge": {
                 "type": "string"
+              },
+              "on-click-action": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "step": {
+                        "type": "string"
+                      },
+                      "sku": {
+                        "type": "string"
+                      },
+                      "measure": {
+                        "type": "string"
+                      },
+                      "category": {
+                        "type": "string"
+                      },
+                      "page": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           },
           "__example__": [
             {
+              "id": "reorder_last",
+              "main-content": {
+                "title": "Repeat my last order",
+                "metadata": "Tue 28 Oct · 5 items · GH₵ 95"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_category",
+                  "sku": "open_category",
+                  "measure": "none",
+                  "category": "reorder_last",
+                  "page": "1"
+                }
+              }
+            },
+            {
               "id": "all",
-              "title": "🛒 All Products"
+              "main-content": {
+                "title": "All products",
+                "metadata": "Everything in stock · 18 products"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_category",
+                  "sku": "open_category",
+                  "measure": "none",
+                  "category": "all",
+                  "page": "1"
+                }
+              }
             },
             {
-              "id": "vegetables",
-              "title": "🥦 Vegetables"
+              "id": "veg_fruits",
+              "main-content": {
+                "title": "Vegetables & fruits",
+                "metadata": "Tomatoes, onions, pepper, plantain"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_category",
+                  "sku": "open_category",
+                  "measure": "none",
+                  "category": "veg_fruits",
+                  "page": "1"
+                }
+              }
             },
             {
-              "id": "grains",
-              "title": "🌾 Grains & Staples"
+              "id": "rice_oil",
+              "main-content": {
+                "title": "Rice, oil & provisions",
+                "metadata": "Rice, oil, sugar, tinned foods"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_category",
+                  "sku": "open_category",
+                  "measure": "none",
+                  "category": "rice_oil",
+                  "page": "1"
+                }
+              }
             },
             {
-              "id": "spices",
-              "title": "🌶️ Spices"
-            },
-            {
-              "id": "snacks",
-              "title": "🥜 Snacks"
+              "id": "drinks",
+              "main-content": {
+                "title": "Drinks & water",
+                "metadata": "Water, juice, soft drinks"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_category",
+                  "sku": "open_category",
+                  "measure": "none",
+                  "category": "drinks",
+                  "page": "1"
+                }
+              }
             }
           ]
-        },
-        "category_prefill": {
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "categories",
+            "label": "What would you like today?",
+            "description": "Groceries delivered in Kumasi within 1 hour.",
+            "list-items": "${data.categories}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "CATALOGUE",
+      "title": "Shop",
+      "data": {
+        "category": {
           "type": "string",
-          "__example__": "all"
+          "__example__": "veg_fruits"
         },
-        "pages": {
+        "page": {
+          "type": "string",
+          "__example__": "1"
+        },
+        "basket_bar": {
           "type": "array",
           "items": {
             "type": "object",
@@ -70,29 +225,99 @@
               "id": {
                 "type": "string"
               },
-              "title": {
+              "main-content": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  }
+                }
+              },
+              "start": {
+                "type": "object",
+                "properties": {
+                  "image": {
+                    "type": "string"
+                  },
+                  "alt-text": {
+                    "type": "string"
+                  }
+                }
+              },
+              "end": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              },
+              "badge": {
                 "type": "string"
+              },
+              "on-click-action": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "step": {
+                        "type": "string"
+                      },
+                      "sku": {
+                        "type": "string"
+                      },
+                      "measure": {
+                        "type": "string"
+                      },
+                      "category": {
+                        "type": "string"
+                      },
+                      "page": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           },
           "__example__": [
             {
-              "id": "1",
-              "title": "Page 1 of 7"
-            },
-            {
-              "id": "2",
-              "title": "Page 2 of 7"
-            },
-            {
-              "id": "3",
-              "title": "Page 3 of 7"
+              "id": "basket",
+              "main-content": {
+                "title": "Vegetables & fruits",
+                "description": "page 1 of 3",
+                "metadata": "Tap here to review your basket and check out"
+              },
+              "end": {
+                "title": "GH₵ 240"
+              },
+              "badge": "1 in basket",
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_basket",
+                  "sku": "none",
+                  "measure": "none",
+                  "category": "veg_fruits",
+                  "page": "1"
+                }
+              }
             }
           ]
-        },
-        "page_prefill": {
-          "type": "string",
-          "__example__": "1"
         },
         "products": {
           "type": "array",
@@ -102,351 +327,229 @@
               "id": {
                 "type": "string"
               },
-              "title": {
+              "main-content": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  }
+                }
+              },
+              "start": {
+                "type": "object",
+                "properties": {
+                  "image": {
+                    "type": "string"
+                  },
+                  "alt-text": {
+                    "type": "string"
+                  }
+                }
+              },
+              "end": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              },
+              "badge": {
                 "type": "string"
+              },
+              "on-click-action": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "step": {
+                        "type": "string"
+                      },
+                      "sku": {
+                        "type": "string"
+                      },
+                      "measure": {
+                        "type": "string"
+                      },
+                      "category": {
+                        "type": "string"
+                      },
+                      "page": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
               }
             }
           },
           "__example__": [
             {
-              "id": "prod-1",
-              "title": "🍅 Tomatoes",
-              "description": "₵2.00 · Per KG"
+              "id": "sku_tomatoes",
+              "main-content": {
+                "title": "Tomatoes",
+                "description": "from GH₵ 10",
+                "metadata": "✓ 2 in basket · GH₵ 240"
+              },
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Tomatoes"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_product",
+                  "sku": "sku_tomatoes",
+                  "category": "veg_fruits",
+                  "page": "1",
+                  "measure": "none"
+                }
+              }
             },
             {
-              "id": "prod-2",
-              "title": "🧅 Onions",
-              "description": "₵1.50 · Per KG"
+              "id": "sku_onions",
+              "main-content": {
+                "title": "Onions",
+                "description": "from GH₵ 5",
+                "metadata": "Olonka · Basket · Table top"
+              },
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Onions"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_product",
+                  "sku": "sku_onions",
+                  "category": "veg_fruits",
+                  "page": "1",
+                  "measure": "none"
+                }
+              }
             },
             {
-              "id": "prod-3",
-              "title": "🌶️ Pepper",
-              "description": "₵3.00 · Olonka"
+              "id": "sku_pepper",
+              "main-content": {
+                "title": "Pepper",
+                "description": "from GH₵ 8",
+                "metadata": "Bowl · Olonka"
+              },
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Pepper"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_product",
+                  "sku": "sku_pepper",
+                  "category": "veg_fruits",
+                  "page": "1",
+                  "measure": "none"
+                }
+              }
             },
             {
-              "id": "prod-4",
-              "title": "🥕 Carrots",
-              "description": "₵2.50 · Bunch"
+              "id": "sku_plantain",
+              "main-content": {
+                "title": "Plantain",
+                "description": "from GH₵ 20",
+                "metadata": "Bunch · 5 fingers"
+              },
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Plantain"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_product",
+                  "sku": "sku_plantain",
+                  "category": "veg_fruits",
+                  "page": "1",
+                  "measure": "none"
+                }
+              }
             },
             {
-              "id": "prod-5",
-              "title": "🥬 Cabbage",
-              "description": "₵4.00 · Per Piece"
+              "id": "next_page",
+              "main-content": {
+                "title": "Next 20 products",
+                "description": "page 2 of 3"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_category",
+                  "sku": "none",
+                  "category": "veg_fruits",
+                  "page": "2",
+                  "measure": "none"
+                }
+              }
             }
           ]
-        },
-        "pre_selected": {
-          "type": "array",
-          "items": {
-            "type": "string"
-          },
-          "__example__": []
-        },
-        "page_label": {
-          "type": "string",
-          "__example__": "34 products"
-        },
-        "selection_note": {
-          "type": "string",
-          "__example__": "🛒 2 items · ₵7.00 so far"
-        },
-        "search_prefill": {
-          "type": "string",
-          "__example__": " "
-        },
-        "notice": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_notice": {
-          "type": "boolean",
-          "__example__": false
         }
       },
       "layout": {
         "type": "SingleColumnLayout",
         "children": [
           {
-            "type": "Image",
-            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEUdnnUen3Ou3M3S6+MOaGgcoXdxwqiIzLY1qIMA/wBTtZYcnXQAAAD9/v4epHknontPs5Mgn3YAf3/E5dsdnHQcnXQAqlUAqqoAv38cmnQdnHQdoXcA//8concA/38nlWsAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD1rZtiAAAAIHRSTlOjGf//BGj///8B//4A//3///8C/1DMAwMEMG/KAUoCCqQzpnMAAAOCSURBVHjavZp9m4IgDMCnVteFiZJal2/f/1seqJkZjCXS/ri7h679nm2wwQBiXMRNqF9BfoeiYAmTkrCigHsezD5GBNBPy1Ypb6BiSS+sl/HvChoFacvVgKvSvgf2VD2XfhT2wfiPnwPkt3YN6JXPIdDsMIQJIO3e7StU+8So9rv+Cx8A6nZQz0gyINqaDpAGN2T1I6Ix+EkHEHEAn6gfEBDEggSQ/5V/qn5A5LEGAe/RFbBGf2+EeI/1EnCL/6pV6ntE9ScVoACpP1mtXxnxRoCF/txF/xCImxlwi+9u+hXh/kqAhX7mLAsCvPqHbSCvXnoCWrf4vka6fQdspn9BeADq8lpspF8SimtZLwAihs30SwJMSQMe+TPfUH8f6OscIOog2RaQBLWYAcpNHTQ6qXwCSjmD2MYiZ1L5APyKrtgeUHTidwRoIpyN4h5n8GTAZAJoDeDpQ5xNkIBavBnAzw8JXUwQtQKUmjX2BJx/nEwoewBggDN3WwtQxwFDASlbO5cSFsQ1dLoyxsOLktFHq22Qxa0DLEuEChC55QvQeWg0g516E47rAdJHEDfmRTaE4uRgQiMBWB69DEvhyAli8BEIc5rg7OdMlqNhrUHHjICMpWT9kSEIHaClkpMBhsmc5IBt5rJholLEsByTO2AxpgchMq4EwEvBiQgIDcs9KSwAFjl5SAEYGmRqELhxLePbFc4OTh5SQbAs9iMJcDKndBuAFgQkoVsAtCCESMmwADLSRD1gANuOiK9NdFOQbYQLwUOZueTYFholWyAesq9kSsrGPFSAexAitOyD7extT9nYvkama9vZ7BGE1Cj47hErmS8p+3AyI8wxliVT2M8G0dpk3Rd96/GPkC3MAMA3XmOUD+sBauMVWINgNcFYz9TWkXREPlxQSbHNb0fuQmWcNrbYvtcUH0k9qfRTdGAzZzzH0AMIqY0wBTrEx3RHKO0h0JzxprygG9MfAnXHWGQecXRMd4yl9Iq4Zkpy2zSdDuKEVsIawLOVQDEh0lSXyHL4mJohdhNmG7yp/urGTO0cSkNqjGjELWPahhSppdaXnZBbx7QtNVJTkKfpkTKmbQoS4pxNP/AxfVuT1JjVNdgMTbf3xqz/1rL35rj/9r7/Cwr/Vyz+L4n8X3P5v6jzf9Xo/7LU/3Wv/wvrL1y5+3804P/Zwxcebnzh6ckXHs9s8vznH7vqre65tNkFAAAAAElFTkSuQmCC",
-            "width": 64,
-            "height": 64,
-            "scale-type": "contain",
-            "alt-text": "Shopping cart icon"
+            "type": "NavigationList",
+            "name": "basket_bar",
+            "list-items": "${data.basket_bar}"
           },
           {
-            "type": "Form",
-            "name": "select_form",
-            "init-values": {
-              "search_query": "${data.search_prefill}",
-              "selected_products": "${data.pre_selected}",
-              "category_select": "${data.category_prefill}",
-              "page_select": "${data.page_prefill}"
-            },
-            "children": [
-              {
-                "type": "TextHeading",
-                "text": "🛍️ Marketix Groceries"
-              },
-              {
-                "type": "TextCaption",
-                "text": "Tick what you need, then tap Continue. Your ticks are kept when you change page."
-              },
-              {
-                "type": "Dropdown",
-                "label": "Category",
-                "name": "category_select",
-                "required": false,
-                "data-source": "${data.categories}",
-                "on-select-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "step": "set_category",
-                    "category": "${form.category_select}",
-                    "query": "${form.search_query}",
-                    "selected_on_page": "${form.selected_products}"
-                  }
-                }
-              },
-              {
-                "type": "TextInput",
-                "label": "Search",
-                "name": "search_query",
-                "input-type": "text",
-                "required": false
-              },
-              {
-                "type": "EmbeddedLink",
-                "text": "🔍 Search / Show All",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "step": "search",
-                    "query": "${form.search_query}",
-                    "category": "${form.category_select}",
-                    "selected_on_page": "${form.selected_products}"
-                  }
-                }
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.notice}",
-                "visible": "${data.show_notice}"
-              },
-              {
-                "type": "CheckboxGroup",
-                "label": "Products",
-                "name": "selected_products",
-                "required": false,
-                "max-selected-items": 10,
-                "data-source": "${data.products}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.selection_note}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.page_label}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "Page",
-                "name": "page_select",
-                "required": false,
-                "data-source": "${data.pages}",
-                "on-select-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "step": "go_page",
-                    "page": "${form.page_select}",
-                    "query": "${form.search_query}",
-                    "category": "${form.category_select}",
-                    "selected_on_page": "${form.selected_products}"
-                  }
-                }
-              },
-              {
-                "type": "Footer",
-                "label": "Set quantities ➜",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "step": "continue",
-                    "selected_on_page": "${form.selected_products}"
-                  }
-                }
-              }
-            ]
+            "type": "NavigationList",
+            "name": "products",
+            "list-items": "${data.products}"
           }
         ]
       }
     },
     {
-      "id": "QUANTITIES",
-      "title": "2 of 4 · How much?",
+      "id": "PRODUCT",
+      "title": "Product",
       "data": {
-        "item_0_id": {
+        "category": {
           "type": "string",
-          "__example__": "prod-1"
+          "__example__": "veg_fruits"
         },
-        "item_0_label": {
+        "page": {
           "type": "string",
-          "__example__": "🍅 Tomatoes"
+          "__example__": "1"
         },
-        "item_0_helper": {
+        "sku": {
           "type": "string",
-          "__example__": "₵2.00 per kg"
+          "__example__": "sku_tomatoes"
         },
-        "show_0": {
-          "type": "boolean",
-          "__example__": true
-        },
-        "item_1_id": {
+        "name": {
           "type": "string",
-          "__example__": "prod-3"
+          "__example__": "Tomatoes"
         },
-        "item_1_label": {
+        "photo": {
           "type": "string",
-          "__example__": "🌶️ Pepper"
+          "__example__": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg=="
         },
-        "item_1_helper": {
+        "note": {
           "type": "string",
-          "__example__": "₵3.00 per olonka"
+          "__example__": "Fresh from Kejetia this morning. Olonka ≈ 2 kg, basket ≈ 12 kg."
         },
-        "show_1": {
-          "type": "boolean",
-          "__example__": true
-        },
-        "item_2_id": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_2_label": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_2_helper": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_2": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "item_3_id": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_3_label": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_3_helper": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_3": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "item_4_id": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_4_label": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_4_helper": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_4": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "item_5_id": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_5_label": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_5_helper": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_5": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "item_6_id": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_6_label": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_6_helper": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_6": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "item_7_id": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_7_label": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_7_helper": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_7": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "item_8_id": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_8_label": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_8_helper": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_8": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "item_9_id": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_9_label": {
-          "type": "string",
-          "__example__": " "
-        },
-        "item_9_helper": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_9": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "item_0_options": {
+        "measures": {
           "type": "array",
           "items": {
             "type": "object",
@@ -456,41 +559,33 @@
               },
               "title": {
                 "type": "string"
+              },
+              "description": {
+                "type": "string"
               }
             }
           },
           "__example__": [
             {
-              "id": "0.5",
-              "title": "0.5 kg"
+              "id": "olonka",
+              "title": "Olonka · GH₵ 25"
             },
             {
-              "id": "1",
-              "title": "1 kg"
+              "id": "basket",
+              "title": "Basket · GH₵ 120",
+              "description": "Best value"
             },
             {
-              "id": "1.5",
-              "title": "1.5 kg"
+              "id": "tabletop",
+              "title": "Table top · GH₵ 10"
             },
             {
-              "id": "2",
-              "title": "2 kg"
-            },
-            {
-              "id": "3",
-              "title": "3 kg"
-            },
-            {
-              "id": "5",
-              "title": "5 kg"
+              "id": "remove",
+              "title": "Remove from basket"
             }
           ]
         },
-        "item_0_default": {
-          "type": "string",
-          "__example__": "1"
-        },
-        "item_1_options": {
+        "qty_options": {
           "type": "array",
           "items": {
             "type": "object",
@@ -546,201 +641,17 @@
             }
           ]
         },
-        "item_1_default": {
+        "current_measure": {
           "type": "string",
-          "__example__": "1"
+          "__example__": "basket"
         },
-        "item_2_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "1"
-            }
-          ]
-        },
-        "item_2_default": {
+        "current_qty": {
           "type": "string",
-          "__example__": "1"
+          "__example__": "2"
         },
-        "item_3_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "1"
-            }
-          ]
-        },
-        "item_3_default": {
+        "button_label": {
           "type": "string",
-          "__example__": "1"
-        },
-        "item_4_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "1"
-            }
-          ]
-        },
-        "item_4_default": {
-          "type": "string",
-          "__example__": "1"
-        },
-        "item_5_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "1"
-            }
-          ]
-        },
-        "item_5_default": {
-          "type": "string",
-          "__example__": "1"
-        },
-        "item_6_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "1"
-            }
-          ]
-        },
-        "item_6_default": {
-          "type": "string",
-          "__example__": "1"
-        },
-        "item_7_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "1"
-            }
-          ]
-        },
-        "item_7_default": {
-          "type": "string",
-          "__example__": "1"
-        },
-        "item_8_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "1"
-            }
-          ]
-        },
-        "item_8_default": {
-          "type": "string",
-          "__example__": "1"
-        },
-        "item_9_options": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "1",
-              "title": "1"
-            }
-          ]
-        },
-        "item_9_default": {
-          "type": "string",
-          "__example__": "1"
+          "__example__": "Add to basket"
         }
       },
       "layout": {
@@ -748,536 +659,618 @@
         "children": [
           {
             "type": "Image",
-            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEXy59f/AADLl1Hr17y/gCnChjS6dRYAAAD+/fzDexi2bQq9fSXLl1G8fAW7dRaqVQC4dBa6dRb/fwC6dha7dRa3dBb//wB/fwCzbAr/qgCqqgDAeBaZZgDDdxXbt4bly6gAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmW9JUAAAAIHRSTlP/Af/////+AP/+////CcsDUGwCk7MwAQIPAwNIBRf//9y96xEAAALESURBVHja7ZrZYqsgEIanPS24FHDXxKR5/7csoOaogFVkctW5aav4fx1gWAaAblvLCvXjnuUl52Q0zss8u6vnBWt/EYDNt0Kps76U0rG0CTD8zsueKYbwBlyVel6RmfTc1OMqZ2PB44CLdKBX6mTDFKMXuvBBgFD/PN9WnxhcuSEOAZqC3vbJT4gbLZr9AOlwv1t+RPSOerIBGO2qI/IDouoo2wWQPTM7Kj8gMv3xbwBB29JDXiPK1mxrMKqn5p76ksBro5rA0Cfe+pJADAKs9LMz+oqQrQiw1M9PyWtEviRAYH2DAIv6CaAvCYtagln/r0kgq2fx8AQUbzWJw+jLvvRWrAGNuPI4lAcxv4pmBWC0DKavYvrZDDBNXllAfd3Q1zmgbRgJbKxpZwBBqzisflyN4x4M+nUc2oO4HggaUHQ8PIB3xQS4BG7hZztfRkCL4IB2oR0AOA5MLkhAwzgOgLNGAQSSA9oFoQEVFkDFAjSUETRjtIFbkGnMObndwFlDSSotOV1HQO+Ot98QRdEjPefDXTayvQ8l35E2ONuPwDHRpNFoX2dqSU484IiyQADOoLO/CgMgpIMMF5CBIwoCAeIcSlxACRwXwNcAHb/SPp8A8pFaYnoqZ1iyBtji12armN5bjoA1fm0GHuUMQBpt2Kw19pb7AxwHJI+djfzwbGSS/nN+9554lJOAdSR/jTZ98D7+TRJ7ubUty5mRTJLByKxGhwfEWs4wY6hwDHYf/4eKk4Md+nCNPuGgT5nokz76ssW18HoEW3g5lo5DrK7j0mPp6N4e2OLXY/HrXr7b4tdj+Y6+AUHfQuFvAtG3sfgbcfRUAn4yBD2dg5+QQk+p4ScF0dOa+IlZ/NQyenIcP72Pf0CBf8SCf0iEf8yFf1CHf9SIf1iKf9yLf2D9giN3/EsD+NceXnBx4wVXT15weSbI9Z8fVU/+sWtf+AUAAAAASUVORK5CYII=",
-            "width": 64,
-            "height": 64,
-            "scale-type": "contain",
-            "alt-text": "Plus and minus icon"
-          },
-          {
-            "type": "Form",
-            "name": "qty_form",
-            "children": [
-              {
-                "type": "TextHeading",
-                "text": "🔢 How many of each?"
-              },
-              {
-                "type": "TextBody",
-                "text": "Pick an amount for each item. It starts at 1."
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_0_helper}",
-                "visible": "${data.show_0}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_0_label}",
-                "name": "qty_0",
-                "required": false,
-                "data-source": "${data.item_0_options}",
-                "visible": "${data.show_0}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_1_helper}",
-                "visible": "${data.show_1}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_1_label}",
-                "name": "qty_1",
-                "required": false,
-                "data-source": "${data.item_1_options}",
-                "visible": "${data.show_1}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_2_helper}",
-                "visible": "${data.show_2}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_2_label}",
-                "name": "qty_2",
-                "required": false,
-                "data-source": "${data.item_2_options}",
-                "visible": "${data.show_2}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_3_helper}",
-                "visible": "${data.show_3}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_3_label}",
-                "name": "qty_3",
-                "required": false,
-                "data-source": "${data.item_3_options}",
-                "visible": "${data.show_3}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_4_helper}",
-                "visible": "${data.show_4}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_4_label}",
-                "name": "qty_4",
-                "required": false,
-                "data-source": "${data.item_4_options}",
-                "visible": "${data.show_4}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_5_helper}",
-                "visible": "${data.show_5}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_5_label}",
-                "name": "qty_5",
-                "required": false,
-                "data-source": "${data.item_5_options}",
-                "visible": "${data.show_5}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_6_helper}",
-                "visible": "${data.show_6}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_6_label}",
-                "name": "qty_6",
-                "required": false,
-                "data-source": "${data.item_6_options}",
-                "visible": "${data.show_6}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_7_helper}",
-                "visible": "${data.show_7}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_7_label}",
-                "name": "qty_7",
-                "required": false,
-                "data-source": "${data.item_7_options}",
-                "visible": "${data.show_7}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_8_helper}",
-                "visible": "${data.show_8}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_8_label}",
-                "name": "qty_8",
-                "required": false,
-                "data-source": "${data.item_8_options}",
-                "visible": "${data.show_8}"
-              },
-              {
-                "type": "TextCaption",
-                "text": "${data.item_9_helper}",
-                "visible": "${data.show_9}"
-              },
-              {
-                "type": "Dropdown",
-                "label": "${data.item_9_label}",
-                "name": "qty_9",
-                "required": false,
-                "data-source": "${data.item_9_options}",
-                "visible": "${data.show_9}"
-              },
-              {
-                "type": "Footer",
-                "label": "Review Order ➜",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "step": "quantities",
-                    "i0_id": "${data.item_0_id}",
-                    "i0_qty": "${form.qty_0}",
-                    "i1_id": "${data.item_1_id}",
-                    "i1_qty": "${form.qty_1}",
-                    "i2_id": "${data.item_2_id}",
-                    "i2_qty": "${form.qty_2}",
-                    "i3_id": "${data.item_3_id}",
-                    "i3_qty": "${form.qty_3}",
-                    "i4_id": "${data.item_4_id}",
-                    "i4_qty": "${form.qty_4}",
-                    "i5_id": "${data.item_5_id}",
-                    "i5_qty": "${form.qty_5}",
-                    "i6_id": "${data.item_6_id}",
-                    "i6_qty": "${form.qty_6}",
-                    "i7_id": "${data.item_7_id}",
-                    "i7_qty": "${form.qty_7}",
-                    "i8_id": "${data.item_8_id}",
-                    "i8_qty": "${form.qty_8}",
-                    "i9_id": "${data.item_9_id}",
-                    "i9_qty": "${form.qty_9}"
-                  }
-                }
-              }
-            ],
-            "init-values": {
-              "qty_0": "${data.item_0_default}",
-              "qty_1": "${data.item_1_default}",
-              "qty_2": "${data.item_2_default}",
-              "qty_3": "${data.item_3_default}",
-              "qty_4": "${data.item_4_default}",
-              "qty_5": "${data.item_5_default}",
-              "qty_6": "${data.item_6_default}",
-              "qty_7": "${data.item_7_default}",
-              "qty_8": "${data.item_8_default}",
-              "qty_9": "${data.item_9_default}"
-            }
-          }
-        ]
-      }
-    },
-    {
-      "id": "SUMMARY",
-      "title": "3 of 4 · Your order",
-      "data": {
-        "summary_lines": {
-          "type": "string",
-          "__example__": "🍅 2 × Tomatoes — ₵4.00\n🌶️ 1 × Pepper — ₵3.00"
-        },
-        "order_total": {
-          "type": "string",
-          "__example__": "💰 Total: ₵12.00 (incl. ₵5.00 delivery)"
-        },
-        "cart_json": {
-          "type": "string",
-          "__example__": "[{\"id\":\"prod-1\",\"qty\":2},{\"id\":\"prod-3\",\"qty\":1}]"
-        },
-        "error_message": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_error": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "fulfillment_prefill": {
-          "type": "string",
-          "__example__": "delivery"
-        },
-        "pickup_note": {
-          "type": "string",
-          "__example__": "Pick up at Marketix Store, Osu. Ready in about 30 minutes."
-        }
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Image",
-            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEXY1u+WkdNVVf8fH39oYMBhWb0zM5l/AH9mM5l/f3////+AeslSSbf9/f4AAABdVbtXTsHT0e1UVKtTSrh+d8hTSbc/P79PRrVTSrhGPLF/f/9TSrhTSrgAAP9RR7NZUMQAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAmfWp2AAAAIHRSTlP//wMD//8FAgUCAf/+/wD///8Fy/9OBBRs/wKTswEw/2WlgKQAAAL9SURBVHja7Zprd+IgEIZH7b0jUigBg9H//y8LSeyq4WbIeHbPWb5wbM37OENmgAFg6fbatL4TylgpcWxSWqOE/3vbvGYEIPlf4dW1sk6ac7xo/pO0SnuGmA3wT2pzcGpX4n8gHA9Gj1+8H7D2jjlgWPzCkoN31vpugHtIGIlJ9ZGB0oi4FWFA17IXIwvUR4Y0L6ztygHu16hy+QGhIkaEAA3Th7vke8RBuwdLAO7NVHi3vh8L1T+cAwi2sTPke4TdTN0EE/cc5QlntpM8TtwEE33kOLtxnBDgRl9hZVM3BLjWN7wWwM01ARbWnxDgyj8L6DvClZfg4v0/4kLteBEPv4C2W0zfEbr2FtAJIflS+lwK0d0AGman8bUrbNOIs7/DAOcEERjgHWzL2ndooMUlYNPpgKW7Qv3tZ+Bh3W0uAIKF8nMx4DuUvUcTYNA/clwWgPw4EHpAqyUuDUCp2zNgzdRpecBJ9WsND3gPG1AJcCa8D4B1LAdVAnhvggN8NGEDagEomw8PENFJphaAPtogEgNLAPpYgI5ppLIANevgjZlTGvAUTXLP+JUEnAx7g7iHzoBdPC/v0wDvIzcGmHHRcyLzpwGIfpDjE/EIwH3cAkgDXCgAsznAV7xBZpC5ZdBITvcWcdmARqQDuBcVFC1AQWIxtwCAG7C0AAsy66L5kewzagFgfiT3AETKSEYsAFREchmgIpLLAFVx8B/wNwD+/UjOJ7uaSHbJLp+uayLZpWtFG8mKfsokn/Tzy5YagC1ZeNUA/MJLUI6BWzrmF7/zAf3iN798nw/ol+/kGxDyLRT9JpB8G0u/EScvJSSLITBk/HSfK4akyjmr0YxknyvnJApSgPtV/0OTfbYgFS+p7YZpEVI95Etq0aLgys+WT9t0/7z93OeKguGy5tNqmHhXsE/3q32urBkuzP5WXEv7RGGWvrRMXhynL+/TH1DQH7HQHxLRH3PRH9TRHzXSH5bSH/fSH1g/4Mid/tIA/bWHB1zceMDVkwdcnlnk+s8PJGna1qRUlusAAAAASUVORK5CYII=",
-            "width": 64,
-            "height": 64,
-            "scale-type": "contain",
-            "alt-text": "Receipt icon"
-          },
-          {
-            "type": "Form",
-            "name": "confirm_form",
-            "init-values": {
-              "fulfillment": "${data.fulfillment_prefill}"
-            },
-            "children": [
-              {
-                "type": "TextHeading",
-                "text": "🧾 Review your order"
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.summary_lines}"
-              },
-              {
-                "type": "TextSubheading",
-                "text": "${data.order_total}"
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.error_message}",
-                "visible": "${data.show_error}"
-              },
-              {
-                "type": "RadioButtonsGroup",
-                "label": "🚚 Get it by",
-                "name": "fulfillment",
-                "required": true,
-                "data-source": [
-                  {
-                    "id": "delivery",
-                    "title": "🛵 Delivery"
-                  },
-                  {
-                    "id": "pickup",
-                    "title": "🏪 Pickup"
-                  }
-                ]
-              },
-              {
-                "type": "If",
-                "condition": "${form.fulfillment} == 'delivery'",
-                "then": [
-                  {
-                    "type": "TextArea",
-                    "label": "📍 Delivery address / landmark",
-                    "name": "address",
-                    "required": true,
-                    "helper-text": "Add a landmark so the rider finds you."
-                  }
-                ]
-              },
-              {
-                "type": "If",
-                "condition": "${form.fulfillment} == 'pickup'",
-                "then": [
-                  {
-                    "type": "TextCaption",
-                    "text": "${data.pickup_note}"
-                  }
-                ]
-              },
-              {
-                "type": "TextCaption",
-                "text": "Need to change something? Tap back."
-              },
-              {
-                "type": "Footer",
-                "label": "Continue to payment ➜",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "step": "to_payment",
-                    "cart": "${data.cart_json}",
-                    "fulfillment": "${form.fulfillment}",
-                    "address": "${form.address}"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "PAYMENT",
-      "title": "4 of 4 · Payment",
-      "data": {
-        "order_total": {
-          "type": "string",
-          "__example__": "Total: ₵7.00"
-        },
-        "pay_label": {
-          "type": "string",
-          "__example__": "Pay ₵7.00"
-        },
-        "networks": {
-          "type": "array",
-          "items": {
-            "type": "object",
-            "properties": {
-              "id": {
-                "type": "string"
-              },
-              "title": {
-                "type": "string"
-              }
-            }
-          },
-          "__example__": [
-            {
-              "id": "mtn",
-              "title": "MTN MoMo"
-            },
-            {
-              "id": "telecel",
-              "title": "Telecel Cash"
-            },
-            {
-              "id": "airteltigo",
-              "title": "AirtelTigo Money"
-            }
-          ]
-        },
-        "error_message": {
-          "type": "string",
-          "__example__": " "
-        },
-        "show_error": {
-          "type": "boolean",
-          "__example__": false
-        },
-        "network_prefill": {
-          "type": "string",
-          "__example__": "mtn"
-        },
-        "number_prefill": {
-          "type": "string",
-          "__example__": "0241234567"
-        }
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Image",
-            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEUPblYOcVcAPz8KbVsieWMA/wDV5uG61c46h3QAZjMA//9tpphJkX6jyL+HtqoObVX9/f0AAAAQclkedmDB2tQAVVVNk4EPbVUPbVUAfz8Af38Ja1APbVYOaVQPcFcObVUAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADurXT2AAAAIHRSTlOpRwQR/wH///8FAf/////+/wD9//8D/1LMBAIUbDDKlQR5oCgAAAL+SURBVHja7ZrdYrMgDIZj/albt1GwThRa7/8uB1q3SqifIunRl5O2a32fhb+EAPBl69rOvqSJBimZYMYEkxJ0kj58vWCw+G1tH1dJf2NiMDbY/f2tT5Rl1MEA+6TSwP6kH234K2h1/+F2gHmqTsCrPaNAUi8hYEFe35bVJ8ZNLyD8gLzjb+vkJ8Qb7/L1APPfJKvl74jkiRM+wIEr2CI/IkCZB9cAzMhstsqPiGZ4+F+Amh8gRH9w4oCbyQW0/HoLkh8Qt6sRWAQYfRGsb51ABHD0mz36Y0e0zwEt1/v0LUHPCeDos93mEGDePiyCzVsJHsb/VcQBmJ7uMCCavkP4BdS1jKRvCLKuXUDL+2j6htD/dgNMC0QTUX/o6HoGyJWICxAqfwTUHKLqGwLcXYBR/xpZ3xCuI2EAdErGB0jVTYDYPTzrZ/A6EBZwvC7AEweqzYYQowsG8H5APXC6nDdb8SXmBCEP7xaAHRDHc5AVpUOwLoBnDgTqG8vwXICcqzmWnYL1z0fHBcVzSFEYu4QDXBc0TwG1ULVD//wxc8G2EfDUHaB7AN/OUE1NJ7tjKCbAjCNAgaYqojWRDTzQollW7TC0XLSgGMFC9zfmFTSE+rYTQNMCNPS0gB4kLUDSAxgtgOF0RRwv4Vbi9AVBs5hrEWMYUP0HOABBCxB4mEYFmGEqaQGSHtA/AxSlyGbBJPsMAPR4uZ4AJZ74xXaAxgFnAuA1ZEXKhwANDpmVN4damZK5WYUJmSjo/wHcEbe9iWzQx2nL/befyIHT9ryoX0q8ivm6fSwCEy/q1BElvxHjwZD84vR9T+roSd/xBuQrXP/izBy7AcFbKBHuQolayLMJFKwM1T95N4FoGyvYmmXNs0Er/dtYvI81n7KP762WPd2IxyoloFAwlRK8tQSx2RaKIeTlHPqCFHlJjb4oSF/WJC/M0peW6Yvj5OV9+gMK+iMW+kMi+mMu+oM6+qNG+sNS+uNe+gPrFxy5018aoL/28IKLGy+4evKCyzNRrv/8AHnPQPFmZqKzAAAAAElFTkSuQmCC",
-            "width": 64,
-            "height": 64,
-            "scale-type": "contain",
-            "alt-text": "Payment card icon"
-          },
-          {
-            "type": "Form",
-            "name": "pay_form",
-            "init-values": {
-              "payment_method": "momo",
-              "momo_network": "${data.network_prefill}",
-              "momo_number": "${data.number_prefill}"
-            },
-            "children": [
-              {
-                "type": "TextHeading",
-                "text": "💳 Pay for your order"
-              },
-              {
-                "type": "TextSubheading",
-                "text": "${data.order_total}"
-              },
-              {
-                "type": "TextBody",
-                "text": "${data.error_message}",
-                "visible": "${data.show_error}"
-              },
-              {
-                "type": "RadioButtonsGroup",
-                "label": "Payment method",
-                "name": "payment_method",
-                "required": true,
-                "data-source": [
-                  {
-                    "id": "momo",
-                    "title": "📱 Mobile money"
-                  },
-                  {
-                    "id": "card",
-                    "title": "💳 Card"
-                  },
-                  {
-                    "id": "cod",
-                    "title": "💵 Pay on delivery or pickup"
-                  }
-                ]
-              },
-              {
-                "type": "If",
-                "condition": "${form.payment_method} == 'momo'",
-                "then": [
-                  {
-                    "type": "Dropdown",
-                    "label": "Network",
-                    "name": "momo_network",
-                    "required": true,
-                    "data-source": "${data.networks}"
-                  },
-                  {
-                    "type": "TextInput",
-                    "label": "Mobile money number",
-                    "name": "momo_number",
-                    "input-type": "phone",
-                    "required": true,
-                    "helper-text": "You'll get a prompt on this number. Enter your PIN to approve."
-                  }
-                ]
-              },
-              {
-                "type": "If",
-                "condition": "${form.payment_method} == 'card'",
-                "then": [
-                  {
-                    "type": "TextCaption",
-                    "text": "We'll send a secure payment link on WhatsApp after you place the order."
-                  }
-                ]
-              },
-              {
-                "type": "If",
-                "condition": "${form.payment_method} == 'cod'",
-                "then": [
-                  {
-                    "type": "TextCaption",
-                    "text": "Pay the rider or the store when you receive your order."
-                  }
-                ]
-              },
-              {
-                "type": "Footer",
-                "label": "${data.pay_label}",
-                "on-click-action": {
-                  "name": "data_exchange",
-                  "payload": {
-                    "step": "pay",
-                    "payment_method": "${form.payment_method}",
-                    "momo_network": "${form.momo_network}",
-                    "momo_number": "${form.momo_number}"
-                  }
-                }
-              }
-            ]
-          }
-        ]
-      }
-    },
-    {
-      "id": "DONE",
-      "title": "All done",
-      "terminal": true,
-      "success": true,
-      "data": {
-        "order_ref": {
-          "type": "string",
-          "__example__": "MX-1042"
-        },
-        "done_message": {
-          "type": "string",
-          "__example__": "Order placed. Approve the payment prompt on your phone. We'll message you on WhatsApp with updates."
-        }
-      },
-      "layout": {
-        "type": "SingleColumnLayout",
-        "children": [
-          {
-            "type": "Image",
-            "src": "iVBORw0KGgoAAAANSUhEUgAAAGAAAABgCAMAAADVRocKAAAAflBMVEXa49JwlFEOcQCxxaFCcho7cBFIbQCiuY7A0LM8cg///wBchTo6bBAAAAD9/fw+chJVVQA6bBA+fAI6bRA3aQo7bRFgiD5/fwA5aRA7bRA7bRE8cBCJp28A/wA/PwBKeCMAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAADqVvCuAAAAIHRSTlP//wP//58H//9QAf/+AP/9A04HyxRs/wIwlLPM/wEE/5inPrkAAANESURBVHjavZrreoMgDIbT2q7dCiqIWq2293+XA88nkIOUP9vTze8tSUggCFg9zjQXPyhJr0mCupEk15RQ8XlOzzsCoPxrLNTZb/FCKOKjB7S/v4pfJhixNUA8ydISTaSnQ3xcpqz7R3MAfyomV7QtPkLQlcQqBMjlz+lLrd4zXulZjtgG1Dm3jZZ8j2A4r/UB/NsQbfkOQSST2AK8MStN5FtEyfiDOgBuT2Iq3yJI8/AeIMbvwkZfEIr32kxLAMXPxEq+QSRPTNUArh9Z64tJrAiw0Ccu+q0jqBxAceok3yDSOQEO1l8RYG4fdMCYW2kE5Ny/6JDBPZ2vAblb/CxjKV8B4jg5SF+shzheAiguDtPnhGJwA/QJghyo3zg6ngFqho4FIFZPATEuD9XnhLKbArT6z4P1m1iNB0D+kxwPSH7yHnC0h2d+Bk8TGKYAvibQT4ED/t6JH0Dy/hMA5wl8TpI11EwB3NfAPawUawFqzNwsEYRheJP8jeEamGMZq0IxAllxY+BkoQidwnbAR2IjwNTJweEwtgiIcic7xRAM+oEkjsCp0ASD/l1WeIBar7II3QZ9uEjWGgXm7mCZA5pABWJtn2zUP0nrIQHrVXAZHVxJ9aMUrH28E0C9l8HWx2MAgTKj2gGiLkMoAmgAOAdQtmNJK/s8dALIAaAVQDqASvL17joBtAtoHJltEW5aAbQH6AJlg1BpZAidGVR9kES2AaQGVKNKJCkxlc6OXLbQqun3jDYzxE1DX76SJ4aYEfZKzBogS3bZBkGjxKyTnSRdRxsEvRKzTNdEGqZrQqafIcaCw5Am4WKUIcaSKS/6S4JeiVkVfcW2ZU54BCYZYty2qDZec4JhAA0bL6qsLFuETD+x862jevO7RThpn9mbze/O9n1NqPR7As32fe8AsiQEyGCIA8juEWpOMCmx7RFq/xA4I3xMAO0hcP8YOyFkJvrdMVbjHDsQTiZNn+EgrtFKiNAngPD+MNIfWgmaR/GLifnnzRDv7Rz/DSnvLTX/TUH/bU3vjVn/rWX/zXHv7X3/FxT+r1j8XxL5v+byf1Hn/6rR/2Wp/+te/xfWX7hy9//SgP/XHr7w4sYXXj35wsszh7z+8w+1qMpU86YsCwAAAABJRU5ErkJggg==",
-            "width": 64,
-            "height": 64,
-            "scale-type": "contain",
-            "alt-text": "Order placed check mark icon"
+            "src": "${data.photo}",
+            "height": 200,
+            "scale-type": "cover",
+            "alt-text": "Product photo"
           },
           {
             "type": "TextHeading",
-            "text": "🎉 Order placed"
-          },
-          {
-            "type": "TextBody",
-            "text": "${data.done_message}"
+            "text": "${data.name}"
           },
           {
             "type": "TextCaption",
-            "text": "Order ref: ${data.order_ref}"
+            "text": "${data.note}"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "measure",
+            "label": "Measure",
+            "required": true,
+            "data-source": "${data.measures}",
+            "init-value": "${data.current_measure}"
+          },
+          {
+            "type": "Dropdown",
+            "name": "qty",
+            "label": "How many",
+            "required": true,
+            "init-value": "${data.current_qty}",
+            "data-source": "${data.qty_options}"
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Back to list without adding",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "step": "open_category",
+                "category": "${data.category}",
+                "page": "${data.page}"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "${data.button_label}",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "step": "add_line",
+                "sku": "${data.sku}",
+                "measure": "${form.measure}",
+                "qty": "${form.qty}",
+                "category": "${data.category}",
+                "page": "${data.page}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "BASKET",
+      "title": "Basket",
+      "data": {
+        "category": {
+          "type": "string",
+          "__example__": "veg_fruits"
+        },
+        "checkout_bar": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "main-content": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  }
+                }
+              },
+              "start": {
+                "type": "object",
+                "properties": {
+                  "image": {
+                    "type": "string"
+                  },
+                  "alt-text": {
+                    "type": "string"
+                  }
+                }
+              },
+              "end": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              },
+              "badge": {
+                "type": "string"
+              },
+              "on-click-action": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "step": {
+                        "type": "string"
+                      },
+                      "sku": {
+                        "type": "string"
+                      },
+                      "measure": {
+                        "type": "string"
+                      },
+                      "category": {
+                        "type": "string"
+                      },
+                      "page": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "checkout",
+              "main-content": {
+                "title": "Checkout",
+                "description": "Total GH₵ 250",
+                "metadata": "Delivery and payment are next"
+              },
+              "badge": "2 items",
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "build_summary",
+                  "sku": "none",
+                  "measure": "none",
+                  "category": "veg_fruits",
+                  "page": "1"
+                }
+              }
+            },
+            {
+              "id": "more",
+              "main-content": {
+                "title": "Add more products",
+                "description": "back to the shop"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_category",
+                  "sku": "none",
+                  "measure": "none",
+                  "category": "veg_fruits",
+                  "page": "1"
+                }
+              }
+            }
+          ]
+        },
+        "lines": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "main-content": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  },
+                  "metadata": {
+                    "type": "string"
+                  }
+                }
+              },
+              "start": {
+                "type": "object",
+                "properties": {
+                  "image": {
+                    "type": "string"
+                  },
+                  "alt-text": {
+                    "type": "string"
+                  }
+                }
+              },
+              "end": {
+                "type": "object",
+                "properties": {
+                  "title": {
+                    "type": "string"
+                  },
+                  "description": {
+                    "type": "string"
+                  }
+                }
+              },
+              "badge": {
+                "type": "string"
+              },
+              "on-click-action": {
+                "type": "object",
+                "properties": {
+                  "name": {
+                    "type": "string"
+                  },
+                  "payload": {
+                    "type": "object",
+                    "properties": {
+                      "step": {
+                        "type": "string"
+                      },
+                      "sku": {
+                        "type": "string"
+                      },
+                      "measure": {
+                        "type": "string"
+                      },
+                      "category": {
+                        "type": "string"
+                      },
+                      "page": {
+                        "type": "string"
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "sku_tomatoes:basket",
+              "main-content": {
+                "title": "Tomatoes",
+                "description": "2 baskets",
+                "metadata": "Tap to change or remove"
+              },
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Tomatoes"
+              },
+              "end": {
+                "title": "GH₵ 240"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_product",
+                  "sku": "sku_tomatoes",
+                  "measure": "basket",
+                  "category": "veg_fruits",
+                  "page": "1"
+                }
+              }
+            },
+            {
+              "id": "sku_okra:bowl",
+              "main-content": {
+                "title": "Okra",
+                "description": "1 bowl",
+                "metadata": "Tap to change or remove"
+              },
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Okra"
+              },
+              "end": {
+                "title": "GH₵ 10"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_product",
+                  "sku": "sku_okra",
+                  "measure": "bowl",
+                  "category": "veg_fruits",
+                  "page": "1"
+                }
+              }
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "NavigationList",
+            "name": "checkout_bar",
+            "list-items": "${data.checkout_bar}"
+          },
+          {
+            "type": "NavigationList",
+            "name": "lines",
+            "list-items": "${data.lines}"
+          }
+        ]
+      }
+    },
+    {
+      "id": "CHECKOUT",
+      "title": "Checkout",
+      "data": {
+        "cart_id": {
+          "type": "string",
+          "__example__": "cart_8f3a21"
+        },
+        "total_text": {
+          "type": "string",
+          "__example__": "Total GH₵ 250 · 2 items"
+        },
+        "delivery_areas": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "knust",
+              "title": "KNUST Campus"
+            },
+            {
+              "id": "ayeduase",
+              "title": "Ayeduase"
+            },
+            {
+              "id": "ayigya",
+              "title": "Ayigya"
+            },
+            {
+              "id": "bomso",
+              "title": "Bomso"
+            }
+          ]
+        },
+        "delivery_slots": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "asap",
+              "title": "Now · within 1 hour",
+              "description": "Rider leaves as soon as your order is packed"
+            },
+            {
+              "id": "today_pm",
+              "title": "Today, 5 pm – 7 pm"
+            },
+            {
+              "id": "tomorrow_am",
+              "title": "Tomorrow, 7 am – 9 am"
+            }
+          ]
+        },
+        "payment_methods": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "momo",
+              "title": "Mobile Money (MoMo)",
+              "description": "MTN, Telecel or AirtelTigo"
+            },
+            {
+              "id": "cash",
+              "title": "Cash on delivery",
+              "description": "Pay the rider in cash"
+            }
+          ]
+        },
+        "init_full_name": {
+          "type": "string",
+          "__example__": "Ama Mensah"
+        },
+        "init_area": {
+          "type": "string",
+          "__example__": "knust"
+        },
+        "init_landmark": {
+          "type": "string",
+          "__example__": "Unity Hall, Block C"
+        },
+        "init_phone": {
+          "type": "string",
+          "__example__": "0244111222"
+        },
+        "init_slot": {
+          "type": "string",
+          "__example__": "asap"
+        },
+        "init_payment": {
+          "type": "string",
+          "__example__": "momo"
+        },
+        "init_momo": {
+          "type": "string",
+          "__example__": "0244111222"
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Checkout"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "${data.total_text}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Delivery"
+          },
+          {
+            "type": "TextInput",
+            "name": "full_name",
+            "label": "Your name",
+            "input-type": "text",
+            "required": true,
+            "init-value": "${data.init_full_name}"
+          },
+          {
+            "type": "Dropdown",
+            "name": "delivery_area",
+            "label": "Delivery area",
+            "required": true,
+            "data-source": "${data.delivery_areas}",
+            "init-value": "${data.init_area}"
+          },
+          {
+            "type": "TextInput",
+            "name": "landmark",
+            "label": "Hostel or landmark",
+            "input-type": "text",
+            "required": true,
+            "helper-text": "We will ask for your map pin in the chat",
+            "init-value": "${data.init_landmark}"
+          },
+          {
+            "type": "TextInput",
+            "name": "rider_phone",
+            "label": "Phone for the rider",
+            "input-type": "phone",
+            "required": true,
+            "init-value": "${data.init_phone}"
+          },
+          {
+            "type": "Dropdown",
+            "name": "delivery_slot",
+            "label": "When",
+            "required": true,
+            "init-value": "${data.init_slot}",
+            "data-source": "${data.delivery_slots}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "Payment"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "payment",
+            "label": "Pay with",
+            "required": true,
+            "init-value": "${data.init_payment}",
+            "data-source": "${data.payment_methods}"
+          },
+          {
+            "type": "If",
+            "condition": "${form.payment} == 'momo'",
+            "then": [
+              {
+                "type": "TextInput",
+                "name": "momo_number",
+                "label": "MoMo number",
+                "input-type": "phone",
+                "required": true,
+                "init-value": "${data.init_momo}",
+                "helper-text": "Usually your WhatsApp number"
+              }
+            ]
+          },
+          {
+            "type": "Footer",
+            "label": "Place order",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "step": "place_order",
+                "cart_id": "${data.cart_id}",
+                "full_name": "${form.full_name}",
+                "delivery_area": "${form.delivery_area}",
+                "landmark": "${form.landmark}",
+                "rider_phone": "${form.rider_phone}",
+                "delivery_slot": "${form.delivery_slot}",
+                "payment": "${form.payment}",
+                "momo_number": "${form.momo_number}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "id": "ORDER_RECEIVED",
+      "title": "Order received",
+      "terminal": true,
+      "data": {
+        "order_id": {
+          "type": "string",
+          "__example__": "MX-1042"
+        },
+        "total_text": {
+          "type": "string",
+          "__example__": "GH₵ 250"
+        },
+        "eta_text": {
+          "type": "string",
+          "__example__": "Arriving today within 1 hour."
+        },
+        "payment_note": {
+          "type": "string",
+          "__example__": "Approve the MoMo prompt we sent to 024 411 1222."
+        },
+        "next_step": {
+          "type": "string",
+          "__example__": "Then tap Done and share your location pin."
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextHeading",
+            "text": "Order received"
+          },
+          {
+            "type": "TextBody",
+            "text": "Order ${data.order_id} · ${data.total_text}\n${data.eta_text}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "${data.payment_note}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "${data.next_step}"
           },
           {
             "type": "Footer",
@@ -1285,7 +1278,7 @@
             "on-click-action": {
               "name": "complete",
               "payload": {
-                "order_ref": "${data.order_ref}"
+                "order_id": "${data.order_id}"
               }
             }
           }

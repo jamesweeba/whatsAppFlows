@@ -11,7 +11,7 @@ import {
 } from '@nestjs/common';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { MetaSignatureGuard } from '../auth/guards/meta-signature.guard.js';
-import { TenantService } from '../tenant/tenant.service.js';
+import { isLive, TenantService } from '../tenant/tenant.service.js';
 import { EncryptedFlowRequestDto, SendFlowMessageDto } from './dto/flow-request.dto.js';
 import { FlowService } from './flow.service.js';
 
@@ -46,8 +46,8 @@ export class FlowController {
   @UseGuards(JwtAuthGuard)
   async sendFlowToBuyer(@Request() req: any, @Body() body: SendFlowMessageDto) {
     const tenant = await this.tenantService.findByUser(req.user.id);
-    if (!tenant.whatsappPhoneNumberId) {
-      throw new BadRequestException('Complete WhatsApp onboarding before sending Flow messages.');
+    if (!isLive(tenant) || !tenant.whatsappPhoneNumberId) {
+      throw new BadRequestException('Your shop can send the order form once MarketiX has approved it and assigned your number.');
     }
 
     const result = await this.flowService.dispatchFlow({

@@ -2,18 +2,24 @@ import {
   BadRequestException,
   Body,
   Controller,
+  NotFoundException,
   Post,
   Request,
   UseGuards,
 } from '@nestjs/common';
 import { WabaStatus } from '@prisma/client';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
-import { TenantService } from '../tenant/tenant.service.js';
+import { ownNumberOnboardingEnabled, TenantService } from '../tenant/tenant.service.js';
 import { OnboardWabaDto } from './dto/onboard-waba.dto.js';
 import { RequestOtpDto } from './dto/request-otp.dto.js';
 import { VerifyOtpDto } from './dto/verify-otp.dto.js';
 import { WabaService } from './waba.service.js';
 
+/**
+ * Own-number onboarding: a vendor registers their own WhatsApp number with Meta via OTP.
+ * Off unless ALLOW_OWN_NUMBER_ONBOARDING=true; by default shops get a pool number when a
+ * super admin approves them.
+ */
 @Controller('api/v1/waba')
 @UseGuards(JwtAuthGuard)
 export class WabaController {
@@ -30,7 +36,11 @@ export class WabaController {
     @Request() req: any,
     @Body() dto: OnboardWabaDto,
   ) {
+    this.assertOwnNumberOnboarding();
     const tenant = await this.tenantService.findByUser(req.user.id);
+    if (!tenant.whatsappNumber) {
+      throw new BadRequestException('Set your WhatsApp number on the shop (PUT /tenants) before onboarding it.');
+    }
     const verifiedName = dto.verifiedName || tenant.name;
     const countryCode = dto.countryCode || tenant.countryCode;
 
@@ -66,6 +76,7 @@ export class WabaController {
    */
   @Post('request-otp')
   async requestOtp(@Request() req: any, @Body() dto: RequestOtpDto) {
+    this.assertOwnNumberOnboarding();
     const tenant = await this.tenantService.findByUser(req.user.id);
 
     if (!tenant.whatsappPhoneNumberId) {
@@ -98,6 +109,7 @@ export class WabaController {
    */
   @Post('verify-otp')
   async verifyOtp(@Request() req: any, @Body() dto: VerifyOtpDto) {
+    this.assertOwnNumberOnboarding();
     const tenant = await this.tenantService.findByUser(req.user.id);
 
     if (!tenant.whatsappPhoneNumberId) {
@@ -124,5 +136,12 @@ export class WabaController {
       message: 'WhatsApp number successfully verified and registered with Meta WABA!',
       tenant: updatedTenant,
     };
+  }
+
+  /** 404 rather than 403, so the routes look absent when the feature is off. */
+  private assertOwnNumberOnboarding() {
+    if (!ownNumberOnboardingEnabled()) {
+      throw new NotFoundException('Own-number onboarding is not enabled. Your number is assigned when your shop is approved.');
+    }
   }
 }

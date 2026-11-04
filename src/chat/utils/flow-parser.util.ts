@@ -31,8 +31,8 @@ export function parseFlowToText(flowData: Record<string, any>): string {
     parts.push(`Items: [${itemsFormatted}]`);
   }
 
-  if (flowData.order_ref) {
-    parts.push(`Order Ref: ${flowData.order_ref}`);
+  if (flowData.order_id || flowData.order_ref) {
+    parts.push(`Order Ref: ${flowData.order_id || flowData.order_ref}`);
   }
 
   if (flowData.payment_method) {

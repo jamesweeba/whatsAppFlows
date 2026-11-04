@@ -68,3 +68,6 @@ dist/
 
 # CI reports
 trivy-reports/
+
+# Vendor KYC uploads (StorageService, UPLOAD_DIR)
+/uploads

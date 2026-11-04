@@ -1,11 +1,16 @@
+import { Type } from 'class-transformer';
 import {
+  IsArray,
   IsNotEmpty,
   IsNumber,
   IsOptional,
   IsString,
   Matches,
   Min,
+  ValidateNested,
 } from 'class-validator';
+import { IsPhone } from '../../common/validators.js';
+import { DeliveryAreaDto, DeliverySlotDto } from './delivery-options.dto.js';
 
 export class CreateTenantDto {
   @IsString()
@@ -19,9 +24,33 @@ export class CreateTenantDto {
   })
   slug?: string;
 
+  /** Shop owner, checked against the Ghana Card during review. */
   @IsString()
   @IsNotEmpty()
-  whatsappNumber: string;
+  ownerFullName: string;
+
+  /** The owner's own phone: welcome, review and order alerts go here. Not the buyer-facing number. */
+  @IsPhone()
+  ownerPhone: string;
+
+  /** Market or town, e.g. "Kejetia, Kumasi". */
+  @IsString()
+  @IsOptional()
+  market?: string;
+
+  /** Where the stall is inside the market. */
+  @IsString()
+  @IsOptional()
+  stallLocation?: string;
+
+  /** MoMo payout number and the name it is registered to. */
+  @IsPhone()
+  @IsOptional()
+  momoNumber?: string;
+
+  @IsString()
+  @IsOptional()
+  momoName?: string;
 
   @IsString()
   @IsOptional()
@@ -41,4 +70,18 @@ export class CreateTenantDto {
   @IsString()
   @IsOptional()
   pickupNote?: string;
+
+  /** Areas the shop delivers to, shown on the Flow CHECKOUT screen. */
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DeliveryAreaDto)
+  @IsOptional()
+  deliveryAreas?: DeliveryAreaDto[];
+
+  /** Delivery time slots; an "asap" slot is added automatically when missing. */
+  @IsArray()
+  @ValidateNested({ each: true })
+  @Type(() => DeliverySlotDto)
+  @IsOptional()
+  deliverySlots?: DeliverySlotDto[];
 }

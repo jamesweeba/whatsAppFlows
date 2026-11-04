@@ -1,5 +1,6 @@
 import { Injectable, UnauthorizedException } from '@nestjs/common';
 import { PassportStrategy } from '@nestjs/passport';
+import { UserRole } from '@prisma/client';
 import { ExtractJwt, Strategy } from 'passport-jwt';
 import { PrismaService } from '../../prisma/prisma.service.js';
 import { requireEnv } from '../../common/config.js';
@@ -7,6 +8,8 @@ import { requireEnv } from '../../common/config.js';
 export interface JwtPayload {
   sub: string;
   email: string;
+  /** Informational: RolesGuard uses the role loaded from the database, not this claim. */
+  role?: UserRole;
 }
 
 @Injectable()

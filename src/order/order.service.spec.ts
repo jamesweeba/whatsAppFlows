@@ -6,6 +6,7 @@ import { OrderService } from './order.service.js';
 describe('OrderService', () => {
   let service: OrderService;
   let prisma: any;
+  let waba: any;
 
   beforeEach(() => {
     prisma = {
@@ -20,7 +21,8 @@ describe('OrderService', () => {
       },
     };
 
-    service = new OrderService(prisma, new TenantService(prisma));
+    waba = { sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-1' }) };
+    service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba);
   });
 
   it('creates an order with line items and calculates total amount including delivery fee', async () => {
@@ -47,8 +49,8 @@ describe('OrderService', () => {
         notes: null,
         items: {
           create: [
-            { productId: null, productName: 'Tomatoes', unitPrice: 10, quantity: 2, totalPrice: 20 },
-            { productId: null, productName: 'Onions', unitPrice: 5, quantity: 3, totalPrice: 15 },
+            { productId: null, productName: 'Tomatoes', measureCode: null, unitPrice: 10, quantity: 2, totalPrice: 20 },
+            { productId: null, productName: 'Onions', measureCode: null, unitPrice: 5, quantity: 3, totalPrice: 15 },
           ],
         },
       }),
@@ -98,14 +100,85 @@ describe('OrderService', () => {
     expect(result.meta.total).toBe(1);
   });
 
+  const updatedOrder = (status: OrderStatus, extra: Record<string, any> = {}) => ({
+    id: 'order-1',
+    orderNumber: 'MX-ABC123',
+    status,
+    buyerPhone: '+233240000000',
+    totalAmount: 250,
+    paymentMethod: 'COD',
+    riderName: null,
+    riderPhone: null,
+    tenant: { whatsappPhoneNumberId: 'phone-1' },
+    ...extra,
+  });
+
   it('updates order status successfully', async () => {
     prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', userId: 'user-1' });
-    prisma.order.findFirst.mockResolvedValue({ id: 'order-1', tenantId: 'tenant-1' });
-    prisma.order.update.mockResolvedValue({ id: 'order-1', status: OrderStatus.CONFIRMED });
+    prisma.order.findFirst.mockResolvedValue({ id: 'order-1', tenantId: 'tenant-1', status: OrderStatus.PENDING });
+    prisma.order.update.mockResolvedValue(updatedOrder(OrderStatus.CONFIRMED));
 
     const result = await service.updateStatus('user-1', 'order-1', { status: OrderStatus.CONFIRMED });
 
     expect(result.status).toBe(OrderStatus.CONFIRMED);
+    expect(result).not.toHaveProperty('tenant');
+    expect(waba.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('messages the buyer with the rider details when the order is dispatched', async () => {
+    prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', userId: 'user-1' });
+    prisma.order.findFirst.mockResolvedValue({ id: 'order-1', tenantId: 'tenant-1', status: OrderStatus.PROCESSING });
+    prisma.order.update.mockResolvedValue(updatedOrder(OrderStatus.OUT_FOR_DELIVERY, { riderName: 'Kofi', riderPhone: '0244000000' }));
+
+    await service.updateStatus('user-1', 'order-1', { status: OrderStatus.OUT_FOR_DELIVERY, riderName: 'Kofi', riderPhone: '0244000000' });
+
+    expect(prisma.order.update).toHaveBeenCalledWith(
+      expect.objectContaining({ data: expect.objectContaining({ riderName: 'Kofi', riderPhone: '0244000000' }) }),
+    );
+    expect(waba.sendTextMessage).toHaveBeenCalledWith(
+      'phone-1',
+      '+233240000000',
+      expect.stringMatching(/MX-ABC123\* is on its way![\s\S]*Rider: Kofi, 0244000000[\s\S]*GH₵250\.00\* ready in cash/),
+    );
+  });
+
+  it('sends packed and delivered updates, but nothing when the status is unchanged', async () => {
+    prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', userId: 'user-1' });
+    prisma.order.findFirst.mockResolvedValue({ id: 'order-1', tenantId: 'tenant-1', status: OrderStatus.CONFIRMED });
+    prisma.order.update.mockResolvedValue(updatedOrder(OrderStatus.PROCESSING));
+    await service.updateStatus('user-1', 'order-1', { status: OrderStatus.PROCESSING });
+    expect(waba.sendTextMessage).toHaveBeenLastCalledWith('phone-1', '+233240000000', expect.stringContaining('is packed'));
+
+    prisma.order.update.mockResolvedValue(updatedOrder(OrderStatus.DELIVERED));
+    await service.updateStatus('user-1', 'order-1', { status: OrderStatus.DELIVERED });
+    expect(waba.sendTextMessage).toHaveBeenLastCalledWith('phone-1', '+233240000000', expect.stringContaining('has been delivered'));
+
+    waba.sendTextMessage.mockClear();
+    prisma.order.findFirst.mockResolvedValue({ id: 'order-1', tenantId: 'tenant-1', status: OrderStatus.DELIVERED });
+    await service.updateStatus('user-1', 'order-1', { status: OrderStatus.DELIVERED, notes: 'left at gate' });
+    expect(waba.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  it('attaches a location pin to the newest order that asked for one in the last 30 minutes', async () => {
+    prisma.order.findFirst.mockResolvedValue({ id: 'order-1' });
+    prisma.order.update.mockResolvedValue({ id: 'order-1', orderNumber: 'MX-ABC123' });
+
+    const result = await service.attachLocation('tenant-1', '+233240000000', { latitude: 6.67, longitude: -1.57, name: 'Unity Hall' });
+
+    const where = prisma.order.findFirst.mock.calls[0][0].where;
+    expect(where).toMatchObject({ tenantId: 'tenant-1', buyerPhone: '+233240000000' });
+    expect(Date.now() - where.locationRequestedAt.gte.getTime()).toBeCloseTo(30 * 60 * 1000, -3);
+    expect(prisma.order.update).toHaveBeenCalledWith({
+      where: { id: 'order-1' },
+      data: expect.objectContaining({ locationLatitude: 6.67, locationLongitude: -1.57, locationName: 'Unity Hall', locationAddress: null }),
+    });
+    expect(result?.orderNumber).toBe('MX-ABC123');
+  });
+
+  it('returns null for a pin when no order is waiting for one', async () => {
+    prisma.order.findFirst.mockResolvedValue(null);
+    expect(await service.attachLocation('tenant-1', '+233240000000', { latitude: 1, longitude: 2 })).toBeNull();
+    expect(prisma.order.update).not.toHaveBeenCalled();
   });
 
   it('rejects vendor requests when the user has no tenant', async () => {

@@ -10,6 +10,7 @@ import { WabaService } from '../waba/waba.service.js';
 import { OrderService } from '../order/order.service.js';
 import { TenantService } from '../tenant/tenant.service.js';
 import { InteractiveOrderService } from './interactive-order.service.js';
+import { formatOrderReceipt } from '../order/order-receipt.js';
 
 describe('ChatModule', () => {
   let chatService: ChatService;
@@ -18,6 +19,7 @@ describe('ChatModule', () => {
   const tenant = {
     id: 'tenant-abc',
     name: 'SuperStore',
+    status: 'ACTIVE',
     whatsappPhoneNumberId: 'phone-number-id',
     deliveryFee: 5,
     products: [] as any[],
@@ -47,21 +49,29 @@ describe('ChatModule', () => {
     },
   };
 
+  const mockOrderService = {
+    findByOrderNumber: vi.fn(),
+    linkSession: vi.fn(),
+    findLatestForBuyer: vi.fn(),
+    attachLocation: vi.fn(),
+  };
+
   const mockWabaService = {
     sendTextMessage: vi.fn(),
     sendWelcomeButtons: vi.fn(),
     sendTypingIndicator: vi.fn(),
   };
 
+  /** completeOrder mirrors the real tenant check and receipt so the chat-side behaviour stays observable. */
   const mockFlowService = {
     isConfigured: vi.fn(),
     dispatchFlow: vi.fn(),
-  };
-
-  const mockOrderService = {
-    findByOrderNumber: vi.fn(),
-    linkSession: vi.fn(),
-    findLatestForBuyer: vi.fn(),
+    requestDeliveryLocation: vi.fn(),
+    onConfirmationDue: vi.fn(),
+    completeOrder: vi.fn(async (t: { id: string }, ref: string) => {
+      const order = await mockOrderService.findByOrderNumber(ref);
+      return order && order.tenantId === t.id ? { order, text: formatOrderReceipt(order) } : null;
+    }),
   };
 
   const mockInteractiveOrderService = {
@@ -284,8 +294,8 @@ describe('ChatModule', () => {
         ],
       });
 
-      const result = await chatService.processIncomingMessage(buyerMessage('', { flowData: { order_ref: 'MX-5988' } }));
-      const text = result.systemResponse!.text;
+      await chatService.processIncomingMessage(buyerMessage('', { flowData: { order_ref: 'MX-5988' } }));
+      const text = mockWabaService.sendTextMessage.mock.calls[0][2];
 
       expect(text).toContain('🧾 *Order MX-5988 placed successfully!*');
       expect(text).toContain('📦 *Items Ordered:*');
@@ -314,8 +324,8 @@ describe('ChatModule', () => {
         ],
       });
 
-      const result = await chatService.processIncomingMessage(buyerMessage('', { flowData: { order_ref: 'MX-9901' } }));
-      const text = result.systemResponse!.text;
+      await chatService.processIncomingMessage(buyerMessage('', { flowData: { order_ref: 'MX-9901' } }));
+      const text = mockWabaService.sendTextMessage.mock.calls[0][2];
 
       expect(text).toContain('🧾 *Order MX-9901 placed successfully!*');
       expect(text).toContain('🛒 *Items Subtotal:* GH₵12.50');
@@ -323,6 +333,64 @@ describe('ChatModule', () => {
       expect(text).toContain('💰 *Total Amount:* GH₵17.50');
       expect(text).toContain('📍 *Delivery Address:* East Legon, Accra');
       expect(text).toContain('💳 *Payment Method:* Cash on Delivery');
+    });
+
+    it('treats the Flow Done payload (order_id) as a completed order and asks for the delivery pin', async () => {
+      mockOrderService.findByOrderNumber.mockResolvedValue({
+        id: 'order-7', tenantId: 'tenant-abc', orderNumber: 'MX-7', totalAmount: 10, paymentMethod: PaymentMethod.COD, items: [],
+      });
+      const classify = vi.spyOn(aiClassifierService, 'classifyMessage');
+
+      await chatService.processIncomingMessage(buyerMessage('WhatsApp Flow Submitted', { flowData: { order_id: 'MX-7' } }));
+
+      expect(classify).not.toHaveBeenCalled();
+      expect(mockFlowService.completeOrder).toHaveBeenCalledWith(expect.objectContaining({ id: 'tenant-abc' }), 'MX-7', '+233240000000');
+      expect(mockFlowService.requestDeliveryLocation).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'tenant-abc' }),
+        '+233240000000',
+        expect.objectContaining({ id: 'order-7', orderNumber: 'MX-7' }),
+      );
+      const receiptCall = mockWabaService.sendTextMessage.mock.invocationCallOrder[0];
+      const pinCall = mockFlowService.requestDeliveryLocation.mock.invocationCallOrder[0];
+      expect(receiptCall).toBeLessThan(pinCall);
+    });
+
+    it('confirms a Flow order from the fallback when the buyer never taps Done', async () => {
+      mockOrderService.findByOrderNumber.mockResolvedValue({
+        id: 'order-7', tenantId: 'tenant-abc', orderNumber: 'MX-7', totalAmount: 10, paymentMethod: PaymentMethod.COD, items: [],
+      });
+      chatService.onModuleInit();
+      const [confirm] = mockFlowService.onConfirmationDue.mock.calls[0];
+
+      await confirm(tenant, 'MX-7', '+233240000000');
+
+      expect(mockWabaService.sendTextMessage).toHaveBeenCalledWith('phone-number-id', '+233240000000', expect.stringContaining('MX-7'));
+      expect(mockOrderService.linkSession).toHaveBeenCalledWith('order-7', 'session-123');
+      expect(mockFlowService.requestDeliveryLocation).toHaveBeenCalled();
+    });
+
+    it('sends nothing on Done when the fallback already confirmed the order', async () => {
+      mockOrderService.findByOrderNumber.mockResolvedValue({ id: 'order-7', tenantId: 'tenant-abc', orderNumber: 'MX-7' });
+      mockFlowService.completeOrder.mockImplementationOnce(async () => ({ order: { id: 'order-7', orderNumber: 'MX-7' }, text: null }) as any);
+
+      const result = await chatService.processIncomingMessage(buyerMessage('WhatsApp Flow Submitted', { flowData: { order_id: 'MX-7' } }));
+
+      expect(result.systemResponse).toBeNull();
+      expect(mockWabaService.sendTextMessage).not.toHaveBeenCalled();
+      expect(mockFlowService.requestDeliveryLocation).not.toHaveBeenCalled();
+    });
+
+    it('attaches a shared location pin to the waiting order and confirms it', async () => {
+      mockOrderService.attachLocation.mockResolvedValue({ id: 'order-7', orderNumber: 'MX-7' });
+      const location = { latitude: 6.67, longitude: -1.57 };
+
+      const result = await chatService.processIncomingMessage(buyerMessage('📍 Location shared (6.67, -1.57)', { location }));
+
+      expect(mockOrderService.attachLocation).toHaveBeenCalledWith('tenant-abc', '+233240000000', location);
+      expect(mockPrismaService.chatMessage.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ source: 'LOCATION' }) }),
+      );
+      expect(result.systemResponse!.text).toContain('saved this pin for order *MX-7*');
     });
 
     it('does not link an order that belongs to another tenant', async () => {

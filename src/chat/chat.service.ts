@@ -1,12 +1,11 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { Injectable, Logger, NotFoundException, OnModuleInit } from '@nestjs/common';
 import { BuyerIntent, MessageSender, MessageSource, Product, Tenant } from '@prisma/client';
 import { ghCedis } from '../common/money.util.js';
 import { isHiddenNumber } from '../common/phone.util.js';
 import { FlowService } from '../flow/flow.service.js';
-import { formatOrderReceipt } from '../order/order-receipt.js';
 import { OrderService } from '../order/order.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { TenantService } from '../tenant/tenant.service.js';
+import { isLive, TenantService } from '../tenant/tenant.service.js';
 import { WabaService, WELCOME_BODY_TEXT, WELCOME_BUTTON_IDS } from '../waba/waba.service.js';
 import { AiClassifierService, ClassificationResult } from './ai-classifier.service.js';
 import { ProcessMessageDto } from './dto/process-message.dto.js';
@@ -58,7 +57,7 @@ const FLOW_COOLDOWN_MS = 15 * 60 * 1000;
 const HISTORY_CONTEXT_SIZE = 5;
 
 @Injectable()
-export class ChatService {
+export class ChatService implements OnModuleInit {
   private readonly logger = new Logger(ChatService.name);
 
   /** Last time the ordering Flow was sent to a buyer (tenantId:buyerPhone), to avoid spamming it. */
@@ -73,6 +72,10 @@ export class ChatService {
     private readonly interactiveOrderService: InteractiveOrderService,
     private readonly tenantService: TenantService,
   ) {}
+
+  onModuleInit() {
+    this.flowService.onConfirmationDue((tenant, orderNumber, buyerPhone) => this.confirmFlowOrder(tenant, orderNumber, buyerPhone));
+  }
 
   clearCooldown(tenantId: string, buyerPhone: string) {
     this.lastFlowSent.delete(this.cooldownKey(tenantId, buyerPhone));
@@ -114,12 +117,21 @@ export class ChatService {
     }
 
     const session = await this.getOrCreateSession(dto.tenantId, dto.buyerPhone);
+    const orderRef = this.flowOrderRef(dto.flowData);
 
-    if (isHiddenNumber(dto.buyerPhone)) {
+    if (dto.location) {
+      const pinned = await this.handleLocationPin(tenant, session, dto, messageText);
+      if (pinned) return pinned;
+    }
+
+    if (isHiddenNumber(dto.buyerPhone) && !orderRef) {
       return this.handleHiddenNumberBuyer(tenant, session, dto, messageText, source);
     }
 
-    const classification = await this.classify(session.id, messageText);
+    // A completed Flow order needs no AI call: the buyer just pressed Done.
+    const classification: ClassificationResult = orderRef
+      ? { intent: BuyerIntent.ORDER_INTENT, confidence: 1, extractedEntities: {}, isOutOfBounds: false, reasoning: 'Flow order completed.' }
+      : await this.classify(session.id, messageText);
 
     const buyerMessage = await this.saveMessage(session.id, {
       sender: dto.sender || MessageSender.BUYER,
@@ -132,11 +144,12 @@ export class ChatService {
       rawAiResponse: classification.rawResponse,
     });
 
-    const orderRef = dto.flowData?.order_ref ? String(dto.flowData.order_ref).trim() : null;
     let reply: Reply | null;
 
     if (orderRef) {
-      reply = { kind: 'text', text: await this.completeFlowOrder(tenant, session.id, orderRef, dto.buyerPhone) };
+      // Done: the buyer is back in the chat, so the receipt and pin request land in view.
+      const found = await this.confirmFlowOrder(tenant, orderRef, dto.buyerPhone);
+      reply = found ? null : { kind: 'text', text: `🧾 Order ${orderRef} received. We'll contact you on WhatsApp with updates.` };
     } else if (dto.flowData) {
       reply = null; // intermediate Flow step: nothing to say yet
     } else {
@@ -171,7 +184,7 @@ export class ChatService {
 
   private normalizeIncoming(dto: ProcessMessageDto): { text: string; source: MessageSource } {
     let text = dto.text || '';
-    let source = dto.source || MessageSource.TEXT;
+    let source = dto.location ? MessageSource.LOCATION : dto.source || MessageSource.TEXT;
 
     if (dto.flowData && Object.keys(dto.flowData).length > 0) {
       source = MessageSource.FLOW_SELECTION;
@@ -180,6 +193,12 @@ export class ChatService {
     }
 
     return { text: text.trim() || 'Empty message', source };
+  }
+
+  /** The order reference the Flow's terminal screen sends when the buyer presses Done. */
+  private flowOrderRef(flowData?: Record<string, any>): string | null {
+    const ref = flowData?.order_id ?? flowData?.order_ref;
+    return ref ? String(ref).trim() || null : null;
   }
 
   private async isDuplicate(whatsappMessageId: string): Promise<boolean> {
@@ -254,6 +273,44 @@ export class ChatService {
     return trimmed === WELCOME_BUTTON_IDS.TRACK || trimmed === '📦 Track my order';
   }
 
+  // ───────────────────────── Location pins ─────────────────────────
+
+  /**
+   * A buyer shared a location pin. Attach it to their newest order that asked for one;
+   * returns null when no order is waiting, so the message is handled like any other.
+   */
+  private async handleLocationPin(
+    tenant: TenantWithProducts,
+    session: { id: string },
+    dto: ProcessMessageDto,
+    messageText: string,
+  ) {
+    const order = await this.orderService.attachLocation(tenant.id, dto.buyerPhone, dto.location!);
+    if (!order) return null;
+
+    const buyerMessage = await this.saveMessage(session.id, {
+      sender: dto.sender || MessageSender.BUYER,
+      source: MessageSource.LOCATION,
+      text: messageText,
+      whatsappMessageId: dto.incomingMessageId,
+    });
+
+    let reply: Reply = {
+      kind: 'text',
+      text: `📍 Thanks! We've saved this pin for order *${order.orderNumber}*. Our rider will use it to find you.`,
+    };
+    if (tenant.whatsappPhoneNumberId) {
+      reply = await this.dispatch(tenant, dto.buyerPhone, reply);
+    }
+    const systemResponse = await this.saveMessage(session.id, {
+      sender: MessageSender.SYSTEM,
+      source: MessageSource.TEXT,
+      text: reply.text,
+    });
+
+    return { duplicate: false, session, message: buyerMessage, classification: null, systemResponse };
+  }
+
   // ───────────────────────── Hidden-number buyers ─────────────────────────
 
   private async handleHiddenNumberBuyer(
@@ -301,19 +358,43 @@ export class ChatService {
   // ───────────────────────── Replies ─────────────────────────
 
   /**
-   * A Flow order was completed (DONE screen). Link it to this chat and build the receipt.
+   * Send a Flow order's receipt (the MoMo prompt already went out at place_order), then ask
+   * for the delivery pin. Runs when the buyer taps Done, and from a fallback a minute after
+   * place_order for buyers who close the Flow instead; only the first call sends anything.
+   * Returns false when the order is not this buyer's.
    */
-  private async completeFlowOrder(tenant: Tenant, sessionId: string, orderRef: string, buyerPhone: string): Promise<string> {
+  private async confirmFlowOrder(tenant: Tenant, orderRef: string, buyerPhone: string): Promise<boolean> {
     this.clearCooldown(tenant.id, buyerPhone);
 
-    const order = await this.orderService.findByOrderNumber(orderRef);
-    if (!order || order.tenantId !== tenant.id) {
-      this.logger.warn(`Order ${orderRef} not found for tenant ${tenant.id}; sending generic confirmation.`);
-      return `🧾 Order ${orderRef} received. We'll contact you on WhatsApp with updates.`;
+    const completion = await this.flowService.completeOrder(tenant, orderRef, buyerPhone);
+    if (!completion) {
+      this.logger.warn(`Order ${orderRef} not found for tenant ${tenant.id} and buyer ${buyerPhone}.`);
+      return false;
     }
+    if (completion.text === null) return true;
 
-    await this.orderService.linkSession(order.id, sessionId);
-    return formatOrderReceipt(order);
+    const session = await this.getOrCreateSession(tenant.id, buyerPhone);
+    await this.orderService.linkSession(completion.order.id, session.id);
+
+    if (tenant.whatsappPhoneNumberId) {
+      await this.dispatch(tenant, buyerPhone, { kind: 'text', text: completion.text });
+    }
+    await this.saveMessage(session.id, {
+      sender: MessageSender.SYSTEM,
+      source: MessageSource.TEXT,
+      text: completion.text,
+      detectedIntent: BuyerIntent.ORDER_INTENT,
+    });
+
+    if (tenant.whatsappPhoneNumberId) {
+      await this.flowService.requestDeliveryLocation(tenant, buyerPhone, completion.order);
+      await this.saveMessage(session.id, {
+        sender: MessageSender.SYSTEM,
+        source: MessageSource.TEXT,
+        text: `📍 Asked the buyer to share the delivery location for order ${completion.order.orderNumber}.`,
+      });
+    }
+    return true;
   }
 
   private async buildReply(
@@ -328,7 +409,8 @@ export class ChatService {
 
     const intent = classification.intent;
 
-    if (this.flowService.isConfigured()) {
+    // Only approved shops send the ordering Flow (the webhook already filters inbound messages).
+    if (this.flowService.isConfigured() && isLive(tenant)) {
       const copy = FLOW_COPY[intent] ?? FLOW_COPY.OUT_OF_BOUNDS;
       const lastSent = this.lastFlowSent.get(this.cooldownKey(tenant.id, buyerPhone)) || 0;
       if (Date.now() - lastSent > FLOW_COOLDOWN_MS) {
@@ -352,7 +434,7 @@ export class ChatService {
    * Send the reply over WhatsApp. If a richer message type fails, fall back to plain text
    * with the same copy, so the stored message still matches what the buyer saw.
    */
-  private async dispatch(tenant: TenantWithProducts, buyerPhone: string, reply: Reply): Promise<Reply> {
+  private async dispatch(tenant: Tenant, buyerPhone: string, reply: Reply): Promise<Reply> {
     const phoneNumberId = tenant.whatsappPhoneNumberId!;
     try {
       switch (reply.kind) {
