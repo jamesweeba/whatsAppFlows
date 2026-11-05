@@ -1,6 +1,7 @@
 import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatService } from '../chat/chat.service.js';
+import { FlowService } from '../flow/flow.service.js';
 import { TenantService } from '../tenant/tenant.service.js';
 import { WabaService } from './waba.service.js';
 import { WabaWebhookController } from './waba-webhook.controller.js';
@@ -10,6 +11,7 @@ describe('WabaWebhookController', () => {
   let chatService: { processIncomingMessage: ReturnType<typeof vi.fn> };
   let tenantService: { findByPhoneNumberId: ReturnType<typeof vi.fn>; findPoolNumber: ReturnType<typeof vi.fn> };
   let wabaService: { sendTextMessage: ReturnType<typeof vi.fn> };
+  let flowService: { handleFailedDelivery: ReturnType<typeof vi.fn> };
 
   const envelope = (value: Record<string, any>) => ({
     object: 'whatsapp_business_account',
@@ -28,6 +30,7 @@ describe('WabaWebhookController', () => {
       findPoolNumber: vi.fn().mockResolvedValue(null),
     };
     wabaService = { sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid.reply' }) };
+    flowService = { handleFailedDelivery: vi.fn().mockResolvedValue(false) };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [WabaWebhookController],
@@ -35,6 +38,7 @@ describe('WabaWebhookController', () => {
         { provide: ChatService, useValue: chatService },
         { provide: TenantService, useValue: tenantService },
         { provide: WabaService, useValue: wabaService },
+        { provide: FlowService, useValue: flowService },
       ],
     }).compile();
 
@@ -51,6 +55,22 @@ describe('WabaWebhookController', () => {
     expect(result).toEqual({ status: 'EVENT_RECEIVED' });
 
     await vi.waitFor(() => expect(chatService.processIncomingMessage).toHaveBeenCalledTimes(1));
+  });
+
+  it('hands failed deliveries to the pin fallback, and ignores other statuses', async () => {
+    await controller.processPayload(
+      envelope({
+        metadata: { phone_number_id: '1404916169377344' },
+        statuses: [
+          { id: 'wamid.loc', status: 'failed', recipient_user_id: 'GH.1', errors: [{ code: 131026, title: 'Message undeliverable' }] },
+          { id: 'wamid.ok', status: 'delivered', recipient_id: '233245655799' },
+        ],
+      }),
+    );
+
+    expect(flowService.handleFailedDelivery).toHaveBeenCalledTimes(1);
+    expect(flowService.handleFailedDelivery).toHaveBeenCalledWith('wamid.loc');
+    expect(chatService.processIncomingMessage).not.toHaveBeenCalled();
   });
 
   it('ignores payloads that are not WhatsApp business account events', () => {

@@ -67,6 +67,17 @@ function pemBody(pem: string): string {
 
 type MessagesResponse = { messages?: Array<{ id: string }> };
 
+
+/** Network errors raised before the request left this machine: Meta never received it. */
+const NEVER_SENT_CODES = new Set(['ENOTFOUND', 'EAI_AGAIN', 'ECONNREFUSED', 'ENETUNREACH', 'EHOSTUNREACH', 'UND_ERR_CONNECT_TIMEOUT']);
+const NETWORK_RETRIES = 2;
+const NETWORK_RETRY_DELAY_MS = 1000;
+
+/** Node's fetch reports "fetch failed" and keeps the real reason (e.g. ENOTFOUND) in `cause`. */
+function networkErrorCode(err: any): string | null {
+  return err?.cause?.code ?? err?.cause?.errors?.[0]?.code ?? err?.code ?? null;
+}
+
 @Injectable()
 export class WabaService {
   private readonly logger = new Logger(WabaService.name);
@@ -216,7 +227,6 @@ export class WabaService {
 
   /**
    * Send an interactive WhatsApp Flow message.
-   * Hidden-number buyers (BSUIDs) are addressed with `recipient` instead of `to`.
    */
   async sendFlowMessage(options: FlowMessageOptions): Promise<{ messageId: string }> {
     const flowAction = options.flowAction || 'navigate';
@@ -309,7 +319,8 @@ export class WabaService {
     const recipient = this.formatRecipientPhone(toPhone);
     this.logger.log(`Sending ${message.type} message to "${recipient}"`);
 
-    const addressAsRecipient = isBsuid(recipient) && message.interactive?.type === 'flow';
+    // Meta: a business-scoped user id (hidden number) goes in `recipient`, with `to` omitted.
+    const addressAsRecipient = isBsuid(recipient);
     const body: Record<string, any> = {
       messaging_product: 'whatsapp',
       recipient_type: 'individual',
@@ -405,28 +416,46 @@ export class WabaService {
     return this.request<T>(url, { method: 'POST', body: JSON.stringify(body) });
   }
 
+  /**
+   * One Graph API call. A request that failed before reaching Meta (DNS lookup or connect
+   * failed: the laptop or server briefly lost its connection) is retried, since Meta
+   * never saw it and a retry cannot send a message twice. Any other failure is not retried.
+   */
   private async request<T>(url: string, init: { method: 'GET' | 'POST'; body?: string }): Promise<T> {
-    try {
-      const res = await fetch(url, {
-        method: init.method,
-        headers: {
-          'Content-Type': 'application/json',
-          Authorization: `Bearer ${this.accessToken}`,
-        },
-        body: init.body,
-      });
-      const data = await res.json();
-
-      if (!res.ok || data.error) {
-        const message = data?.error?.message || `Meta API request failed with status ${res.status}`;
-        this.logger.error(`Meta API error: ${JSON.stringify(data?.error ?? data)}`);
-        throw new BadRequestException(`Meta WABA Error: ${message}`);
+    for (let attempt = 1; ; attempt++) {
+      try {
+        return await this.requestOnce<T>(url, init);
+      } catch (err: any) {
+        if (err instanceof BadRequestException) throw err;
+        const code = networkErrorCode(err);
+        if (code && NEVER_SENT_CODES.has(code) && attempt <= NETWORK_RETRIES) {
+          this.logger.warn(`Could not reach Meta (${code}); retrying (${attempt}/${NETWORK_RETRIES}).`);
+          await new Promise((resolve) => setTimeout(resolve, NETWORK_RETRY_DELAY_MS * attempt));
+          continue;
+        }
+        const reason = code ? `${err.message} (${code})` : err.message;
+        this.logger.error(`HTTP request to Meta failed: ${reason}`);
+        throw new InternalServerErrorException(`Failed to communicate with Meta API: ${reason}`);
       }
-      return data as T;
-    } catch (err: any) {
-      if (err instanceof BadRequestException) throw err;
-      this.logger.error(`HTTP request to Meta failed: ${err.message}`);
-      throw new InternalServerErrorException(`Failed to communicate with Meta API: ${err.message}`);
     }
+  }
+
+  private async requestOnce<T>(url: string, init: { method: 'GET' | 'POST'; body?: string }): Promise<T> {
+    const res = await fetch(url, {
+      method: init.method,
+      headers: {
+        'Content-Type': 'application/json',
+        Authorization: `Bearer ${this.accessToken}`,
+      },
+      body: init.body,
+    });
+    const data = await res.json();
+
+    if (!res.ok || data.error) {
+      const message = data?.error?.message || `Meta API request failed with status ${res.status}`;
+      this.logger.error(`Meta API error: ${JSON.stringify(data?.error ?? data)}`);
+      throw new BadRequestException(`Meta WABA Error: ${message}`);
+    }
+    return data as T;
   }
 }

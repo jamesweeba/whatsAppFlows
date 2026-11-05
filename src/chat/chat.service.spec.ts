@@ -381,6 +381,26 @@ describe('ChatModule', () => {
       expect(mockFlowService.requestDeliveryLocation).not.toHaveBeenCalled();
     });
 
+    it('asks for the pin again on a late Done when the fallback already asked and no pin came', async () => {
+      const order = { id: 'order-7', orderNumber: 'MX-7', locationRequestedAt: new Date(), locationReceivedAt: null };
+      mockFlowService.completeOrder.mockImplementationOnce(async () => ({ order, text: null }) as any);
+      mockFlowService.requestDeliveryLocation.mockResolvedValueOnce('location_request');
+
+      await chatService.processIncomingMessage(buyerMessage('WhatsApp Flow Submitted', { flowData: { order_id: 'MX-7' } }));
+
+      expect(mockWabaService.sendTextMessage).not.toHaveBeenCalled(); // no second receipt
+      expect(mockFlowService.requestDeliveryLocation).toHaveBeenCalledWith(expect.objectContaining({ id: 'tenant-abc' }), '+233240000000', order);
+    });
+
+    it('does not ask again on Done once the buyer has shared the pin', async () => {
+      const order = { id: 'order-7', orderNumber: 'MX-7', locationRequestedAt: new Date(), locationReceivedAt: new Date() };
+      mockFlowService.completeOrder.mockImplementationOnce(async () => ({ order, text: null }) as any);
+
+      await chatService.processIncomingMessage(buyerMessage('WhatsApp Flow Submitted', { flowData: { order_id: 'MX-7' } }));
+
+      expect(mockFlowService.requestDeliveryLocation).not.toHaveBeenCalled();
+    });
+
     it('attaches a shared location pin to the waiting order and confirms it', async () => {
       mockOrderService.attachLocation.mockResolvedValue({ id: 'order-7', orderNumber: 'MX-7' });
       const location = { latitude: 6.67, longitude: -1.57 };

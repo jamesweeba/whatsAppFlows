@@ -186,7 +186,7 @@ describe('WabaService', () => {
       expect(requestBody.interactive.action.parameters.flow_action_payload.data.products).toHaveLength(1);
     });
 
-    it('still addresses hidden-number buyers with to for plain text', async () => {
+    it('addresses hidden-number buyers with recipient for every message type', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
         ok: true,
         json: async () => ({ messages: [{ id: 'wamid.text' }] }),
@@ -196,7 +196,24 @@ describe('WabaService', () => {
       await service.sendTextMessage('1092837465', 'GH.989894404158856', 'hello');
 
       const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
-      expect(requestBody.to).toBe('GH.989894404158856');
+      expect(requestBody.recipient).toBe('GH.989894404158856');
+      expect(requestBody.to).toBeUndefined();
+
+      await service.sendLocationRequest('1092837465', 'GH.989894404158856', 'Drop your pin');
+      const locationBody = JSON.parse(mockFetch.mock.calls[1][1].body);
+      expect(locationBody.recipient).toBe('GH.989894404158856');
+      expect(locationBody.to).toBeUndefined();
+      expect(locationBody.interactive.type).toBe('location_request_message');
+    });
+
+    it('keeps addressing ordinary phone numbers with to', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ messages: [{ id: 'wamid.text' }] }) });
+      vi.stubGlobal('fetch', mockFetch);
+
+      await service.sendLocationRequest('1092837465', '+233245655799', 'Drop your pin');
+
+      const requestBody = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(requestBody.to).toBe('233245655799');
       expect(requestBody.recipient).toBeUndefined();
     });
   });
@@ -224,6 +241,33 @@ describe('WabaService', () => {
           type: 'text',
         },
       });
+    });
+  });
+
+  describe('when the network drops', () => {
+    const fetchFailed = (code: string) => Object.assign(new TypeError('fetch failed'), { cause: { code } });
+
+    it('retries a request that never reached Meta, so the reply still goes out', async () => {
+      vi.useFakeTimers();
+      const mockFetch = vi
+        .fn()
+        .mockRejectedValueOnce(fetchFailed('ENOTFOUND'))
+        .mockResolvedValueOnce({ ok: true, json: async () => ({ messages: [{ id: 'wamid.retry' }] }) });
+      vi.stubGlobal('fetch', mockFetch);
+
+      const sent = service.sendTextMessage('1092837465', '+233245655799', 'hello');
+      await vi.runAllTimersAsync();
+      expect(await sent).toEqual({ messageId: 'wamid.retry' });
+      expect(mockFetch).toHaveBeenCalledTimes(2);
+      vi.useRealTimers();
+    });
+
+    it('does not retry when the connection broke after sending (Meta may have the message) and names the cause', async () => {
+      const mockFetch = vi.fn().mockRejectedValue(fetchFailed('ECONNRESET'));
+      vi.stubGlobal('fetch', mockFetch);
+
+      await expect(service.sendTextMessage('1092837465', '+233245655799', 'hello')).rejects.toThrow('fetch failed (ECONNRESET)');
+      expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
 

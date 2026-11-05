@@ -4,7 +4,12 @@
   "routing_model": {
     "WELCOME": [
       "CATALOGUE",
-      "BASKET"
+      "BASKET",
+      "SEARCH"
+    ],
+    "SEARCH": [
+      "CATALOGUE",
+      "PRODUCT"
     ],
     "CATALOGUE": [
       "PRODUCT",
@@ -113,6 +118,23 @@
           },
           "__example__": [
             {
+              "id": "search",
+              "main-content": {
+                "title": "🔍 Search products",
+                "metadata": "Find an item by name"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_search",
+                  "sku": "open_search",
+                  "measure": "none",
+                  "category": "all",
+                  "page": "1"
+                }
+              }
+            },
+            {
               "id": "reorder_last",
               "main-content": {
                 "title": "Repeat my last order",
@@ -214,6 +236,108 @@
       }
     },
     {
+      "id": "SEARCH",
+      "title": "Search",
+      "data": {
+        "init_query": {
+          "type": "string",
+          "__example__": "tomatoes"
+        },
+        "category": {
+          "type": "string",
+          "__example__": "all"
+        },
+        "shop_summary": {
+          "type": "string",
+          "__example__": "Vegetables & fruits · Rice, oil & provisions · Drinks & water"
+        },
+        "products": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "id": {
+                "type": "string"
+              },
+              "title": {
+                "type": "string"
+              },
+              "description": {
+                "type": "string"
+              }
+            }
+          },
+          "__example__": [
+            {
+              "id": "sku_okra",
+              "title": "Okra",
+              "description": "from GH₵ 10"
+            },
+            {
+              "id": "sku_onions",
+              "title": "Onions",
+              "description": "from GH₵ 5"
+            },
+            {
+              "id": "sku_tomatoes",
+              "title": "Tomatoes",
+              "description": "from GH₵ 10"
+            }
+          ]
+        }
+      },
+      "layout": {
+        "type": "SingleColumnLayout",
+        "children": [
+          {
+            "type": "TextInput",
+            "name": "query",
+            "label": "What do you need?",
+            "input-type": "text",
+            "required": true,
+            "init-value": "${data.init_query}",
+            "helper-text": "Type at least 2 letters, e.g. rice, soap, plantain"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "We sell"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.shop_summary}"
+          },
+          {
+            "type": "Dropdown",
+            "name": "pick",
+            "label": "Or pick an item",
+            "required": false,
+            "data-source": "${data.products}",
+            "on-select-action": {
+              "name": "data_exchange",
+              "payload": {
+                "step": "open_product",
+                "sku": "${form.pick}",
+                "measure": "none",
+                "category": "${data.category}",
+                "page": "1"
+              }
+            }
+          },
+          {
+            "type": "Footer",
+            "label": "Search",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "step": "search",
+                "query": "${form.query}"
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
       "id": "CATALOGUE",
       "title": "${data.shop_name}",
       "data": {
@@ -310,14 +434,18 @@
             {
               "id": "basket",
               "main-content": {
-                "title": "Vegetables & fruits",
-                "description": "page 1 of 3",
-                "metadata": "Tap here to review your basket and check out"
+                "title": "View basket & checkout",
+                "description": "2 items in basket",
+                "metadata": "Vegetables & fruits · page 1 of 3 · tap here to review your basket and pay"
+              },
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Basket"
               },
               "end": {
                 "title": "GH₵ 240"
               },
-              "badge": "1 in basket",
+              "badge": "Tap to checkout",
               "on-click-action": {
                 "name": "data_exchange",
                 "payload": {
@@ -409,6 +537,23 @@
             }
           },
           "__example__": [
+            {
+              "id": "search",
+              "main-content": {
+                "title": "🔍 Search products",
+                "metadata": "Find an item by name"
+              },
+              "on-click-action": {
+                "name": "data_exchange",
+                "payload": {
+                  "step": "open_search",
+                  "sku": "open_search",
+                  "measure": "none",
+                  "category": "veg_fruits",
+                  "page": "1"
+                }
+              }
+            },
             {
               "id": "sku_tomatoes",
               "main-content": {
@@ -819,11 +964,15 @@
             {
               "id": "checkout",
               "main-content": {
-                "title": "Checkout",
+                "title": "Proceed to checkout",
                 "description": "Total GH₵ 250",
-                "metadata": "Delivery and payment are next"
+                "metadata": "2 items · tap here to enter delivery and pay"
               },
-              "badge": "2 items",
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Checkout"
+              },
+              "badge": "Tap to order",
               "on-click-action": {
                 "name": "data_exchange",
                 "payload": {
@@ -840,6 +989,10 @@
               "main-content": {
                 "title": "Add more products",
                 "description": "back to the shop"
+              },
+              "start": {
+                "image": "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNk+M9QDwADhgGAWjR9awAAAABJRU5ErkJggg==",
+                "alt-text": "Add more products"
               },
               "on-click-action": {
                 "name": "data_exchange",
@@ -1009,9 +1162,29 @@
           "type": "string",
           "__example__": "cart_8f3a21"
         },
-        "total_text": {
+        "category": {
           "type": "string",
-          "__example__": "Total GH₵ 250 · 2 items"
+          "__example__": "veg_fruits"
+        },
+        "has_notice": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "notice": {
+          "type": "string",
+          "__example__": "⚠️ Enter a valid 10-digit MoMo number"
+        },
+        "order_summary": {
+          "type": "string",
+          "__example__": "Tomatoes · 2 baskets · GH₵ 240\nOnions · ×1 · GH₵ 5\nDelivery · GH₵ 10\nTotal · GH₵ 255"
+        },
+        "items_caption": {
+          "type": "string",
+          "__example__": "2 items"
+        },
+        "total_caption": {
+          "type": "string",
+          "__example__": "GH₵ 255"
         },
         "delivery_areas": {
           "type": "array",
@@ -1112,7 +1285,7 @@
         },
         "init_area": {
           "type": "string",
-          "__example__": "knust"
+          "__example__": ""
         },
         "init_landmark": {
           "type": "string",
@@ -1139,29 +1312,43 @@
         "type": "SingleColumnLayout",
         "children": [
           {
-            "type": "TextHeading",
-            "text": "Checkout"
+            "type": "If",
+            "condition": "${data.has_notice}",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "${data.notice}",
+                "font-weight": "bold"
+              }
+            ]
           },
           {
             "type": "TextSubheading",
-            "text": "${data.total_text}"
+            "text": "Your order"
+          },
+          {
+            "type": "TextBody",
+            "text": "${data.order_summary}"
+          },
+          {
+            "type": "EmbeddedLink",
+            "text": "Edit basket",
+            "on-click-action": {
+              "name": "data_exchange",
+              "payload": {
+                "step": "open_basket",
+                "category": "${data.category}"
+              }
+            }
           },
           {
             "type": "TextSubheading",
-            "text": "Delivery"
-          },
-          {
-            "type": "TextInput",
-            "name": "full_name",
-            "label": "Your name",
-            "input-type": "text",
-            "required": true,
-            "init-value": "${data.init_full_name}"
+            "text": "1. Where should we deliver?"
           },
           {
             "type": "Dropdown",
             "name": "delivery_area",
-            "label": "Delivery area",
+            "label": "Select delivery area",
             "required": true,
             "data-source": "${data.delivery_areas}",
             "init-value": "${data.init_area}"
@@ -1172,8 +1359,28 @@
             "label": "Hostel or landmark",
             "input-type": "text",
             "required": true,
-            "helper-text": "We will ask for your map pin in the chat",
+            "helper-text": "e.g. Unity Hall, Block C · we'll ask for your map pin next",
             "init-value": "${data.init_landmark}"
+          },
+          {
+            "type": "RadioButtonsGroup",
+            "name": "delivery_slot",
+            "label": "When",
+            "required": true,
+            "data-source": "${data.delivery_slots}",
+            "init-value": "${data.init_slot}"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "2. Who receives it?"
+          },
+          {
+            "type": "TextInput",
+            "name": "full_name",
+            "label": "Your name",
+            "input-type": "text",
+            "required": true,
+            "init-value": "${data.init_full_name}"
           },
           {
             "type": "TextInput",
@@ -1181,27 +1388,20 @@
             "label": "Phone for the rider",
             "input-type": "phone",
             "required": true,
+            "helper-text": "The rider calls this number when they arrive",
             "init-value": "${data.init_phone}"
           },
           {
-            "type": "Dropdown",
-            "name": "delivery_slot",
-            "label": "When",
-            "required": true,
-            "init-value": "${data.init_slot}",
-            "data-source": "${data.delivery_slots}"
-          },
-          {
             "type": "TextSubheading",
-            "text": "Payment"
+            "text": "3. How will you pay?"
           },
           {
             "type": "RadioButtonsGroup",
             "name": "payment",
             "label": "Pay with",
             "required": true,
-            "init-value": "${data.init_payment}",
-            "data-source": "${data.payment_methods}"
+            "data-source": "${data.payment_methods}",
+            "init-value": "${data.init_payment}"
           },
           {
             "type": "If",
@@ -1214,13 +1414,15 @@
                 "input-type": "phone",
                 "required": true,
                 "init-value": "${data.init_momo}",
-                "helper-text": "Usually your WhatsApp number"
+                "helper-text": "You'll get a prompt on this number to approve the payment"
               }
             ]
           },
           {
             "type": "Footer",
             "label": "Place order",
+            "left-caption": "${data.items_caption}",
+            "right-caption": "${data.total_caption}",
             "on-click-action": {
               "name": "data_exchange",
               "payload": {
@@ -1248,21 +1450,13 @@
           "type": "string",
           "__example__": "MX-1042"
         },
-        "total_text": {
+        "order_line": {
           "type": "string",
-          "__example__": "GH₵ 250"
+          "__example__": "Order MX-1042 · GH₵ 250"
         },
-        "eta_text": {
+        "steps": {
           "type": "string",
-          "__example__": "Arriving today within 1 hour."
-        },
-        "payment_note": {
-          "type": "string",
-          "__example__": "Approve the MoMo prompt we sent to 024 411 1222."
-        },
-        "next_step": {
-          "type": "string",
-          "__example__": "Then tap Done and share your location pin."
+          "__example__": "1. 📲 Approve the MoMo prompt on 024 411 1222\n2. 📍 Tap the button below, then share your location pin in the chat\n3. 🛵 Delivery: Now · within 1 hour"
         }
       },
       "layout": {
@@ -1270,23 +1464,24 @@
         "children": [
           {
             "type": "TextHeading",
-            "text": "Order received"
+            "text": "✅ Order placed"
+          },
+          {
+            "type": "TextSubheading",
+            "text": "${data.order_line}"
           },
           {
             "type": "TextBody",
-            "text": "Order ${data.order_id} · ${data.total_text}\n${data.eta_text}"
+            "text": "What happens next",
+            "font-weight": "bold"
           },
           {
-            "type": "TextSubheading",
-            "text": "${data.payment_note}"
-          },
-          {
-            "type": "TextSubheading",
-            "text": "${data.next_step}"
+            "type": "TextBody",
+            "text": "${data.steps}"
           },
           {
             "type": "Footer",
-            "label": "Done",
+            "label": "Done · share my location",
             "on-click-action": {
               "name": "complete",
               "payload": {

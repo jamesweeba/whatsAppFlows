@@ -49,7 +49,7 @@ Paystack ──charge.success──▶ PaymentController ──▶ order marked 
 ## The buyer journey
 
 1. The buyer messages the shop. `ChatService` classifies the message and sends the ordering Flow, at most once every 15 minutes.
-2. In the Flow: **WELCOME → CATALOGUE → PRODUCT → BASKET → CHECKOUT → ORDER_RECEIVED**.
+2. In the Flow: **WELCOME → CATALOGUE → PRODUCT → BASKET → CHECKOUT → ORDER_RECEIVED** (with an optional **SEARCH** box that leads to CATALOGUE).
 3. On **Place order**, the order is created and the **MoMo prompt** goes out straight away.
 4. On **Done**, the buyer gets the **receipt** and a **"Send location"** request in the chat. If they never tap Done, both are sent after 60 s.
 5. The buyer drops a pin, and it is attached to the order.
@@ -67,12 +67,13 @@ Definition: [`src/flow/flow.json`](src/flow/flow.json) (Flow JSON 7.3, data API 
 
 | Screen | What the buyer sees | Notes |
 |---|---|---|
-| **WELCOME** | One-tap list: *Repeat my last order* (if any), **All products**, then each category with in-stock products. | A NavigationList must be the only component on its screen, so the heading and caption are the list's `label`/`description`. |
-| **CATALOGUE** | Basket bar (category, page, total, count), then up to **15 products** per page with Previous/Next rows. | A product already in the basket shows "✓ 2 in basket · GH₵ 240" in its metadata line. |
+| **WELCOME** | One-tap list: *🔍 Search products*, *Repeat my last order* (if any), **All products**, then each category with in-stock products. | A NavigationList must be the only component on its screen, so the heading and caption are the list's `label`/`description`. |
+| **SEARCH** | One text box and a **Search** button, a *We sell* line (the shop's categories, or product names if it has none) and an *Or pick an item* dropdown of up to 200 in-stock products that opens the picked product directly. Opened from the *🔍 Search products* row on WELCOME or CATALOGUE; pre-filled with the last term on *Search again*. | Searches the whole shop: every word must appear in the product name, note or category title (any case). Results are a CATALOGUE whose category is `search:<term>`, so paging, *Back to list* and *Add more products* re-run the search. |
+| **CATALOGUE** | Basket bar: with items, **View basket & checkout** (green cart icon, item count, total, *Tap to checkout* badge; category and page in the small print); when empty, the category and page with a grey cart, then a *🔍 Search* row and up to **15 products** per page with Previous/Next rows. | A product already in the basket shows "✓ 2 in basket · GH₵ 240" in its metadata line. |
 | **PRODUCT** | Measure choice with prices ("Basket · GH₵ 120"), quantity 1–10, Add/Update basket, *Remove from basket*. | Opened from the basket, Remove deletes only that line; opened from the catalogue, it removes the whole product. |
-| **BASKET** | Top list: Checkout (total, item count) + *Add more products*. Below: up to 20 basket lines, newest first, each with its price. | |
-| **CHECKOUT** | Name, delivery area, landmark, rider phone, delivery slot, payment method, MoMo number. | **Every field is pre-filled**: from what was just submitted, else the buyer's last Flow order, else their WhatsApp number. |
-| **ORDER_RECEIVED** | Order number, total, delivery time, payment note, "tap Done" prompt. | Terminal screen; **Done** sends `{ order_id }` back to the chat. |
+| **BASKET** | Top list: **Proceed to checkout** (green cart icon, total, item count, *Tap to order* badge) + *Add more products* (grey plus icon). Below: up to 20 basket lines, newest first, each with its price. | |
+| **CHECKOUT** | ⚠️ line (only after an error, e.g. invalid MoMo number), **Your order** (up to 8 lines, delivery, total) with *Edit basket*, then **1. Where should we deliver?** (area, landmark, time), **2. Who receives it?** (name, rider phone), **3. How will you pay?** (method, MoMo number). Item count and total sit on the **Place order** button. | Every field except the delivery area is pre-filled from what was just submitted, else the buyer's last Flow order, else their WhatsApp number; the area starts empty ("Select delivery area") and is only kept when CHECKOUT is re-shown after an error. *Edit basket* sends no `cart_id`, which is how it is told apart from Place order when WhatsApp drops the step. |
+| **ORDER_RECEIVED** | **✅ Order placed**, order number and total, then a numbered *What happens next*: 1. approve the MoMo prompt (or have the cash ready), 2. tap the button and share the location pin, 3. delivery time. Button: **Done · share my location**. | Terminal screen; the button sends `{ order_id }` back to the chat, which triggers the receipt and the pin request. |
 
 ### How requests are routed
 
@@ -80,15 +81,17 @@ Every button sends a `data_exchange` with a payload. The server works out the st
 
 1. `data.step` (current name) or `data.action` (older Flows).
 2. **Otherwise, from the screen and fields.** WhatsApp has been seen to drop the `step` field from payloads, so this fallback is required:
-   - `WELCOME` → `open_category`
+   - `WELCOME` → `open_category` (or `open_search` when `sku` is `open_search`)
+   - `SEARCH` → `search`
    - `PRODUCT` with `qty` → `add_line`; without → back to `open_category`
    - `CHECKOUT` → `place_order`
-   - `CATALOGUE`/`BASKET` list rows: rows that are not about a product carry their step in the `sku` slot (`open_basket`, `build_summary`, `open_category`); a real product id means `open_product`.
+   - `CATALOGUE`/`BASKET` list rows: rows that are not about a product carry their step in the `sku` slot (`open_basket`, `build_summary`, `open_category`, `open_search`); a real product id means `open_product`.
 
 ### Rules WhatsApp enforces (learned the hard way)
 
 - **A NavigationList may only appear alongside other NavigationLists**, at most two per screen.
 - **In a NavigationList, either every row has `end` or none does.** Mixing them makes the screen fail on the phone. A test checks this across a whole shopping session.
+- **Hidden-number buyers (BSUIDs such as `GH.2858…`) are addressed with `recipient`, never `to`,** for every message type (Meta's documented rule). If WhatsApp refuses or fails to deliver the location request, the buyer is asked by text to send a pin from the 📎 menu.
 - Lists hold 1–20 rows; text caps are in `LIMIT` in `flow.service.ts` (e.g. nav title 30, nav description 20, end 10, badge 15).
 
 ### The basket (`FlowCart`)

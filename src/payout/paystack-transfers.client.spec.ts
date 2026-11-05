@@ -1,5 +1,5 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import { PaystackTransfersClient } from './paystack-transfers.client.js';
+import { fakeTransferMode, PaystackTransfersClient } from './paystack-transfers.client.js';
 
 const reply = (status: number, body: unknown) => Promise.resolve(new Response(body === undefined ? 'not json' : JSON.stringify(body), { status }));
 const transfer = () => new PaystackTransfersClient().transfer({ amount: 1000, recipientCode: 'RCP_x', reference: 'payout_x', reason: 'test' });
@@ -8,9 +8,13 @@ describe('PaystackTransfersClient', () => {
   const fetchMock = vi.fn();
   beforeEach(() => {
     process.env.PAYSTACK_SECRET_KEY = 'sk_test_x';
+    delete process.env.PAYSTACK_FAKE_TRANSFERS;
     vi.stubGlobal('fetch', fetchMock.mockReset());
   });
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.unstubAllGlobals();
+    delete process.env.PAYSTACK_FAKE_TRANSFERS;
+  });
 
   describe('transfer: never reports "failed" unless Paystack surely did not send it', () => {
     it('is unsure after a timeout or network error', async () => {
@@ -73,6 +77,40 @@ describe('PaystackTransfersClient', () => {
       fetchMock.mockReturnValue(reply(200, { status: true, data: { status: 'success' } }));
       await verify();
       expect(fetchMock).toHaveBeenCalledWith('https://api.paystack.co/transfer/verify/payout_x', expect.objectContaining({ method: 'GET' }));
+    });
+  });
+
+  describe('PAYSTACK_FAKE_TRANSFERS (local testing)', () => {
+    const client = () => new PaystackTransfersClient();
+    const send = () => client().transfer({ amount: 1000, recipientCode: 'RCP_FAKE', reference: 'payout_x', reason: 'test' });
+
+    it.each([
+      ['success', { ok: true, status: 'success' }, { state: 'success' }],
+      ['pending', { ok: true, status: 'pending' }, { state: 'success' }],
+      ['fail', { ok: false }, { state: 'failed' }],
+      ['unknown', { ok: false, unknown: true }, { state: 'not_found' }],
+    ])('%s: fakes the transfer and its check, without calling Paystack', async (mode, transferResult, verifyResult) => {
+      process.env.PAYSTACK_FAKE_TRANSFERS = mode;
+      expect(await client().createMomoRecipient({ name: 'Ama', momoNumber: '0244111222', network: 'MTN' })).toEqual({ ok: true, code: 'RCP_FAKE' });
+      expect(await send()).toMatchObject(transferResult);
+      expect(await client().verifyTransfer('payout_x')).toMatchObject(verifyResult);
+      expect(fetchMock).not.toHaveBeenCalled();
+    });
+
+    it('is off when unset', () => {
+      expect(fakeTransferMode({})).toBeNull();
+    });
+
+    it('refuses to run in production, with a live key, or with a typo', () => {
+      expect(() => fakeTransferMode({ PAYSTACK_FAKE_TRANSFERS: 'success', NODE_ENV: 'production' })).toThrow('local testing only');
+      expect(() => fakeTransferMode({ PAYSTACK_FAKE_TRANSFERS: 'success', PAYSTACK_SECRET_KEY: 'sk_live_abc' })).toThrow('local testing only');
+      expect(() => fakeTransferMode({ PAYSTACK_FAKE_TRANSFERS: 'yes' })).toThrow('must be one of');
+    });
+
+    it('stops the server at startup when unsafe', () => {
+      process.env.PAYSTACK_FAKE_TRANSFERS = 'success';
+      process.env.PAYSTACK_SECRET_KEY = 'sk_live_abc';
+      expect(() => client().onModuleInit()).toThrow('local testing only');
     });
   });
 });

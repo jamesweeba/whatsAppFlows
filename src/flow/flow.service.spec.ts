@@ -1,6 +1,7 @@
 import { OrderStatus, PaymentMethod, Prisma } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { CategoryService } from '../category/category.service.js';
+import { ADD_MORE_ICON, BASKET_EMPTY_ICON, BASKET_ICON, CHECKOUT_ICON } from './basket-icons.js';
 import { PLACEHOLDER_PHOTO } from './placeholder-image.js';
 import { FlowService } from './flow.service.js';
 
@@ -8,7 +9,16 @@ const TOKEN = 'tenant-1:+233240000000:1';
 
 /** Minimal in-memory stand-in for the Prisma calls FlowService makes. */
 function fakePrisma(state: { products: any[]; categories: any[]; carts: any[]; lastOrder: any }) {
+  const contains = (value: string | null | undefined, filter: any) =>
+    !!value && value.toLowerCase().includes(String(filter.contains).toLowerCase());
+  // Only the shapes FlowService builds: { name|note: { contains } } and { category: { title: { contains } } }.
+  const matchesClause = (p: any, clause: any): boolean =>
+    (clause.name && contains(p.name, clause.name)) ||
+    (clause.note && contains(p.note, clause.note)) ||
+    (clause.category && contains(state.categories.find((c) => c.id === p.categoryId)?.title, clause.category.title));
+
   const matches = (p: any, where: any = {}) =>
+    (where.AND === undefined || where.AND.every((part: any) => part.OR.some((clause: any) => matchesClause(p, clause)))) &&
     (where.tenantId === undefined || p.tenantId === where.tenantId) &&
     (where.inStock === undefined || p.inStock === where.inStock) &&
     (where.id === undefined || (typeof where.id === 'string' ? p.id === where.id : where.id.in.includes(p.id))) &&
@@ -127,6 +137,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     waba = {
       sendFlowMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-flow' }),
       sendLocationRequest: vi.fn().mockResolvedValue({ messageId: 'wamid-loc' }),
+      sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-text' }),
     };
 
     service = new FlowService(prisma as any, {} as any, paystack, orderService, waba, { orderAlert: vi.fn().mockResolvedValue(true) } as any, new CategoryService(prisma as any, {} as any), productPhotos as any, banners);
@@ -173,7 +184,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       const { step: _, ...basketRow } = catalogue.data.basket_bar[0]['on-click-action'].payload;
       expect((await bare('CATALOGUE', basketRow)).screen).toBe('BASKET');
 
-      const { step: __, ...productRow } = catalogue.data.products[0]['on-click-action'].payload;
+      const { step: __, ...productRow } = catalogue.data.products[1]['on-click-action'].payload;
       expect((await bare('CATALOGUE', productRow)).screen).toBe('PRODUCT');
     });
   });
@@ -188,6 +199,8 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       await act('add_line', { sku: 'sku_tomatoes', measure: 'basket', qty: '2' }),
       await act('open_category', { page: '2' }),
       await act('open_basket'),
+      await act('search', { query: 'item' }),
+      await act('search', { query: 'nothing like this' }),
     ];
 
     for (const response of responses) {
@@ -224,12 +237,13 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
   });
 
   describe('WELCOME', () => {
-    it('lists "All products" first, then only the predefined categories this shop sells in', async () => {
+    it('lists Search, then "All products", then only the predefined categories this shop sells in', async () => {
       state.products.push({ id: 'sku_cola', tenantId: 'another-shop', name: 'Cola', price: 5, inStock: true, categoryId: 'drinks', measures: [] });
 
       const result = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
       expect(result.screen).toBe('WELCOME');
       expect(result.data.categories.map((row: any) => [row.id, row['main-content']])).toEqual([
+        ['search', { title: '🔍 Search products', metadata: 'Find an item by name' }],
         ['all', { title: 'All products', metadata: 'Everything in stock · 3 products' }],
         ['veg_fruits', { title: 'Vegetables & fruits', metadata: 'Tomatoes, onions, pepper' }],
       ]);
@@ -237,19 +251,20 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
 
     it('adds no shop row for a shop without an approved banner', async () => {
       const result = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
-      expect(result.data.categories[0].id).toBe('all');
+      expect(result.data.categories.map((row: any) => row.id).slice(0, 2)).toEqual(['search', 'all']);
     });
 
     it("puts the shop's approved banner as a logo row on top, which opens every product", async () => {
       banners.flowThumbnailBase64.mockResolvedValue('bG9nbw==');
       const result = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
-      const [shop, next] = result.data.categories;
+      const [shop, search, next] = result.data.categories;
       expect(shop).toMatchObject({
         id: 'shop',
         'main-content': { title: 'MarketiX Tech' },
         start: { image: 'bG9nbw==', 'alt-text': 'MarketiX Tech' },
       });
       expect(shop['on-click-action'].payload).toMatchObject({ step: 'open_category', category: 'all', page: '1' });
+      expect(search.id).toBe('search');
       expect(next.id).toBe('all');
       expect(banners.flowThumbnailBase64).toHaveBeenCalledWith(expect.objectContaining({ id: 'tenant-1' }));
       expect(result.data.categories.length).toBeLessThanOrEqual(20);
@@ -284,12 +299,12 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     it('shows every in-stock product under "All products", categorised or not', async () => {
       const result = await act('open_category', { category: 'all' });
       expect(result.data.basket_bar[0]['main-content'].title).toBe('All products');
-      expect(result.data.products.map((row: any) => row.id)).toEqual(['sku_onions', 'sku_soap', 'sku_tomatoes']);
+      expect(result.data.products.map((row: any) => row.id)).toEqual(['search', 'sku_onions', 'sku_soap', 'sku_tomatoes']);
     });
 
     it('opens a category with one tap on its row', async () => {
       const result = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
-      expect(result.data.categories[1]['on-click-action'].payload).toEqual({
+      expect(result.data.categories[2]['on-click-action'].payload).toEqual({
         step: 'open_category', sku: 'open_category', measure: 'none', category: 'veg_fruits', page: '1',
       });
     });
@@ -301,7 +316,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
         items: [{ productId: 'sku_tomatoes', measureCode: 'olonka', quantity: 2 }],
       };
       const result = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
-      expect(result.data.categories[0]).toMatchObject({
+      expect(result.data.categories[1]).toMatchObject({
         id: 'reorder_last',
         'main-content': { title: 'Repeat my last order', metadata: 'Wed 28 Oct · 1 item · GH₵ 95' },
       });
@@ -319,8 +334,10 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
         }),
       ]);
       expect(result.data.basket_bar[0].badge).toBeUndefined();
+      expect(result.data.basket_bar[0].start).toEqual({ image: BASKET_EMPTY_ICON, 'alt-text': 'Basket' });
 
-      const [onions, tomatoes] = result.data.products;
+      const [search, onions, tomatoes] = result.data.products;
+      expect(search.id).toBe('search');
       expect(tomatoes['main-content']).toEqual({ title: 'Tomatoes', description: 'from GH₵ 10', metadata: 'Olonka · Basket · Table top' });
       expect(onions['main-content'].metadata).toBe('Each');
       expect(tomatoes['on-click-action'].payload).toEqual({
@@ -334,12 +351,12 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
         state.products.push({ id: `p${i}`, tenantId: 'tenant-1', name: `Item ${i}`, price: 1, inStock: true, categoryId: 'veg_fruits', measures: [] });
       }
       const first = await act('open_category');
-      expect(first.data.products).toHaveLength(16);
+      expect(first.data.products).toHaveLength(17);
       expect(first.data.products.at(-1)).toMatchObject({ id: 'next_page', 'main-content': { title: 'Next 5 products', description: 'page 2 of 2' } });
 
       const second = await act('open_category', { page: '2' });
       expect(second.data.page).toBe('2');
-      expect(second.data.products).toHaveLength(6);
+      expect(second.data.products).toHaveLength(7);
       expect(second.data.products.map((r: any) => r.id)).toContain('prev_page');
       expect(second.data.products.map((r: any) => r.id)).not.toContain('next_page');
     });
@@ -356,7 +373,119 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
 
     it('shows a single "No products here yet" row for an empty category', async () => {
       const result = await act('open_category', { category: 'drinks' });
-      expect(result.data.products).toEqual([expect.objectContaining({ id: 'none' })]);
+      expect(result.data.products).toEqual([expect.objectContaining({ id: 'search' }), expect.objectContaining({ id: 'none' })]);
+    });
+  });
+
+  describe('SEARCH', () => {
+    const search = (query: string) => act('search', { query });
+    const ids = (result: any) => result.data.products.map((row: any) => row.id);
+
+    it('opens an empty search box from WELCOME and from a category', async () => {
+      const welcome = await service.handleFlowAction({ version: '3.0', action: 'INIT', flow_token: TOKEN });
+      const row = welcome.data.categories.find((r: any) => r.id === 'search');
+      expect(row['on-click-action'].payload).toEqual({ step: 'open_search', sku: 'open_search', measure: 'none', category: 'all', page: '1' });
+      expect(await act('open_search', row['on-click-action'].payload)).toMatchObject({ version: '3.0', screen: 'SEARCH', data: { init_query: '', category: 'all' } });
+
+      const catalogue = await act('open_category');
+      expect(catalogue.data.products[0]['main-content'].title).toBe('🔍 Search products');
+      expect((await act('open_search', catalogue.data.products[0]['on-click-action'].payload)).data.init_query).toBe('');
+    });
+
+    it('searches the whole shop by name, note and category title, ignoring case', async () => {
+      expect(ids(await search('TOMA'))).toEqual(['search', 'sku_tomatoes']);
+      expect(ids(await search('2 kg'))).toEqual(['search', 'sku_tomatoes']); // note "Olonka ≈ 2 kg"
+      expect(ids(await search('vegetables'))).toEqual(['search', 'sku_onions', 'sku_tomatoes']); // category title
+      expect(ids(await search('soap'))).toEqual(['search', 'sku_soap']); // uncategorised product
+    });
+
+    it('needs every word to match', async () => {
+      expect(ids(await search('  olonka   tomatoes '))).toEqual(['search', 'sku_tomatoes']);
+      expect(ids(await search('olonka soap'))).toEqual(['search']);
+    });
+
+    it('titles the results and keeps the term on every row, so paging and Back re-run the search', async () => {
+      const result = await search('onion');
+      expect(result.screen).toBe('CATALOGUE');
+      expect(result.data.category).toBe('search:onion');
+      expect(result.data.basket_bar[0]['main-content'].title).toBe('Results for "onion"');
+      expect(result.data.products[0]['main-content']).toEqual({ title: '🔍 Search again', metadata: 'Showing results for "onion"' });
+      expect(result.data.products[1]['on-click-action'].payload).toMatchObject({ step: 'open_product', category: 'search:onion' });
+
+      const back = await act('open_category', { category: 'search:onion' });
+      expect(ids(back)).toEqual(['search', 'sku_onions']);
+    });
+
+    it('pre-fills the box with the last term on "Search again"', async () => {
+      const result = await search('onion');
+      const again = await act('open_search', result.data.products[0]['on-click-action'].payload);
+      expect(again).toMatchObject({ screen: 'SEARCH', data: { init_query: 'onion' } });
+    });
+
+    it('says when nothing matches, with no extra empty row', async () => {
+      const result = await search('fufu');
+      expect(result.data.products).toEqual([
+        expect.objectContaining({
+          id: 'search',
+          'main-content': { title: '🔍 Search again', metadata: 'Nothing found for "fufu" · tap to try another word' },
+        }),
+      ]);
+    });
+
+    it('stays on the search box when the term is shorter than 2 letters', async () => {
+      expect(await search(' t ')).toMatchObject({ version: '3.0', screen: 'SEARCH', data: { init_query: 't' } });
+    });
+
+    it('only finds in-stock products of this shop', async () => {
+      state.products.push(
+        { id: 'sku_tomato_paste', tenantId: 'tenant-1', name: 'Tomato paste', price: 6, inStock: false, categoryId: null, measures: [] },
+        { id: 'sku_tomato_other', tenantId: 'another-shop', name: 'Tomato', price: 6, inStock: true, categoryId: null, measures: [] },
+      );
+      expect(ids(await search('tomato'))).toEqual(['search', 'sku_tomatoes']);
+    });
+
+    it('shows what the shop sells: its categories, and every in-stock product to pick', async () => {
+      state.products.push({ id: 'sku_gone', tenantId: 'tenant-1', name: 'Gone', price: 1, inStock: false, categoryId: 'drinks', measures: [] });
+      const result = await act('open_search');
+      expect(result.data.shop_summary).toBe('Vegetables & fruits');
+      expect(result.data.products).toEqual([
+        { id: 'sku_onions', title: 'Onions', description: 'from GH₵ 5' },
+        { id: 'sku_soap', title: 'Soap', description: 'from GH₵ 8' },
+        { id: 'sku_tomatoes', title: 'Tomatoes', description: 'from GH₵ 10' },
+      ]);
+    });
+
+    it('lists product names when the shop has no categories, and a placeholder when it has nothing', async () => {
+      state.products.forEach((p) => (p.categoryId = null));
+      expect((await act('open_search')).data.shop_summary).toBe('Onions, Soap, Tomatoes');
+
+      state.products.forEach((p) => (p.inStock = false));
+      const empty = await act('open_search');
+      expect(empty.data.shop_summary).toBe('Nothing in stock right now.');
+      expect(empty.data.products).toEqual([{ id: 'none', title: 'Nothing in stock yet' }]);
+    });
+
+    it('opens a picked product, and its Back link returns to where search was opened', async () => {
+      const picked = await act('open_product', { sku: 'sku_soap', category: 'veg_fruits' });
+      expect(picked.screen).toBe('PRODUCT');
+      expect(picked.data).toMatchObject({ sku: 'sku_soap', category: 'veg_fruits' });
+    });
+
+    it('routes a search even when WhatsApp drops the step', async () => {
+      const pick = await service.handleFlowAction({
+        version: '3.0', action: 'data_exchange', screen: 'SEARCH', flow_token: TOKEN,
+        data: { sku: 'sku_soap', measure: 'none', category: 'all', page: '1' },
+      });
+      expect(pick.screen).toBe('PRODUCT');
+
+      const result = await service.handleFlowAction({ version: '3.0', action: 'data_exchange', screen: 'SEARCH', flow_token: TOKEN, data: { query: 'soap' } });
+      expect(ids(result)).toEqual(['search', 'sku_soap']);
+
+      const welcome = await service.handleFlowAction({
+        version: '3.0', action: 'data_exchange', screen: 'WELCOME', flow_token: TOKEN,
+        data: { sku: 'open_search', measure: 'none', category: 'all', page: '1' },
+      });
+      expect(welcome.screen).toBe('SEARCH');
     });
   });
 
@@ -384,7 +513,16 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       const result = await act('add_line', { sku: 'sku_tomatoes', measure: 'basket', qty: '2' });
 
       expect(result.screen).toBe('CATALOGUE');
-      expect(result.data.basket_bar[0]).toMatchObject({ badge: '1 in basket', end: { title: 'GH₵ 240' } });
+      expect(result.data.basket_bar[0]).toMatchObject({
+        'main-content': {
+          title: 'View basket & checkout',
+          description: '1 item in basket',
+          metadata: 'Vegetables & fruits · page 1 of 1 · tap here to review your basket and pay',
+        },
+        start: { image: BASKET_ICON, 'alt-text': 'Basket' },
+        end: { title: 'GH₵ 240' },
+        badge: 'Tap to checkout',
+      });
       const tomatoes = result.data.products.find((r: any) => r.id === 'sku_tomatoes');
       expect(tomatoes['main-content'].metadata).toBe('✓ 2 in basket · GH₵ 240');
       expect(tomatoes.end).toBeUndefined();
@@ -443,9 +581,16 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
 
       expect(result.screen).toBe('BASKET');
       expect(result.data.checkout_bar[0]).toMatchObject({
-        'main-content': { title: 'Checkout', description: 'Total GH₵ 250' },
-        badge: '2 items',
+        'main-content': {
+          title: 'Proceed to checkout',
+          description: 'Total GH₵ 250',
+          metadata: '2 items · tap here to enter delivery and pay',
+        },
+        start: { image: CHECKOUT_ICON, 'alt-text': 'Checkout' },
+        badge: 'Tap to order',
       });
+      // Both rows carry an icon, or WhatsApp draws an empty frame on the one without.
+      expect(result.data.checkout_bar[1].start).toEqual({ image: ADD_MORE_ICON, 'alt-text': 'Add more products' });
       expect(result.data.checkout_bar[0]['on-click-action'].payload.step).toBe('build_summary');
       expect(result.data.lines.map((l: any) => l.id)).toEqual(['sku_onions:each', 'sku_tomatoes:basket']);
       expect(result.data.checkout_bar.map((row: any) => row.id)).toEqual(['checkout', 'more']);
@@ -505,7 +650,14 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       const result = await act('build_summary');
       expect(result.screen).toBe('CHECKOUT');
       expect(result.data.cart_id).toBe('cart-1');
-      expect(result.data.total_text).toBe('Total GH₵ 250 incl. GH₵ 10 delivery · 1 item');
+      expect(result.data).toMatchObject({
+        has_notice: false,
+        notice: '',
+        order_summary: 'Tomatoes · 2 baskets · GH₵ 240\nDelivery · GH₵ 10\nTotal · GH₵ 250',
+        items_caption: '1 item',
+        total_caption: 'GH₵ 250',
+        category: 'veg_fruits',
+      });
       expect(result.data.delivery_areas).toEqual(tenant.deliveryAreas);
       expect(result.data.delivery_slots.map((s: any) => s.id)).toEqual(['asap', 'today_pm']);
       expect(result.data.payment_methods.map((p: any) => p.id)).toEqual(['momo', 'cash']);
@@ -514,21 +666,41 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     it('pre-fills a first-time buyer with their WhatsApp number', async () => {
       const result = await act('build_summary');
       expect(result.data).toMatchObject({
-        init_full_name: '', init_area: 'knust', init_landmark: '', init_phone: '0240000000',
+        init_full_name: '', init_area: '', init_landmark: '', init_phone: '0240000000',
         init_slot: 'asap', init_payment: 'momo', init_momo: '0240000000',
       });
     });
 
-    it("pre-fills a repeat buyer from their last order, so they only confirm", async () => {
+    it("pre-fills a repeat buyer from their last order, except the area, which they always pick", async () => {
       state.lastOrder = {
         customerName: 'Ama Mensah', deliveryArea: 'Ayigya', landmark: 'Unity Hall B12',
         contactPhone: '+233244000000', paymentMethod: PaymentMethod.COD, paymentPhone: null,
       };
       const result = await act('build_summary');
       expect(result.data).toMatchObject({
-        init_full_name: 'Ama Mensah', init_area: 'ayigya', init_landmark: 'Unity Hall B12',
+        init_full_name: 'Ama Mensah', init_area: '', init_landmark: 'Unity Hall B12',
         init_phone: '0244000000', init_payment: 'cash', init_momo: '0240000000',
       });
+    });
+
+    it('lists up to 8 basket lines in the summary, newest first, and sums the rest', async () => {
+      for (let i = 0; i < 9; i++) {
+        state.products.push({ id: `p${i}`, tenantId: 'tenant-1', name: `Item ${i}`, price: 1, inStock: true, categoryId: 'veg_fruits', measures: [] });
+        await act('add_line', { sku: `p${i}`, measure: 'each', qty: '1' });
+      }
+      const summary: string[] = (await act('build_summary')).data.order_summary.split('\n');
+      expect(summary[0]).toBe('Item 8 · ×1 · GH₵ 1');
+      expect(summary).toHaveLength(8 + 3);
+      expect(summary.at(-3)).toBe('+ 2 more items · GH₵ 241');
+      expect(summary.at(-1)).toBe('Total · GH₵ 259');
+    });
+
+    it('goes back to BASKET from "Edit basket", even when WhatsApp drops the step', async () => {
+      const bare = await service.handleFlowAction({
+        version: '3.0', action: 'data_exchange', screen: 'CHECKOUT', flow_token: TOKEN, data: { category: 'veg_fruits' },
+      });
+      expect(bare.screen).toBe('BASKET');
+      expect(orderService.createOrder).not.toHaveBeenCalled();
     });
 
     it('sends an empty basket back to BASKET instead of CHECKOUT', async () => {
@@ -546,8 +718,9 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     it('stays on CHECKOUT with a warning when the MoMo number is invalid', async () => {
       const result = await placeOrder({ momo_number: '12345' });
       expect(result.screen).toBe('CHECKOUT');
-      expect(result.data.total_text).toContain('valid 10-digit MoMo number');
-      expect(result.data).toMatchObject({ init_full_name: 'Ama Mensah', init_landmark: 'Unity Hall B12', init_momo: '12345' });
+      expect(result.data).toMatchObject({ has_notice: true, notice: '⚠️ Enter a valid 10-digit MoMo number' });
+      // The area just picked stays selected, so the buyer only fixes the MoMo number.
+      expect(result.data).toMatchObject({ init_full_name: 'Ama Mensah', init_area: 'knust', init_landmark: 'Unity Hall B12', init_momo: '12345' });
       expect(orderService.createOrder).not.toHaveBeenCalled();
     });
 
@@ -596,10 +769,11 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       expect(result.screen).toBe('ORDER_RECEIVED');
       expect(result.data).toEqual({
         order_id: 'MX-ABC123',
-        total_text: 'GH₵ 250',
-        eta_text: 'Delivery: Now · within 1 hour.',
-        payment_note: 'Approve the MoMo prompt we sent to 024 411 1222.',
-        next_step: 'Then tap Done and share your location pin.',
+        order_line: 'Order MX-ABC123 · GH₵ 250',
+        steps:
+          '1. 📲 Approve the MoMo prompt on 024 411 1222\n' +
+          '2. 📍 Tap the button below, then share your location pin in the chat\n' +
+          '3. 🛵 Delivery: Now · within 1 hour',
       });
     });
 
@@ -617,7 +791,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
         expect.objectContaining({ status: OrderStatus.CONFIRMED, paymentMethod: PaymentMethod.COD, paymentPhone: undefined }),
         expect.anything(),
       );
-      expect(result.data.payment_note).toBe('Pay GH₵ 250 in cash to the rider.');
+      expect(result.data.steps.split('\n')[0]).toBe('1. 💵 Have GH₵ 250 ready in cash for the rider');
     });
   });
 
@@ -693,9 +867,35 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     });
 
     it('requests a delivery location pin and records it', async () => {
-      await service.requestDeliveryLocation(tenant as any, '+233240000000', order);
+      expect(await service.requestDeliveryLocation(tenant as any, '+233240000000', order)).toBe('location_request');
       expect(waba.sendLocationRequest).toHaveBeenCalledWith('phone-1', '+233240000000', expect.stringContaining('MX-ABC123'));
       expect(orderService.markLocationRequested).toHaveBeenCalledWith('order-1');
+      expect(waba.sendTextMessage).not.toHaveBeenCalled();
+    });
+
+    it('asks for the pin by text when WhatsApp refuses the location request', async () => {
+      waba.sendLocationRequest.mockRejectedValueOnce(new Error('(#131062) BSUID recipients are not supported for this message'));
+      expect(await service.requestDeliveryLocation(tenant as any, 'GH.123', order)).toBe('text');
+      expect(waba.sendTextMessage).toHaveBeenCalledWith('phone-1', 'GH.123', expect.stringContaining('📎'));
+      expect(orderService.markLocationRequested).toHaveBeenCalledWith('order-1'); // so the pin is still attached
+    });
+
+    it('reports when neither the location request nor the text could be sent', async () => {
+      waba.sendLocationRequest.mockRejectedValueOnce(new Error('down'));
+      waba.sendTextMessage.mockRejectedValueOnce(new Error('down'));
+      expect(await service.requestDeliveryLocation(tenant as any, '+233240000000', order)).toBeNull();
+      expect(orderService.markLocationRequested).not.toHaveBeenCalled();
+    });
+
+    it('asks by text once when Meta later reports the location request undelivered', async () => {
+      waba.sendLocationRequest.mockResolvedValueOnce({ messageId: 'wamid.loc' });
+      await service.requestDeliveryLocation(tenant as any, 'GH.123', order);
+
+      expect(await service.handleFailedDelivery('wamid.other')).toBe(false);
+      expect(await service.handleFailedDelivery('wamid.loc')).toBe(true);
+      expect(await service.handleFailedDelivery('wamid.loc')).toBe(false);
+      expect(waba.sendTextMessage).toHaveBeenCalledTimes(1);
+      expect(waba.sendTextMessage).toHaveBeenCalledWith('phone-1', 'GH.123', expect.stringContaining('MX-ABC123'));
     });
   });
 });

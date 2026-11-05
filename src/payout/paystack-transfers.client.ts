@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 
 export type TransferOutcome =
   /** Paystack accepted it; the transfer.success / transfer.failed webhook settles it. */
@@ -27,13 +27,49 @@ const FAILED_STATES = new Set(['failed', 'reversed', 'abandoned', 'blocked', 're
 const PENDING_STATES = new Set(['pending', 'processing', 'received', 'queued', 'otp']);
 
 /** Paystack Transfers: MoMo payouts to vendors from MarketiX's Paystack balance. */
+export const FAKE_TRANSFER_MODES = ['success', 'pending', 'fail', 'unknown'] as const;
+export type FakeTransferMode = (typeof FAKE_TRANSFER_MODES)[number];
+
+/**
+ * PAYSTACK_FAKE_TRANSFERS: pretend to be Paystack Transfers, for testing withdrawals locally
+ * (e.g. while the Paystack account can't make transfers yet). Nothing is sent to Paystack.
+ * - success: every transfer is paid at once.
+ * - pending: transfers stay "on its way"; checked as paid 10 minutes later.
+ * - fail:    Paystack refuses every transfer (the money goes back to the balance).
+ * - unknown: no reply from Paystack; after 10 minutes it turns out it never got it (refunded).
+ * Throws in production or with a live key, so it can never fake a real payout.
+ */
+export function fakeTransferMode(env: NodeJS.ProcessEnv = process.env): FakeTransferMode | null {
+  const raw = env.PAYSTACK_FAKE_TRANSFERS?.trim().toLowerCase();
+  if (!raw) return null;
+  if (!FAKE_TRANSFER_MODES.includes(raw as FakeTransferMode)) {
+    throw new Error(`PAYSTACK_FAKE_TRANSFERS must be one of ${FAKE_TRANSFER_MODES.join(', ')} (got "${raw}").`);
+  }
+  if (env.NODE_ENV === 'production' || env.PAYSTACK_SECRET_KEY?.trim().startsWith('sk_live_')) {
+    throw new Error('PAYSTACK_FAKE_TRANSFERS is for local testing only. Remove it: NODE_ENV is production or PAYSTACK_SECRET_KEY is a live key.');
+  }
+  return raw as FakeTransferMode;
+}
+
 @Injectable()
-export class PaystackTransfersClient {
+export class PaystackTransfersClient implements OnModuleInit {
   private readonly logger = new Logger(PaystackTransfersClient.name);
   private readonly baseUrl = 'https://api.paystack.co';
 
+  /** Checks PAYSTACK_FAKE_TRANSFERS at startup: a bad or unsafe value stops the server. */
+  onModuleInit() {
+    const mode = fakeTransferMode();
+    if (mode) this.logger.warn(`PAYSTACK_FAKE_TRANSFERS=${mode}: vendor payouts are faked, nothing is sent to Paystack.`);
+  }
+
+  /** The fake mode in use, or null when talking to Paystack. */
+  get fakeMode(): FakeTransferMode | null {
+    return fakeTransferMode();
+  }
+
   /** A transfer recipient for a Ghana MoMo wallet. Returns its recipient code. */
   async createMomoRecipient(params: { name: string; momoNumber: string; network: string }): Promise<{ ok: true; code: string } | { ok: false; reason: string }> {
+    if (this.fakeMode) return { ok: true, code: 'RCP_FAKE' };
     const res = await this.post('/transferrecipient', {
       type: 'mobile_money',
       name: params.name,
@@ -48,6 +84,14 @@ export class PaystackTransfersClient {
 
   /** Sends `amount` pesewas from the Paystack balance to a recipient. */
   async transfer(params: { amount: number; recipientCode: string; reference: string; reason: string }): Promise<TransferOutcome> {
+    const fake = this.fakeMode;
+    if (fake) {
+      this.logger.warn(`Fake transfer (${fake}): ${params.amount} pesewas, ${params.reference}.`);
+      if (fake === 'success') return { ok: true, status: 'success', transferCode: `TRF_FAKE_${params.reference}` };
+      if (fake === 'pending') return { ok: true, status: 'pending', transferCode: `TRF_FAKE_${params.reference}` };
+      if (fake === 'fail') return { ok: false, reason: 'Fake Paystack (PAYSTACK_FAKE_TRANSFERS=fail): transfer refused.' };
+      return { ok: false, unknown: true, reason: 'Fake Paystack (PAYSTACK_FAKE_TRANSFERS=unknown): no reply.' };
+    }
     const res = await this.post('/transfer', {
       source: 'balance',
       amount: params.amount,
@@ -78,6 +122,10 @@ export class PaystackTransfersClient {
    * transfer that was paid.
    */
   async verifyTransfer(reference: string): Promise<TransferState> {
+    const fake = this.fakeMode;
+    if (fake === 'success' || fake === 'pending') return { state: 'success' };
+    if (fake === 'fail') return { state: 'failed', reason: 'Fake Paystack (PAYSTACK_FAKE_TRANSFERS=fail): transfer refused.' };
+    if (fake === 'unknown') return { state: 'not_found' };
     const res = await this.request('GET', `/transfer/verify/${encodeURIComponent(reference)}`);
     if (res.uncertain) return { state: 'unknown', reason: this.reason(res, 'No clear answer from Paystack.') };
     if (res.status === 404 || (!res.ok && /not found/i.test(String(res.data?.message ?? '')))) return { state: 'not_found' };

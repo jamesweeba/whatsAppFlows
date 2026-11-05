@@ -207,6 +207,8 @@ export class PayoutService {
   /** The shop's Paystack recipient, made once per MoMo number. */
   private async recipientFor(tenant: Prisma.TenantGetPayload<object>): Promise<{ code: string } | { reason: string }> {
     const momo = tenant.momoNumber!;
+    // Fake transfers (local testing): never save the fake recipient, or real payouts would use it later.
+    if (this.transfers.fakeMode) return { code: 'RCP_FAKE' };
     if (tenant.paystackRecipientCode && tenant.paystackRecipientFor === momo) return { code: tenant.paystackRecipientCode };
 
     const network = momoNetworkOf(momo);

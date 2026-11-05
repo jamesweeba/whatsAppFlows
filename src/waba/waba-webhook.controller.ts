@@ -13,6 +13,7 @@ import {
 import { MessageSender, Tenant, TenantStatus } from '@prisma/client';
 import { MetaSignatureGuard } from '../auth/guards/meta-signature.guard.js';
 import { ChatService } from '../chat/chat.service.js';
+import { FlowService } from '../flow/flow.service.js';
 import { isBsuid, toE164 } from '../common/phone.util.js';
 import { isLive, TenantService } from '../tenant/tenant.service.js';
 import { WabaService, WELCOME_BUTTON_IDS } from './waba.service.js';
@@ -31,6 +32,7 @@ export class WabaWebhookController {
     private readonly tenantService: TenantService,
     private readonly chatService: ChatService,
     private readonly wabaService: WabaService,
+    private readonly flowService: FlowService,
   ) {}
 
   /**
@@ -87,6 +89,7 @@ export class WabaWebhookController {
     for (const entry of payload.entry ?? []) {
       for (const change of entry.changes ?? []) {
         const value = change.value;
+        this.logFailedStatuses(value?.statuses);
         if (!value?.messages?.length) continue;
 
         const phoneNumberId: string | undefined = value.metadata?.phone_number_id;
@@ -120,6 +123,26 @@ export class WabaWebhookController {
           }),
         );
       }
+    }
+  }
+
+  /**
+   * Meta accepts a send and reports delivery later as a status. A message the buyer's
+   * WhatsApp cannot show (e.g. a location request on WhatsApp Web or an old app) only
+   * surfaces here, so failures are logged with Meta's reason, and a failed location
+   * request is retried as plain text.
+   */
+  private logFailedStatuses(statuses: any[] | undefined) {
+    for (const status of statuses ?? []) {
+      if (status?.status !== 'failed') continue;
+      const reasons = (status.errors ?? [])
+        .map((e: any) => `${e.code} ${e.title}${e.error_data?.details ? ` (${e.error_data.details})` : ''}`)
+        .join('; ');
+      const to = status.recipient_id || status.recipient_user_id || 'unknown recipient';
+      this.logger.warn(`WhatsApp could not deliver message ${status.id} to ${to}: ${reasons || 'no reason given'}`);
+      void this.flowService
+        .handleFailedDelivery(status.id)
+        .catch((err) => this.logger.warn(`Fallback after failed delivery of ${status.id} failed: ${err?.message || err}`));
     }
   }
 

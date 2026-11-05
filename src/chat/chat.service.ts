@@ -153,7 +153,7 @@ export class ChatService implements OnModuleInit {
 
     if (orderRef) {
       // Done: the buyer is back in the chat, so the receipt and pin request land in view.
-      const found = await this.confirmFlowOrder(tenant, orderRef, dto.buyerPhone);
+      const found = await this.confirmFlowOrder(tenant, orderRef, dto.buyerPhone, true);
       reply = found ? null : { kind: 'text', text: `🧾 Order ${orderRef} received. We'll contact you on WhatsApp with updates.` };
     } else if (dto.flowData) {
       reply = null; // intermediate Flow step: nothing to say yet
@@ -389,8 +389,12 @@ export class ChatService implements OnModuleInit {
    * for the delivery pin. Runs when the buyer taps Done, and from a fallback a minute after
    * place_order for buyers who close the Flow instead; only the first call sends anything.
    * Returns false when the order is not this buyer's.
+   *
+   * MoMo buyers often leave WhatsApp to approve the prompt, so the fallback can fire while
+   * the Flow is still open and the pin request lands out of view. A later Done therefore
+   * asks for the pin again, at the bottom of the chat, unless the buyer already shared it.
    */
-  private async confirmFlowOrder(tenant: Tenant, orderRef: string, buyerPhone: string): Promise<boolean> {
+  private async confirmFlowOrder(tenant: Tenant, orderRef: string, buyerPhone: string, fromDone = false): Promise<boolean> {
     this.clearCooldown(tenant.id, buyerPhone);
 
     const completion = await this.flowService.completeOrder(tenant, orderRef, buyerPhone);
@@ -398,7 +402,14 @@ export class ChatService implements OnModuleInit {
       this.logger.warn(`Order ${orderRef} not found for tenant ${tenant.id} and buyer ${buyerPhone}.`);
       return false;
     }
-    if (completion.text === null) return true;
+    if (completion.text === null) {
+      const { order } = completion;
+      if (fromDone && tenant.whatsappPhoneNumberId && order.locationRequestedAt && !order.locationReceivedAt) {
+        const session = await this.getOrCreateSession(tenant.id, buyerPhone);
+        await this.askForPin(tenant, buyerPhone, session.id, order, true);
+      }
+      return true;
+    }
 
     const session = await this.getOrCreateSession(tenant.id, buyerPhone);
     await this.orderService.linkSession(completion.order.id, session.id);
@@ -414,14 +425,25 @@ export class ChatService implements OnModuleInit {
     });
 
     if (tenant.whatsappPhoneNumberId) {
-      await this.flowService.requestDeliveryLocation(tenant, buyerPhone, completion.order);
-      await this.saveMessage(session.id, {
-        sender: MessageSender.SYSTEM,
-        source: MessageSource.TEXT,
-        text: `📍 Asked the buyer to share the delivery location for order ${completion.order.orderNumber}.`,
-      });
+      await this.askForPin(tenant, buyerPhone, session.id, completion.order, false);
     }
     return true;
+  }
+
+  /** Send the location request and note in the thread whether it actually went out. */
+  private async askForPin(tenant: Tenant, buyerPhone: string, sessionId: string, order: { id: string; orderNumber: string }, again: boolean) {
+    const how = await this.flowService.requestDeliveryLocation(tenant, buyerPhone, order);
+    const asked = `📍 Asked the buyer${again ? ' again' : ''} to share the delivery location for order ${order.orderNumber}`;
+    await this.saveMessage(sessionId, {
+      sender: MessageSender.SYSTEM,
+      source: MessageSource.TEXT,
+      text:
+        how === 'location_request'
+          ? `${asked}.`
+          : how === 'text'
+            ? `${asked} by text (WhatsApp refused the location button).`
+            : `⚠️ Could not send the location request for order ${order.orderNumber}; ask the buyer for their pin in the chat.`,
+    });
   }
 
   private async buildReply(

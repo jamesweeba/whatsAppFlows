@@ -34,6 +34,7 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { isLive } from '../tenant/tenant.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { DecryptedFlowPayload, EncryptedFlowRequest, FlowCryptoService } from './flow-crypto.service.js';
+import { ADD_MORE_ICON, BASKET_EMPTY_ICON, BASKET_ICON, CHECKOUT_ICON } from './basket-icons.js';
 import { PLACEHOLDER_PHOTO } from './placeholder-image.js';
 import { ShopBannerService } from '../tenant/shop-banner.service.js';
 import { ProductPhotoService } from '../product/product-photo.service.js';
@@ -87,8 +88,10 @@ const CART_TTL_MS = 60 * 60 * 1000;
 /** How long to wait for Done before sending the receipt and pin request anyway. */
 const CONFIRMATION_FALLBACK_MS = 60 * 1000;
 const STALE_CART_MS = 7 * 24 * 60 * 60 * 1000;
+/** How long a sent location request is remembered, so a delivery failure Meta reports later can fall back to text. */
+const LOCATION_REQUEST_TRACK_MS = 60 * 60 * 1000;
 
-/** Products per CATALOGUE page; Previous and Next rows are added on top (NavigationList caps at 20). */
+/** Products per CATALOGUE page; the Search, Previous and Next rows are added on top (NavigationList caps at 20). */
 const PRODUCTS_PER_PAGE = 15;
 /** BASKET shows the 20 most recent lines (NavigationList caps at 20). */
 const BASKET_LINES_SHOWN = 20;
@@ -110,8 +113,28 @@ const LIMIT = {
   optionDescription: 300,
   subheading: 80,
   caption: 409,
+  body: 4096,
+  footerCaption: 15,
   input: 200,
 };
+
+/** Basket lines listed one by one in the CHECKOUT order summary; the rest are summed into one line. */
+const CHECKOUT_SUMMARY_LINES = 8;
+
+/**
+ * Search results are a CATALOGUE whose "category" is "search:<term>", so paging, PRODUCT's
+ * "Back to list" and BASKET's "Add more products" all re-run the search.
+ * Category ids are readable ids such as "veg_fruits", so they never start with this.
+ */
+const SEARCH_PREFIX = 'search:';
+/** Id of the "Search products" row on WELCOME and CATALOGUE. */
+const SEARCH_ROW_ID = 'search';
+const MIN_SEARCH_CHARS = 2;
+const MAX_SEARCH_CHARS = 40;
+/** Every word must match; more than this many words are ignored. */
+const MAX_SEARCH_WORDS = 5;
+/** WhatsApp's cap on Dropdown options; the SEARCH pick list shows this many products, A–Z. */
+const MAX_PICK_OPTIONS = 200;
 
 const REORDER_ID = 'reorder_last';
 /** Pseudo-category for products created before categories were required. */
@@ -154,7 +177,17 @@ function screen(name: string, data: Record<string, any>): Record<string, any> {
 }
 
 /** Steps a NavigationList row that is not about a product carries in its `sku` slot. */
-const NAV_STEPS = new Set(['open_category', 'open_basket', 'build_summary']);
+const NAV_STEPS = new Set(['open_category', 'open_basket', 'build_summary', 'open_search']);
+
+/** The search term a "search:<term>" category stands for, or null for a real category. */
+function searchTermOf(category: string): string | null {
+  return category.startsWith(SEARCH_PREFIX) ? category.slice(SEARCH_PREFIX.length) : null;
+}
+
+/** What the buyer typed, with spaces collapsed and cut to MAX_SEARCH_CHARS. */
+function normalizeSearch(value: unknown): string {
+  return typeof value === 'string' ? value.replace(/\s+/g, ' ').trim().slice(0, MAX_SEARCH_CHARS).trim() : '';
+}
 
 /**
  * NavigationList item payloads share one schema, so every key must be present.
@@ -188,6 +221,8 @@ export class FlowService implements OnModuleInit {
   private confirmationHandler: ConfirmationHandler | null = null;
   /** MoMo prompts started at place_order, by order id; the receipt waits for the outcome. */
   private readonly pendingPrompts = new Map<string, Promise<string>>();
+  /** Location requests sent recently, by WhatsApp message id (in memory: a restart forgets them). */
+  private readonly sentLocationRequests = new Map<string, { tenant: Tenant; buyerPhone: string; orderNumber: string }>();
 
   constructor(
     private readonly prisma: PrismaService,
@@ -338,6 +373,15 @@ export class FlowService implements OnModuleInit {
         }
         return this.catalogueScreen(tenant, cart, category, page);
 
+      case 'open_search':
+        return this.searchScreen(tenant, searchTermOf(category) ?? '', category);
+
+      case 'search': {
+        const term = normalizeSearch(data?.query);
+        if (term.length < MIN_SEARCH_CHARS) return this.searchScreen(tenant, term, category);
+        return this.catalogueScreen(tenant, cart, SEARCH_PREFIX + term, 1);
+      }
+
       case 'open_product':
         return this.productScreen(tenant, cart, text(data?.sku), text(data?.measure) || NONE, category, page);
 
@@ -373,12 +417,16 @@ export class FlowService implements OnModuleInit {
     const sku = text(data?.sku);
     switch (screen) {
       case 'WELCOME':
-        return 'open_category';
+        return sku === 'open_search' ? 'open_search' : 'open_category';
+      case 'SEARCH':
+        // The Search button sends the query; picking from the item list sends a product id.
+        return data?.query === undefined && sku && sku !== NONE ? 'open_product' : 'search';
       case 'PRODUCT':
         // The footer sends the chosen quantity; "Back to list" sends only category and page.
         return data?.qty !== undefined ? 'add_line' : 'open_category';
       case 'CHECKOUT':
-        return 'place_order';
+        // "Place order" always sends cart_id; the "Edit basket" link never does.
+        return data?.cart_id !== undefined ? 'place_order' : 'open_basket';
       case 'CATALOGUE':
       case 'BASKET':
         if (NAV_STEPS.has(sku)) return sku;
@@ -455,18 +503,64 @@ export class FlowService implements OnModuleInit {
   /**
    * Ask the buyer to drop a pin on the delivery address with WhatsApp's native map picker.
    * The pin arrives later as a `location` message and is attached by OrderService.attachLocation.
+   * If WhatsApp refuses the location request (some clients and hidden-number buyers can't
+   * show it), the same ask goes out as plain text: a pin shared from the 📎 menu works too.
+   * Resolves to how the buyer was asked, or null when neither message could be sent.
    */
-  async requestDeliveryLocation(tenant: Tenant, buyerPhone: string, order: { id: string; orderNumber: string }) {
-    if (!tenant.whatsappPhoneNumberId) return;
+  async requestDeliveryLocation(
+    tenant: Tenant,
+    buyerPhone: string,
+    order: { id: string; orderNumber: string },
+  ): Promise<'location_request' | 'text' | null> {
+    if (!tenant.whatsappPhoneNumberId) return null;
+    let how: 'location_request' | 'text' | null = null;
     try {
-      await this.wabaService.sendLocationRequest(
+      const { messageId } = await this.wabaService.sendLocationRequest(
         tenant.whatsappPhoneNumberId,
         buyerPhone,
         `Tap below and drop the pin on the *delivery* address for order ${order.orderNumber} so our rider finds you fast.`,
       );
-      await this.orderService.markLocationRequested(order.id);
+      this.rememberLocationRequest(messageId, { tenant, buyerPhone, orderNumber: order.orderNumber });
+      how = 'location_request';
     } catch (err: any) {
-      this.logger.warn(`Failed to request location for ${order.orderNumber}: ${err?.message || err}`);
+      this.logger.warn(`Location request for ${order.orderNumber} refused (${err?.message || err}); asking by text.`);
+      how = (await this.askForPinByText(tenant, buyerPhone, order.orderNumber)) ? 'text' : null;
+    }
+    // Only an order that asked can receive the pin (see OrderService.attachLocation).
+    if (how) await this.orderService.markLocationRequested(order.id);
+    return how;
+  }
+
+  /**
+   * Meta reported that a message could not be delivered. If it was a location request,
+   * ask for the pin by text instead. Returns true when the text fallback went out.
+   */
+  async handleFailedDelivery(messageId: string): Promise<boolean> {
+    const request = this.sentLocationRequests.get(messageId);
+    if (!request) return false;
+    this.sentLocationRequests.delete(messageId);
+    this.logger.warn(`Location request for ${request.orderNumber} was not delivered; asking by text.`);
+    return this.askForPinByText(request.tenant, request.buyerPhone, request.orderNumber);
+  }
+
+  private rememberLocationRequest(messageId: string, request: { tenant: Tenant; buyerPhone: string; orderNumber: string }) {
+    if (!messageId) return;
+    this.sentLocationRequests.set(messageId, request);
+    setTimeout(() => this.sentLocationRequests.delete(messageId), LOCATION_REQUEST_TRACK_MS).unref?.();
+  }
+
+  private async askForPinByText(tenant: Tenant, buyerPhone: string, orderNumber: string): Promise<boolean> {
+    try {
+      await this.wabaService.sendTextMessage(
+        tenant.whatsappPhoneNumberId!,
+        buyerPhone,
+        `📍 Please send your *delivery* location for order ${orderNumber} so our rider finds you fast:\n` +
+          'tap 📎 (or ➕) → *Location*, then send your current location or pick the spot on the map.',
+      );
+      return true;
+    } catch (err: any) {
+      this.logger.warn(`Could not ask for the pin for ${orderNumber} by text either: ${err?.message || err}`);
+      return false;
     }
   }
 
@@ -599,10 +693,28 @@ export class FlowService implements OnModuleInit {
 
   private async categoryTitle(categoryId: string): Promise<string> {
     if (categoryId === ALL_PRODUCTS_ID) return 'All products';
+    const term = searchTermOf(categoryId);
+    if (term !== null) return `Results for "${term}"`;
     return (await this.categoryService.titleOf(categoryId)) ?? 'Products';
   }
 
   private categoryWhere(tenantId: string, categoryId: string): Prisma.ProductWhereInput {
+    const term = searchTermOf(categoryId);
+    if (term !== null) {
+      // Every word must appear in the name, the note or the category title (any case).
+      const words = term.split(' ').filter(Boolean).slice(0, MAX_SEARCH_WORDS);
+      return {
+        tenantId,
+        inStock: true,
+        AND: words.map((word) => ({
+          OR: [
+            { name: { contains: word, mode: 'insensitive' } },
+            { note: { contains: word, mode: 'insensitive' } },
+            { category: { title: { contains: word, mode: 'insensitive' } } },
+          ],
+        })),
+      };
+    }
     return categoryId === ALL_PRODUCTS_ID ? { tenantId, inStock: true } : { tenantId, inStock: true, categoryId };
   }
 
@@ -622,7 +734,8 @@ export class FlowService implements OnModuleInit {
       this.banners.flowThumbnailBase64(tenant),
     ]);
     const shopRow = logo ? this.shopRow(tenant, logo) : null;
-    const options = (reorder ? [reorder, ...categories] : categories).slice(0, MAX_WELCOME_OPTIONS - (shopRow ? 1 : 0));
+    const searchRow = this.searchRow(ALL_PRODUCTS_ID, 1);
+    const options = (reorder ? [reorder, ...categories] : categories).slice(0, MAX_WELCOME_OPTIONS - 1 - (shopRow ? 1 : 0));
 
     // A NavigationList, so choosing where to start is a single tap.
     const rows = options.map((option) => ({
@@ -636,7 +749,63 @@ export class FlowService implements OnModuleInit {
     return screen('WELCOME', {
       shop_name: shopName(tenant),
       shop_tagline: shopTagline(tenant),
-      categories: shopRow ? [shopRow, ...rows] : rows,
+      categories: shopRow ? [shopRow, searchRow, ...rows] : [searchRow, ...rows],
+    });
+  }
+
+  // ───────────────────────── SEARCH ─────────────────────────
+
+  /**
+   * The "Search products" row. A NavigationList cannot share its screen with a text box,
+   * so the row opens the SEARCH screen; results come back as a CATALOGUE.
+   */
+  private searchRow(category: string, page: number, resultCount?: number) {
+    const term = searchTermOf(category);
+    let metadata = 'Find an item by name';
+    if (term !== null) {
+      metadata = resultCount === 0 ? `Nothing found for "${term}" · tap to try another word` : `Showing results for "${term}"`;
+    }
+    return {
+      id: SEARCH_ROW_ID,
+      'main-content': {
+        title: term !== null ? '🔍 Search again' : '🔍 Search products',
+        metadata: truncate(metadata, LIMIT.navMetadata),
+      },
+      'on-click-action': navAction('open_search', { category, page }),
+    };
+  }
+
+  /**
+   * The search box, pre-filled with the last term so a typo is quick to fix, with a
+   * "We sell" line (the shop's categories) and a pick list of every in-stock product so
+   * buyers who don't know what to type can see what is on offer and open an item directly.
+   * `category` is where "Back to list" on a picked product returns to.
+   */
+  private async searchScreen(tenant: Tenant, term: string, category: string) {
+    const [categories, products] = await Promise.all([
+      this.categoryService.listInStock(tenant.id),
+      this.prisma.product.findMany({
+        where: { tenantId: tenant.id, inStock: true },
+        include: { measures: true },
+        orderBy: { name: 'asc' },
+        take: MAX_PICK_OPTIONS,
+      }),
+    ]);
+
+    // Categories say the most in the fewest words; a shop without any lists product names.
+    const sold = categories.length ? categories.map((c) => c.title).join(' · ') : products.map((p) => p.name).join(', ');
+    const pickOptions: Option[] = products.map((product) => ({
+      id: product.id,
+      title: truncate(product.name, LIMIT.optionTitle),
+      description: `from ${ghsCompact(Math.min(...this.measuresOf(product).map((m) => m.price)))}`,
+    }));
+
+    return screen('SEARCH', {
+      init_query: term,
+      category,
+      shop_summary: truncate(sold || 'Nothing in stock right now.', LIMIT.caption),
+      // A Dropdown needs at least one option.
+      products: pickOptions.length ? pickOptions : [{ id: NONE, title: 'Nothing in stock yet' }],
     });
   }
 
@@ -727,27 +896,45 @@ export class FlowService implements OnModuleInit {
     ]);
 
     const subtotal = this.subtotal(lines);
-    const basketBar = {
-      id: 'basket',
-      'main-content': {
-        title: truncate(title, LIMIT.navTitle),
-        description: `page ${page} of ${totalPages}`,
-        metadata: lines.length ? 'Tap here to review your basket and check out' : 'Your basket is empty',
-      },
-      ...(lines.length
-        ? {
-            end: { title: ghsCompact(subtotal, LIMIT.navEnd) },
-            badge: truncate(`${lines.length} in basket`, LIMIT.badge),
-          }
-        : {}),
-      'on-click-action': navAction('open_basket', { category, page }),
-    };
+    // A list row cannot be a button, so with something in the basket the row leads with
+    // what tapping it does, a green cart and a "Tap to checkout" badge; where the buyer is
+    // (category and page) moves to the small print.
+    const location = `${title} · page ${page} of ${totalPages}`;
+    const basketBar = lines.length
+      ? {
+          id: 'basket',
+          'main-content': {
+            title: 'View basket & checkout',
+            description: truncate(`${plural(lines.length, 'item')} in basket`, LIMIT.navDescription),
+            metadata: truncate(`${location} · tap here to review your basket and pay`, LIMIT.navMetadata),
+          },
+          start: { image: BASKET_ICON, 'alt-text': 'Basket' },
+          end: { title: ghsCompact(subtotal, LIMIT.navEnd) },
+          badge: 'Tap to checkout',
+          'on-click-action': navAction('open_basket', { category, page }),
+        }
+      : {
+          id: 'basket',
+          'main-content': {
+            title: truncate(title, LIMIT.navTitle),
+            description: `page ${page} of ${totalPages}`,
+            metadata: 'Your basket is empty',
+          },
+          start: { image: BASKET_EMPTY_ICON, 'alt-text': 'Basket' },
+          'on-click-action': navAction('open_basket', { category, page }),
+        };
 
     // Thumbnails only for products with a photo; rows without one simply have no image.
     const thumbnails = await Promise.all(products.map((product) => this.productPhotos.flowThumbnailBase64(product)));
     const rows: Record<string, any>[] = products.map((product, i) => this.productRow(product, lines, category, page, thumbnails[i]));
 
-    if (rows.length === 0) {
+    const searching = searchTermOf(category) !== null;
+    // Search sits first in the product list, not the basket bar: that bar's row has `end`
+    // whenever the basket is not empty, and a list must have `end` on every row or none.
+    rows.unshift(this.searchRow(category, page, total));
+
+    // An empty search needs no extra row: the search row already says nothing was found.
+    if (products.length === 0 && !searching) {
       rows.push({
         id: NONE,
         'main-content': { title: 'No products here yet', description: 'try another' },
@@ -885,12 +1072,15 @@ export class FlowService implements OnModuleInit {
     const checkoutBar = lines.length
       ? {
           id: 'checkout',
+          // A list row cannot be a button, so the icon, the wording and the badge make it
+          // read as the obvious next tap.
           'main-content': {
-            title: 'Checkout',
+            title: 'Proceed to checkout',
             description: `Total ${ghsCompact(this.subtotal(lines), LIMIT.navDescription - 6)}`,
-            metadata: 'Delivery and payment are next',
+            metadata: truncate(`${plural(lines.length, 'item')} · tap here to enter delivery and pay`, LIMIT.navMetadata),
           },
-          badge: truncate(plural(lines.length, 'item'), LIMIT.badge),
+          start: { image: CHECKOUT_ICON, 'alt-text': 'Checkout' },
+          badge: 'Tap to order',
           'on-click-action': navAction('build_summary', { category, page: 1 }),
         }
       : {
@@ -919,6 +1109,7 @@ export class FlowService implements OnModuleInit {
     const addMore = {
       id: 'more',
       'main-content': { title: 'Add more products', description: 'back to the shop' },
+      start: { image: ADD_MORE_ICON, 'alt-text': 'Add more products' },
       'on-click-action': navAction('open_category', { category, page: 1 }),
     };
 
@@ -978,19 +1169,40 @@ export class FlowService implements OnModuleInit {
     }
 
     const totals = this.checkoutTotals(tenant, lines);
-    const fee = totals.deliveryFee > 0 ? ` incl. ${ghsCompact(totals.deliveryFee)} delivery` : '';
-    const summary = `Total ${ghsCompact(totals.total)}${fee} · ${plural(lines.length, 'item')}`;
     const areas = this.deliveryAreas(tenant);
     const slots = this.deliverySlots(tenant);
 
     return screen('CHECKOUT', {
       cart_id: cart.id,
-      total_text: truncate(notice ? `${notice} · ${summary}` : summary, LIMIT.subheading),
+      category,
+      has_notice: Boolean(notice),
+      notice: notice ?? '',
+      order_summary: this.orderSummary(lines, totals),
+      items_caption: truncate(plural(lines.length, 'item'), LIMIT.footerCaption),
+      total_caption: ghsCompact(totals.total, LIMIT.footerCaption),
       delivery_areas: areas,
       delivery_slots: slots,
       payment_methods: PAYMENT_METHODS,
       ...(await this.checkoutPrefill(tenant.id, cart.buyerPhone, areas, slots, submitted)),
     });
+  }
+
+  /**
+   * The "Your order" block at the top of CHECKOUT: one line per basket line (newest first,
+   * the rest summed up), then delivery and the total, so the buyer sees what they pay for.
+   */
+  private orderSummary(lines: PricedLine[], totals: { deliveryFee: number; total: number }): string {
+    const newestFirst = [...lines].reverse();
+    const shown = newestFirst.slice(0, CHECKOUT_SUMMARY_LINES).map(
+      (line) => `${line.product.name} · ${this.quantityLabel(line)} · ${ghsCompact(line.total)}`,
+    );
+    const hidden = newestFirst.slice(CHECKOUT_SUMMARY_LINES);
+    if (hidden.length) {
+      shown.push(`+ ${plural(hidden.length, 'more item')} · ${ghsCompact(hidden.reduce((sum, l) => sum + l.total, 0))}`);
+    }
+    if (totals.deliveryFee > 0) shown.push(`Delivery · ${ghsCompact(totals.deliveryFee)}`);
+    shown.push(`Total · ${ghsCompact(totals.total)}`);
+    return truncate(shown.join('\n'), LIMIT.body);
   }
 
   /**
@@ -1018,7 +1230,9 @@ export class FlowService implements OnModuleInit {
     const lastPaidCash = last?.paymentMethod === PaymentMethod.COD;
     return {
       init_full_name: typed('full_name') || last?.customerName || '',
-      init_area: offered(areas, submitted.delivery_area) ?? areas.find((a) => a.title === last?.deliveryArea)?.id ?? areas[0].id,
+      // Never guessed: the buyer always picks the area. Only kept when CHECKOUT is shown
+      // again after a validation error, so they don't have to pick it twice.
+      init_area: offered(areas, submitted.delivery_area) ?? '',
       init_landmark: typed('landmark') || last?.landmark || '',
       init_phone: typed('rider_phone') || (last?.contactPhone ? toGhanaLocal(last.contactPhone) : whatsapp),
       init_slot: offered(slots, submitted.delivery_slot) ?? slots[0].id,
@@ -1134,18 +1348,21 @@ export class FlowService implements OnModuleInit {
     const total = ghsCompact(order.totalAmount);
     const momo = order.paymentMethod === PaymentMethod.MOMO;
 
+    // What the buyer must do, in order. The MoMo prompt goes out as the order is placed;
+    // the pin request is sent when they tap Done.
+    const steps = [
+      momo
+        ? `1. 📲 Approve the MoMo prompt on ${formatGhanaLocal(order.paymentPhone ?? '')}`
+        : `1. 💵 Have ${total} ready in cash for the rider`,
+      '2. 📍 Tap the button below, then share your location pin in the chat',
+      `3. 🛵 Delivery: ${order.deliverySlot || 'as soon as possible'}`,
+    ];
+
     return screen('ORDER_RECEIVED', {
       order_id: order.orderNumber,
-      total_text: total,
-      eta_text: truncate(`Delivery: ${order.deliverySlot || 'as soon as possible'}.`, LIMIT.subheading),
-      // The MoMo prompt goes out as the order is placed; the pin request follows Done.
-      payment_note: truncate(
-        momo
-          ? `Approve the MoMo prompt we sent to ${formatGhanaLocal(order.paymentPhone ?? '')}.`
-          : `Pay ${total} in cash to the rider.`,
-        LIMIT.subheading,
-      ),
-      next_step: momo ? 'Then tap Done and share your location pin.' : 'Tap Done and share your location pin so the rider finds you.',
+      // One value per text: WhatsApp only fills in a binding that is the whole string.
+      order_line: `Order ${order.orderNumber} · ${total}`,
+      steps: truncate(steps.join('\n'), LIMIT.body),
     });
   }
 }
