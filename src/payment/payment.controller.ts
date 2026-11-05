@@ -13,6 +13,7 @@ import type { Request } from 'express';
 import { ghCedis } from '../common/money.util.js';
 import { CANCELLED_ORDER_STATUSES, UNPAID_ORDER_STATUSES } from '../order/order-status-groups.js';
 import { OrderService } from '../order/order.service.js';
+import { PayoutService } from '../payout/payout.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { PaystackService } from './paystack.service.js';
 
@@ -24,6 +25,7 @@ export class PaymentController {
     private readonly paystackService: PaystackService,
     private readonly orderService: OrderService,
     private readonly wabaService: WabaService,
+    private readonly payouts: PayoutService,
   ) {}
 
   /**
@@ -44,6 +46,12 @@ export class PaymentController {
 
     const { event, data } = req.body ?? {};
     this.logger.log(`Paystack webhook ${event} for reference ${data?.reference}`);
+
+    if (typeof event === 'string' && event.startsWith('transfer.')) {
+      // A vendor payout landed, failed or was reversed.
+      const known = await this.payouts.handleTransferEvent(event, data);
+      return { status: known ? 'PROCESSED' : 'UNKNOWN_TRANSFER', event };
+    }
 
     if (event !== 'charge.success') {
       return { status: 'IGNORED', event };
@@ -88,7 +96,7 @@ export class PaymentController {
       .filter(Boolean)
       .join(' | ');
 
-    if (!(await this.orderService.markPaid(order.id, note))) {
+    if (!(await this.orderService.markPaid(order.id, note, paidPesewas))) {
       // A duplicate webhook (or a status change) got there first.
       return { status: 'ALREADY_PAID', reference };
     }

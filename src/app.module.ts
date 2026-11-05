@@ -10,6 +10,7 @@ import { ChatModule } from './chat/chat.module.js';
 import { FlowModule } from './flow/flow.module.js';
 import { OrderModule } from './order/order.module.js';
 import { PaymentModule } from './payment/payment.module.js';
+import { PayoutModule } from './payout/payout.module.js';
 import { StorageModule } from './storage/storage.module.js';
 import { NotificationModule } from './notification/notification.module.js';
 import { AdminModule } from './admin/admin.module.js';
@@ -25,6 +26,7 @@ import { AdminModule } from './admin/admin.module.js';
     FlowModule,
     OrderModule,
     PaymentModule,
+    PayoutModule,
     StorageModule,
     NotificationModule,
     AdminModule,

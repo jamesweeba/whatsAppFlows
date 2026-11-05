@@ -7,6 +7,7 @@ describe('OrderService', () => {
   let service: OrderService;
   let prisma: any;
   let waba: any;
+  let payouts: any;
 
   beforeEach(() => {
     prisma = {
@@ -26,7 +27,8 @@ describe('OrderService', () => {
       sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-1' }),
       sendInteractiveButtons: vi.fn().mockResolvedValue({ messageId: 'wamid-2' }),
     };
-    service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba);
+    payouts = { settleOrder: vi.fn().mockResolvedValue(null) };
+    service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba, payouts);
   });
 
   it('creates an order with line items and calculates total amount including delivery fee', async () => {

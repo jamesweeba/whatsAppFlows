@@ -7,6 +7,7 @@ describe('PaymentController', () => {
   let paystack: any;
   let orders: any;
   let waba: any;
+  let payouts: any;
 
   const webhook = (data: Record<string, any>, event = 'charge.success'): any => ({
     body: { event, data },
@@ -18,7 +19,8 @@ describe('PaymentController', () => {
     orders = { findByOrderNumber: vi.fn(), markPaid: vi.fn().mockResolvedValue(true) };
     waba = { sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-confirm' }) };
 
-    controller = new PaymentController(paystack, orders, waba);
+    payouts = { handleTransferEvent: vi.fn().mockResolvedValue(true) };
+    controller = new PaymentController(paystack, orders, waba, payouts);
   });
 
   it('updates order status to PAID and sends WhatsApp confirmation on charge.success', async () => {
@@ -38,7 +40,7 @@ describe('PaymentController', () => {
     );
 
     expect(result).toEqual({ status: 'PROCESSED', reference: 'MX-4567' });
-    expect(orders.markPaid).toHaveBeenCalledWith('order-123', expect.stringContaining('GH₵35.00 via mobile_money'));
+    expect(orders.markPaid).toHaveBeenCalledWith('order-123', expect.stringContaining('GH₵35.00 via mobile_money'), 3500);
     expect(waba.sendTextMessage).toHaveBeenCalledWith('phone-id-123', '+233240000000', expect.stringContaining('Payment Confirmed'));
   });
 

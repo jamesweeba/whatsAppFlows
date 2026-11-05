@@ -188,13 +188,16 @@ export class AdminOrdersService {
       include: {
         items: { orderBy: { createdAt: 'asc' } },
         tenant: { select: { id: true, refNumber: true, name: true, market: true, status: true, whatsappNumber: true } },
+        ledger: { select: { type: true, amount: true, createdAt: true } },
       },
     });
     if (!order) {
       throw new NotFoundException('Order not found.');
     }
     const { refNumber, ...tenant } = order.tenant;
-    return { ...order, tenant: { ...tenant, ref: formatVendorRef(refNumber) } };
+    const { ledger, ...rest } = order;
+    // What the order did to the vendor's balance: their earning (paid orders) or the commission they owe (cash).
+    return { ...rest, tenant: { ...tenant, ref: formatVendorRef(refNumber) }, settlement: ledger[0] ?? null };
   }
 
   /**

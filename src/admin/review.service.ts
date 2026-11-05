@@ -12,7 +12,7 @@ import { bannerState } from '../tenant/shop-banner.service.js';
 import { withPhotoUrl } from '../product/product-photo.service.js';
 
 /** States a reviewer can decide on. */
-const REVIEWABLE: TenantStatus[] = [TenantStatus.STOCKED, TenantStatus.UNDER_REVIEW];
+export const REVIEWABLE: TenantStatus[] = [TenantStatus.STOCKED, TenantStatus.UNDER_REVIEW];
 const PRODUCT_SAMPLE_SIZE = 10;
 
 export const PRODUCT_STOCK_FILTERS = ['all', 'in', 'out'] as const;

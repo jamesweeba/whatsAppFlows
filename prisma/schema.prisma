@@ -53,6 +53,11 @@ enum AuditAction {
   BANNER_APPROVED
   BANNER_REJECTED
   BANNER_REMOVED
+  PAYOUT_RETRIED
+  PAYOUT_SENT
+  PAYOUTS_PAUSED
+  PAYOUTS_RESUMED
+  ORDER_RELEASED
 }
 
 /// A pool number's state. COOLING numbers count as FREE once released over 7 days ago.
@@ -133,27 +138,27 @@ enum OrderStatus {
 }
 
 model Tenant {
-  id                    String           @id @default(uuid())
+  id                    String              @id @default(uuid())
   /// Sequential vendor number, shown to admins as MX-V-0001.
-  refNumber             Int              @unique @default(autoincrement())
+  refNumber             Int                 @unique @default(autoincrement())
   name                  String
-  slug                  String           @unique
+  slug                  String              @unique
   /// The buyer-facing number. Set on approval from the pool (or by own-number OTP onboarding).
-  whatsappNumber        String?          @unique
-  countryCode           String           @default("233")
+  whatsappNumber        String?             @unique
+  countryCode           String              @default("233")
   /// Meta's id for whatsappNumber; routes webhooks and sends replies. Kept in sync with the
   /// assigned WhatsappNumber row on approve and release.
-  whatsappPhoneNumberId String?          @unique
-  wabaStatus            WabaStatus       @default(PENDING_REGISTRATION)
+  whatsappPhoneNumberId String?             @unique
+  wabaStatus            WabaStatus          @default(PENDING_REGISTRATION)
   wabaRegisteredAt      DateTime?
   description           String?
-  deliveryFee           Float            @default(5)
+  deliveryFee           Float               @default(5)
   pickupNote            String?
   /// Delivery areas offered on the Flow CHECKOUT screen: [{ id, title }].
   deliveryAreas         Json?
   /// Delivery slots offered on the Flow CHECKOUT screen: [{ id, title, description? }]. Always includes "asap".
   deliverySlots         Json?
-  status                TenantStatus     @default(PENDING)
+  status                TenantStatus        @default(PENDING)
   /// When the shop last entered STOCKED; the review queue is ordered by it.
   submittedAt           DateTime?
   /// Shop owner details for KYC. Nullable only for shops created before onboarding existed.
@@ -171,20 +176,29 @@ model Tenant {
   bannerPendingAt       DateTime?
   /// Why an admin turned down the last uploaded banner (shown to the vendor until they upload again).
   bannerRejectedReason  String?
+  /// Admins can stop withdrawals from this shop (e.g. during a dispute); money keeps accruing.
+  payoutsPaused         Boolean             @default(false)
+  payoutsPausedReason   String?
+  /// Paystack transfer recipient for momoNumber, created on the first payout.
+  paystackRecipientCode String?
+  /// The MoMo number the recipient above was made for (a new number needs a new recipient).
+  paystackRecipientFor  String?
   /// The reviewer's due-diligence ticks while UNDER_REVIEW; cleared on each decision.
   reviewChecks          Json?
   documents             VendorDocument[]
   reviews               VendorReview[]
   notes                 VendorNote[]
+  ledger                VendorLedgerEntry[]
+  payouts               VendorPayout[]
   number                WhatsappNumber?
-  userId                String           @unique
-  user                  User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  userId                String              @unique
+  user                  User                @relation(fields: [userId], references: [id], onDelete: Cascade)
   products              Product[]
   chatSessions          ChatSession[]
   orders                Order[]
   flowCarts             FlowCart[]
-  createdAt             DateTime         @default(now())
-  modifiedAt            DateTime         @updatedAt
+  createdAt             DateTime            @default(now())
+  modifiedAt            DateTime            @updatedAt
 }
 
 model ChatSession {
@@ -379,21 +393,21 @@ model WhatsappNumber {
 }
 
 model Order {
-  id                  String         @id @default(uuid())
-  orderNumber         String         @unique @default(uuid())
+  id                  String              @id @default(uuid())
+  orderNumber         String              @unique @default(uuid())
   tenantId            String
-  tenant              Tenant         @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  tenant              Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   buyerPhone          String
   sessionId           String?
-  session             ChatSession?   @relation(fields: [sessionId], references: [id], onDelete: SetNull)
-  status              OrderStatus    @default(PENDING)
+  session             ChatSession?        @relation(fields: [sessionId], references: [id], onDelete: SetNull)
+  status              OrderStatus         @default(PENDING)
   totalAmount         Float
   paymentMethod       PaymentMethod?
   paymentPhone        String?
   momoNetwork         String?
   fulfillment         Fulfillment?
   deliveryAddress     String?
-  deliveryFee         Float          @default(0)
+  deliveryFee         Float               @default(0)
   customerName        String?
   deliveryArea        String?
   landmark            String?
@@ -411,14 +425,19 @@ model Order {
   locationReceivedAt  DateTime?
   /// When the buyer tapped "I got my order" on the out-for-delivery message (moves it to DELIVERED).
   deliveryConfirmedAt DateTime?
+  /// Set when Paystack confirmed the buyer's payment (the money is in MarketiX's Paystack balance).
+  paystackPaidAt      DateTime?
+  /// What Paystack reported collecting, in pesewas.
+  paystackAmount      Int?
   riderName           String?
   riderPhone          String?
-  flowCartId          String?        @unique
-  flowCart            FlowCart?      @relation(fields: [flowCartId], references: [id], onDelete: SetNull)
+  flowCartId          String?             @unique
+  flowCart            FlowCart?           @relation(fields: [flowCartId], references: [id], onDelete: SetNull)
   notes               String?
   items               OrderItem[]
-  createdAt           DateTime       @default(now())
-  updatedAt           DateTime       @updatedAt
+  ledger              VendorLedgerEntry[]
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
 }
 
 model OrderItem {
@@ -457,4 +476,86 @@ model AuditLog {
   @@index([tenantId, createdAt])
   @@index([actorId, createdAt])
   @@index([action, createdAt])
+}
+
+enum LedgerEntryType {
+  /// Vendor's share of a paid (MoMo or card) order once the buyer confirmed delivery: items less commission, plus delivery fee.
+  ORDER_EARNING
+  /// MarketiX's commission on a cash-on-delivery order, owed by the vendor (negative).
+  CASH_COMMISSION
+  /// Money sent to the vendor's MoMo (negative).
+  PAYOUT
+  /// A payout that failed or was reversed, credited back (positive).
+  PAYOUT_REVERSAL
+}
+
+/// Money MarketiX owes each vendor, in pesewas: positive entries are owed to the vendor,
+/// negative ones were paid out or are owed by the vendor. The balance is the sum.
+/// Rows are never edited or deleted; corrections are new rows.
+model VendorLedgerEntry {
+  id          String          @id @default(uuid())
+  tenantId    String
+  tenant      Tenant          @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  type        LedgerEntryType
+  amount      Int
+  /// The order this entry is for (null once the order is deleted; orderNumber keeps the reference).
+  orderId     String?
+  order       Order?          @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  orderNumber String?
+  payoutId    String?
+  payout      VendorPayout?   @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  /// For orders: { items, commission, deliveryFee } in pesewas, so statements can show the sums.
+  details     Json?
+  createdAt   DateTime        @default(now())
+
+  /// An order earns, or owes commission, once.
+  @@unique([orderId, type])
+  @@index([tenantId, createdAt])
+}
+
+enum PayoutStatus {
+  /// Created; the transfer request is being sent to Paystack.
+  PENDING
+  /// Paystack accepted the transfer; waiting for its success or failure webhook.
+  PROCESSING
+  SUCCESS
+  /// Failed or reversed; the amount is back in the vendor's balance. Admins can retry.
+  FAILED
+}
+
+/// Who started a payout.
+enum PayoutSource {
+  /// The vendor withdrew from their balance (once per Accra day).
+  VENDOR
+  /// An admin's "Pay now" or "Retry".
+  ADMIN
+  /// The old 7:00 am daily run (before withdrawals replaced it).
+  AUTOMATIC
+}
+
+/// One Paystack transfer from a vendor's balance to their MoMo wallet.
+model VendorPayout {
+  id            String              @id @default(uuid())
+  tenantId      String
+  tenant        Tenant              @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Pesewas.
+  amount        Int
+  status        PayoutStatus        @default(PENDING)
+  /// Our transfer reference, sent to Paystack and echoed in its webhooks.
+  reference     String              @unique
+  transferCode  String?
+  momoNumber    String
+  momoName      String?
+  source        PayoutSource        @default(ADMIN)
+  /// The vendor's user (withdrawals) or the admin who sent or retried it; null for automatic payouts.
+  initiatedById String?
+  failureReason String?
+  paidAt        DateTime?
+  entries       VendorLedgerEntry[]
+  createdAt     DateTime            @default(now())
+  updatedAt     DateTime            @updatedAt
+
+  @@index([tenantId, createdAt])
+  @@index([status, createdAt])
+  @@index([tenantId, source, createdAt])
 }

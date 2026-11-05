@@ -1,14 +1,15 @@
-import { Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { OrderStatus, Prisma } from '@prisma/client';
+import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { OrderStatus, PaymentMethod, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 import { ghCedis } from '../common/money.util.js';
 import { isHiddenNumber, toE164 } from '../common/phone.util.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { TenantService } from '../tenant/tenant.service.js';
 import { WabaService } from '../waba/waba.service.js';
+import { PayoutService } from '../payout/payout.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
 import { UpdateOrderStatusDto } from './dto/update-order-status.dto.js';
-import { UNPAID_ORDER_STATUSES } from './order-status-groups.js';
+import { DELIVERED_ORDER_STATUSES, PAID_ORDER_STATUSES, UNPAID_ORDER_STATUSES } from './order-status-groups.js';
 import { lineTotal, normalizeQuantity, orderTotals } from './order-totals.util.js';
 
 /** Characters used in order references; ambiguous glyphs (0/O, 1/I) are excluded. */
@@ -44,6 +45,24 @@ export interface DeliveryLocation {
   address?: string;
 }
 
+export const PAYSTACK_ONLY_MESSAGE =
+  'Only Paystack can mark this order as paid: the buyer was sent a MoMo prompt. It changes to Paid by itself once they approve it on their phone.';
+
+/**
+ * Once a Paystack MoMo prompt went out, the order becomes paid only when Paystack confirms the
+ * money arrived, never by hand: otherwise a vendor could pack and send an order MarketiX was
+ * never paid for. Cash orders, orders the vendor took and collected for themselves (no prompt),
+ * orders Paystack confirmed, and orders already past payment are not affected.
+ */
+export function canMarkPaidByHand(
+  order: { status: OrderStatus; paymentMethod: PaymentMethod | null; paymentRequestedAt: Date | null; paystackPaidAt: Date | null },
+  next: OrderStatus,
+): boolean {
+  if (order.paymentMethod === PaymentMethod.COD || !order.paymentRequestedAt || order.paystackPaidAt) return true;
+  if (!PAID_ORDER_STATUSES.includes(next)) return true; // e.g. cancelling an unpaid order
+  return PAID_ORDER_STATUSES.includes(order.status); // already moving through delivery
+}
+
 @Injectable()
 export class OrderService {
   private readonly logger = new Logger(OrderService.name);
@@ -52,6 +71,7 @@ export class OrderService {
     private readonly prisma: PrismaService,
     private readonly tenantService: TenantService,
     private readonly wabaService: WabaService,
+    private readonly payouts: PayoutService,
   ) {}
 
   /**
@@ -159,10 +179,11 @@ export class OrderService {
    * can't pull an order that has moved on (or was cancelled) back to PAID. Returns false
    * when nothing changed.
    */
-  async markPaid(orderId: string, note: string): Promise<boolean> {
+  async markPaid(orderId: string, note: string, amountPesewas: number): Promise<boolean> {
     const { count } = await this.prisma.order.updateMany({
       where: { id: orderId, status: { in: UNPAID_ORDER_STATUSES } },
-      data: { status: OrderStatus.PAID, notes: note },
+      // paystackPaidAt: the money is in MarketiX's Paystack balance, so the vendor can be paid from it.
+      data: { status: OrderStatus.PAID, notes: note, paystackPaidAt: new Date(), paystackAmount: amountPesewas },
     });
     return count === 1;
   }
@@ -293,6 +314,7 @@ export class OrderService {
    */
   async updateStatus(userId: string, orderId: string, dto: UpdateOrderStatusDto) {
     const previous = await this.findOwnedOrder(userId, orderId);
+    if (!canMarkPaidByHand(previous, dto.status)) throw new BadRequestException(PAYSTACK_ONLY_MESSAGE);
     const order = await this.prisma.order.update({
       where: { id: orderId },
       data: {
@@ -306,6 +328,7 @@ export class OrderService {
 
     if (previous.status !== order.status) {
       await this.notifyStatusChange(order);
+      if (DELIVERED_ORDER_STATUSES.includes(order.status)) this.settle(order.id);
     }
     const { tenant: _, ...result } = order;
     return result;
@@ -329,6 +352,14 @@ export class OrderService {
     } catch (err: any) {
       this.logger.warn(`Failed to send ${order.status} update for ${order.orderNumber}: ${err?.message || err}`);
     }
+  }
+
+  /**
+   * Update the vendor's balance for a delivered order and pay them if due. In the
+   * background: a slow Paystack call must not hold up the vendor or the buyer's reply.
+   */
+  private settle(orderId: string) {
+    this.payouts.settleOrder(orderId).catch((err: any) => this.logger.error(`Payout step for order ${orderId} failed: ${err?.message || err}`));
   }
 
   /** "On its way" with an "I got my order" button; plain text if WhatsApp refuses the button. */
@@ -365,6 +396,7 @@ export class OrderService {
       });
       if (count === 1) {
         this.logger.log(`Buyer confirmed receipt of ${orderNumber}; marked DELIVERED.`);
+        this.settle(order.id);
         return `✅ Thank you! Order *${orderNumber}* is marked as received. Enjoy, and thanks for shopping with us!`;
       }
       return this.confirmReceivedByBuyer(tenantId, buyerPhone, orderNumber);
@@ -373,6 +405,7 @@ export class OrderService {
     if (order.status === OrderStatus.DELIVERED || order.status === OrderStatus.COMPLETED) {
       if (!order.deliveryConfirmedAt) {
         await this.prisma.order.update({ where: { id: order.id }, data: { deliveryConfirmedAt: new Date() } });
+        this.settle(order.id);
       }
       return `✅ Order *${orderNumber}* is already marked as received. Thanks for confirming!`;
     }

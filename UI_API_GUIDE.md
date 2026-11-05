@@ -385,6 +385,8 @@ The buyer automatically gets a WhatsApp message when the status changes to `PROC
 
 The `OUT_FOR_DELIVERY` message carries a **"✅ I got my order"** button. When the buyer taps it, the order moves to `DELIVERED` and `deliveryConfirmedAt` is set (no UI call needed: it arrives through the WhatsApp webhook). Only a tap from the buyer's own number counts, so a forwarded copy can't confirm someone else's order; a tap on an order that is already delivered just records `deliveryConfirmedAt`, and a cancelled or not-yet-dispatched order is left alone. Show "Buyer confirmed on WhatsApp" with the time when `deliveryConfirmedAt` is set (vendor order view and admin order detail). If WhatsApp refuses the button message, the update is sent as plain text instead. Neither gets through more than 24 hours after the buyer's last message (WhatsApp's customer-service window, which already applied to these updates): that needs an approved message template, not built yet.
 
+**Only Paystack marks a prompted MoMo order paid.** Once the buyer was sent a Paystack MoMo prompt (`paymentRequestedAt` is set) and Paystack hasn't confirmed the payment (`paystackPaidAt` is null), moving the order to `PAID` or any later status returns `400` ("Only Paystack can mark this order as paid…"). Cancelling still works, and so does everything for cash orders, orders the vendor created themselves without a prompt, and orders already past payment. UI: while this applies, show "Waiting for the buyer to approve the MoMo payment", hide the next-step button and disable the paid statuses in the status menu.
+
 **`DELETE /orders/:id`**: delete an order (confirm first).
 
 **`POST /orders`**: create an order manually (e.g. phone orders). Body: `buyerPhone`, `items[]` (`productName`, `unitPrice`, `quantity`, optional `productId`, `measureCode`), optional `paymentMethod`, `fulfillment`, `deliveryAddress`, `deliveryFee`, `notes`, `status`. Totals are calculated by the server.
@@ -426,6 +428,63 @@ Banner state:
 - A full-width banner is not possible there: Meta allows nothing but lists on WELCOME. Shops without an approved banner get no row.
 - `400`: "Upload a JPEG, PNG or WebP image.", "Banners must be 5 MB or smaller.", "Use an image at least 300 pixels on each side, so it looks sharp on phones." `403` for a suspended shop (upload and remove).
 
+### 4.11 Money (payouts)
+
+MarketiX collects MoMo and card payments in its own Paystack account and credits each vendor's balance **when the buyer confirms delivery** (the "✅ I got my order" button, 4.8), or when an admin releases the order. The vendor then **withdraws** from that balance to their MoMo number (`momoNumber`). All amounts in this section are **pesewas** (`95000` = GH₵ 950.00).
+
+| Order | What it does to the vendor's balance |
+|---|---|
+| MoMo or card, buyer confirmed delivery | `+` items − 10% + the whole delivery fee (e.g. GH₵ 1,000 items + GH₵ 50 delivery → `+95000`) |
+| Cash on delivery, delivered | `−` 10% of the items (MarketiX's commission; the vendor kept the cash) |
+| Withdrawal (payout) sent | `−` the amount sent |
+| Withdrawal failed or reversed | `+` the amount back |
+
+**Nothing is paid automatically** (the old 7 am daily run is gone). The vendor taps **Withdraw** on the Money screen and picks an amount from `minPayout` up to their `balance`; it is sent in one MoMo transfer. Commission owed on cash orders is already netted into the balance. Rules:
+
+- **Once a day per shop, by calendar day in Accra time** (resets at midnight `Africa/Accra`). A withdrawal that ends `FAILED` or reversed **does not** use up the day: the vendor can withdraw again at once. `PENDING`, `PROCESSING` and `SUCCESS` withdrawals do.
+- Only vendor withdrawals count towards the limit. Admin "Pay now" and "Retry" don't use up the vendor's day, and aren't blocked by it.
+- MarketiX pays the Paystack fees.
+
+**`POST /payouts/withdraw`** `{ "amount": 15000 }` (pesewas, integer). Starts a MoMo transfer to the shop's `momoNumber` and returns the new payout (`201`, shape as in `GET /payouts`, `source: "VENDOR"`). Errors, each with a `message` for the vendor:
+
+| Status | When | Message |
+|---|---|---|
+| `400` | `amount` isn't a whole number of pesewas | "Enter the amount in pesewas, as a whole number." |
+| `400` | Under `minPayout` | "The least you can withdraw is GH₵ 1.00." |
+| `400` | Over the balance | "You can withdraw up to GH₵ 950.00." (or "Nothing to withdraw: your balance is GH₵ 0.00.") |
+| `409` | Already withdrew today | "You can withdraw once a day. Try again tomorrow." |
+| `409` | A payout is `PENDING` or `PROCESSING` | "Wait for your last withdrawal to land before you withdraw again." |
+| `409` | Shop paused by an admin | "Withdrawals for your shop are on hold. MarketiX will contact you." |
+| `409` | Payouts switched off (`PAYOUTS_ENABLED` not `true`) | "Withdrawals aren’t available yet. Your balance is safe." |
+| `409` | No MoMo number | "Add your MoMo number before you withdraw." |
+| `403` | Suspended shop | "Your shop is suspended, so you can’t withdraw. Contact MarketiX support." |
+
+The checks and the new payout run under a per-shop lock, so two taps at once can't both get through. If Paystack's reply to a transfer is unclear (timeout, network error, 5xx), the payout stays `PROCESSING` (counted in `inFlight`, not refunded) because the money may have gone out; it's settled by Paystack's webhook, or checked with Paystack after 10 minutes the next time the shop's money is loaded or paid. Transfer webhooks are confirmed with Paystack's API before any money moves.
+
+**`GET /payouts/summary`**
+
+```json
+{
+  "balance": 95000, "inFlight": 0,
+  "totals": { "earned": 190000, "commissionOnPaidOrders": 20000, "commissionOnCashOrders": 3000, "paidOut": 92000 },
+  "awaitingConfirmation": { "count": 1, "amount": 47500, "orders": [{ "id": "uuid", "orderNumber": "MX-ABC123", "vendorShare": 47500, "deliveredAt": "…" }] },
+  "lastPayout": { "id": "uuid", "amount": 92000, "status": "SUCCESS", "momoNumber": "0244111222", "paidAt": "…", "failureReason": null, "createdAt": "…" },
+  "payouts": { "enabled": true, "paused": false, "pausedReason": null, "nextWithdrawalAt": null },
+  "momo": { "number": "0244111222", "name": "Ama Mensah" },
+  "commissionPercent": 10, "minPayout": 100
+}
+```
+
+- `balance` below 0: the vendor owes commission on cash orders ("You owe MarketiX"); it comes off their next earnings. No Withdraw button then.
+- `awaitingConfirmation`: delivered, paid orders the buyer hasn't confirmed yet; they are paid when the buyer taps the button.
+- `payouts.enabled` is false until MarketiX switches payouts on: balances still add up and can be withdrawn later.
+- `payouts.nextWithdrawalAt`: `null` when the vendor may withdraw today; otherwise the next midnight in Accra (ISO), because they already withdrew today. (`schedule` and `nextPayoutAt` are removed.)
+- The Withdraw button is off when paused, payouts are off, there's no MoMo number, `inFlight > 0`, `nextWithdrawalAt` is set, or `balance < minPayout`; the screen says which.
+
+**`GET /payouts/statement?page=1&limit=20`**: the ledger, newest first. Each entry: `{ id, type: "ORDER_EARNING" | "CASH_COMMISSION" | "PAYOUT" | "PAYOUT_REVERSAL", amount, orderNumber, details: { items, commission, deliveryFee } | null, createdAt, payout: { status, reference, failureReason, paidAt } | null }`.
+
+**`GET /payouts?status=all|pending|processing|success|failed&page=&limit=`**: the shop's payouts. `status`: `PENDING` (being sent), `PROCESSING` (Paystack accepted it), `SUCCESS`, `FAILED` (the amount is back in the balance). Each payout has `source`: `VENDOR` (a withdrawal), `ADMIN` (Pay now or Retry) or `AUTOMATIC` (from the old 7 am run).
+
 ## 5. Admin app
 
 Every route below requires a `SUPER_ADMIN` token; vendors get `403`. Base path: `/admin`.
@@ -439,6 +498,27 @@ Every route below requires a `SUPER_ADMIN` token; vendors get `403`. Base path: 
 ```
 
 Four tiles. Turn **Free numbers** amber when it is 2 or fewer: approval fails when it reaches 0.
+
+**`GET /admin/daily-summary?date=2026-11-04`**: one day at a glance (Accra time); `date` defaults to yesterday. A future or malformed date returns `400`. Amounts are pesewas.
+
+```json
+{
+  "date": "2026-11-04", "previousDate": "2026-11-03", "nextDate": "2026-11-05",
+  "orders": { "placed": 8, "sales": 523697, "paidOnline": 2, "cash": 3, "cancelled": 0 },
+  "commission": 14000, "vendorEarnings": 131999, "confirmedOrders": 2,
+  "paidOut": { "amount": 0, "count": 0 },
+  "newShops": 3,
+  "topShops": [{ "id": "…", "name": "Stylix", "orders": 7, "sales": 510997 }],
+  "needsAttention": { "failedPayouts": 0, "pendingBanners": 0, "waitingForReview": 2 }
+}
+```
+
+- `orders`: orders placed that day that were paid or confirmed (`sales` leaves out cancelled ones). `cancelled` counts that day's cancelled or refunded orders.
+- `commission`: MarketiX's 10% recorded that day: a MoMo/card order counts once the buyer confirms delivery, a cash order once it's delivered. So it lags sales.
+- `paidOut`: MoMo payouts that landed that day. `nextDate` is null when `date` is today.
+- `needsAttention` is always the current state, whatever day is shown. Link each count to its page.
+
+UI: shown at the top of the admin home page (Review queue) as "Yesterday at a glance", with ‹ › to step through days.
 
 ### 5.2 Review queue
 
@@ -795,6 +875,24 @@ Read-only: admins see orders, vendors change them (4.8).
 
 Show items with a subtotal, the delivery fee and the total; buyer and contact details; delivery details with a map link when `locationLatitude` / `locationLongitude` are set (`https://maps.google.com/?q={lat},{lng}`); payment; rider. No actions. `404` "Order not found.".
 
+### 5.7b Payouts
+
+Money owed to vendors and the MoMo transfers that pay them (amounts in pesewas; how balances work: 4.11). Nothing is sent until the server has `PAYOUTS_ENABLED=true`, which needs Paystack Transfers switched on for the live account with the transfer OTP turned off. Paystack's `transfer.success`, `transfer.failed` and `transfer.reversed` webhooks arrive at the payments webhook URL.
+
+| Method and path | Result |
+|---|---|
+| `GET /admin/payouts/summary` | `{ owedToVendors, owedByVendors, failedPayouts, last30Days: { paidOut, commission }, payoutsEnabled, commissionPercent }`. `failedPayouts` counts shops whose **latest** payout failed. |
+| `GET /admin/payouts/balances?search=&page=&limit=` | Shops with money owed or a payout on record, largest balance first: `{ id, ref, name, momoNumber, payoutsPaused, balance, inFlight, paidOut, lastPayoutFailed, lastPayoutAt }` |
+| `GET /admin/payouts?status=all\|pending\|processing\|success\|failed&search=&page=&limit=` | Every payout, newest first, with `source`, `tenant: { id, name, ref }` and `superseded` (a newer payout exists for the shop, so this failure is already dealt with: hide Retry) |
+| `POST /admin/payouts/:id/retry` | Sends the shop's whole balance again now (which includes the failed amount). Failed amounts are also picked up by the next 7 am run. `409` if it isn't failed, or a newer payout exists. Otherwise the vendor can simply withdraw again. |
+| `GET /admin/tenants/:id/payouts/summary` | Same shape as the vendor's `GET /payouts/summary` |
+| `GET /admin/tenants/:id/payouts/statement?page=&limit=` | Same shape as the vendor's statement |
+| `POST /admin/tenants/:id/payouts/pay-now` | Sends the balance now. `409` with the reason when it can't: payouts off, paused, one already in progress, balance under GH₵ 1, no MoMo number. |
+| `POST /admin/tenants/:id/payouts/pause` `{ paused, reason? }` | Stops (reason required) or restarts the shop's withdrawals; the balance keeps adding up while paused. |
+| `POST /admin/orders/:id/release` | Credits the vendor for a delivered, Paystack-paid order the buyer never confirmed (the vendor can then withdraw it, or an admin can Pay now). `409` for cash orders, undelivered or already released. |
+
+`GET /admin/orders/:id` includes `paystackPaidAt` and `settlement: { type, amount, createdAt } | null` (the order's ledger entry), so the order detail can show "credited to the vendor" or offer **Release to vendor**.
+
 ### 5.8 Audit log
 
 Every admin action: who did it, when, and why. Entries are written in the same transaction as the action (an action that fails leaves no entry) and **cannot be edited or deleted**: there are no endpoints for it, and the database refuses `UPDATE` / `DELETE` on the table. Names are copied into each entry, so it still reads correctly after a shop is renamed or deleted.
@@ -821,6 +919,11 @@ Every admin action: who did it, when, and why. Entries are written in the same t
 | `BANNER_APPROVED` | Banner approved | `POST …/banner/approve` | "Banner approved; buyers now see it." |
 | `BANNER_REJECTED` | Banner rejected | `POST …/banner/reject` | the reason |
 | `BANNER_REMOVED` | Banner removed | `POST …/banner/remove` | the reason |
+| `PAYOUT_SENT` | Payout sent | `POST …/payouts/pay-now` | "Sent GH₵ 950.00 to 0244111222." |
+| `PAYOUT_RETRIED` | Payout retried | `POST /admin/payouts/:id/retry` | "Retried payout_…: sent GH₵ 950.00." |
+| `PAYOUTS_PAUSED` | Payouts paused | `POST …/payouts/pause` with `paused: true` | the reason |
+| `PAYOUTS_RESUMED` | Payouts resumed | `POST …/payouts/pause` with `paused: false` | "Payouts resumed." |
+| `ORDER_RELEASED` | Order released for payout | `POST /admin/orders/:id/release` | "Released MX-… without the buyer's confirmation." |
 
 **`GET /admin/audit-log?search=ama&action=APPROVED,SUSPENDED&adminId=uuid&period=30d&page=1&limit=25`**
 
