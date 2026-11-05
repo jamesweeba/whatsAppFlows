@@ -12,7 +12,7 @@ describe('PayoutController: vendors never see Paystack’s own failure reasons',
   };
   const payouts = { withdraw: vi.fn().mockResolvedValue(failed) };
   const tenants = { findByUser: vi.fn().mockResolvedValue({ id: 't1' }) };
-  const controller = new PayoutController(reports as any, payouts as any, tenants as any);
+  const controller = new PayoutController(reports as any, payouts as any, tenants as any, {} as any);
   const req = { user: { id: 'u1' } };
 
   it('in the summary', async () => {

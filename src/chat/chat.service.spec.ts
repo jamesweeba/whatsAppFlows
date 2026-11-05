@@ -55,6 +55,8 @@ describe('ChatModule', () => {
     findLatestForBuyer: vi.fn(),
     attachLocation: vi.fn(),
     confirmReceivedByBuyer: vi.fn(),
+    requestRating: vi.fn().mockResolvedValue(undefined),
+    rateByBuyer: vi.fn(),
   };
 
   const mockWabaService = {
@@ -425,6 +427,20 @@ describe('ChatModule', () => {
       );
       expect(result.classification).toBeNull();
       expect(result.systemResponse!.text).toContain('marked as received');
+      expect(mockOrderService.requestRating).toHaveBeenCalledWith(expect.objectContaining({ id: 'tenant-abc' }), '+233240000000', 'MX-7');
+    });
+
+    it('records the rating the buyer picks from the list, without asking the AI', async () => {
+      mockOrderService.rateByBuyer.mockResolvedValue('🙏 Thank you for rating order *MX-7* ⭐⭐⭐⭐!');
+
+      const result = await chatService.processIncomingMessage(buyerMessage('rate_order:MX-7:4'));
+
+      expect(mockOrderService.rateByBuyer).toHaveBeenCalledWith('tenant-abc', '+233240000000', 'MX-7', 4);
+      expect(mockPrismaService.chatMessage.create).toHaveBeenCalledWith(
+        expect.objectContaining({ data: expect.objectContaining({ text: '⭐⭐⭐⭐ (MX-7)' }) }),
+      );
+      expect(result.classification).toBeNull();
+      expect(result.systemResponse!.text).toContain('Thank you for rating');
     });
 
     it('does not link an order that belongs to another tenant', async () => {

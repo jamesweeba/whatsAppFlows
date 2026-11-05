@@ -3,7 +3,7 @@ import { BuyerIntent, MessageSender, MessageSource, Product, Tenant } from '@pri
 import { ghCedis } from '../common/money.util.js';
 import { isHiddenNumber } from '../common/phone.util.js';
 import { FlowService } from '../flow/flow.service.js';
-import { ORDER_RECEIVED_BUTTON_TITLE, orderReceivedTap, OrderService } from '../order/order.service.js';
+import { ORDER_RECEIVED_BUTTON_TITLE, orderRatingTap, orderReceivedTap, OrderService } from '../order/order.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { isLive, TenantService } from '../tenant/tenant.service.js';
 import { WabaService, WELCOME_BODY_TEXT, WELCOME_BUTTON_IDS } from '../waba/waba.service.js';
@@ -127,6 +127,11 @@ export class ChatService implements OnModuleInit {
     const receivedOrder = orderReceivedTap(messageText);
     if (receivedOrder) {
       return this.handleOrderReceived(tenant, session, dto, receivedOrder);
+    }
+
+    const rated = orderRatingTap(messageText);
+    if (rated) {
+      return this.handleOrderRating(tenant, session, dto, rated);
     }
 
     if (isHiddenNumber(dto.buyerPhone) && !orderRef) {
@@ -316,16 +321,37 @@ export class ChatService implements OnModuleInit {
     return { duplicate: false, session, message: buyerMessage, classification: null, systemResponse };
   }
 
-  /** The buyer tapped "I got my order" on the out-for-delivery message. No AI call needed. */
+  /**
+   * The buyer tapped "I got my order" on the out-for-delivery message. No AI call needed.
+   * Once the thank-you is sent, they're asked to rate the order.
+   */
   private async handleOrderReceived(tenant: TenantWithProducts, session: { id: string }, dto: ProcessMessageDto, orderNumber: string) {
+    const result = await this.replyToTap(tenant, session, dto, `${ORDER_RECEIVED_BUTTON_TITLE} (${orderNumber})`, () =>
+      this.orderService.confirmReceivedByBuyer(tenant.id, dto.buyerPhone, orderNumber),
+    );
+    await this.orderService
+      .requestRating(tenant, dto.buyerPhone, orderNumber)
+      .catch((err: any) => this.logger.warn(`Rating request for ${orderNumber} failed: ${err?.message || err}`));
+    return result;
+  }
+
+  /** The buyer picked a rating from the "rate your order" list. */
+  private handleOrderRating(tenant: TenantWithProducts, session: { id: string }, dto: ProcessMessageDto, tap: { orderNumber: string; rating: number }) {
+    return this.replyToTap(tenant, session, dto, `${'⭐'.repeat(tap.rating)} (${tap.orderNumber})`, () =>
+      this.orderService.rateByBuyer(tenant.id, dto.buyerPhone, tap.orderNumber, tap.rating),
+    );
+  }
+
+  /** Save a button or list tap (as `shown`), answer it with `answer()`, and save the answer. */
+  private async replyToTap(tenant: TenantWithProducts, session: { id: string }, dto: ProcessMessageDto, shown: string, answer: () => Promise<string>) {
     const buyerMessage = await this.saveMessage(session.id, {
       sender: dto.sender || MessageSender.BUYER,
       source: MessageSource.TEXT,
-      text: `${ORDER_RECEIVED_BUTTON_TITLE} (${orderNumber})`,
+      text: shown,
       whatsappMessageId: dto.incomingMessageId,
     });
 
-    let reply: Reply = { kind: 'text', text: await this.orderService.confirmReceivedByBuyer(tenant.id, dto.buyerPhone, orderNumber) };
+    let reply: Reply = { kind: 'text', text: await answer() };
     if (tenant.whatsappPhoneNumberId) {
       reply = await this.dispatch(tenant, dto.buyerPhone, reply);
     }

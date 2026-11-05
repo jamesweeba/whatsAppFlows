@@ -5,6 +5,7 @@ import { parseChoice } from '../common/query.util.js';
 import { TenantService } from '../tenant/tenant.service.js';
 import { PAYOUT_STATUS_FILTERS, PayoutReportService } from './payout-report.service.js';
 import { PayoutService } from './payout.service.js';
+import { SalesSummaryService } from './sales-summary.service.js';
 
 /**
  * What vendors see when a payout fails. Paystack's own reason (e.g. MarketiX's account
@@ -33,6 +34,7 @@ export class PayoutController {
     private readonly reports: PayoutReportService,
     private readonly payouts: PayoutService,
     private readonly tenants: TenantService,
+    private readonly sales: SalesSummaryService,
   ) {}
 
   /** GET /payouts/summary */
@@ -41,6 +43,13 @@ export class PayoutController {
     const tenant = await this.tenants.findByUser(req.user.id);
     const summary = await this.reports.shopSummary(tenant.id);
     return { ...summary, lastPayout: forVendor(summary.lastPayout) };
+  }
+
+  /** This week's sales, best sellers, repeat buyers and ratings. GET /payouts/sales */
+  @Get('sales')
+  async salesSummary(@Request() req: any) {
+    const tenant = await this.tenants.findByUser(req.user.id);
+    return this.sales.forShop(tenant.id);
   }
 
   /** Send part or all of the balance to the shop's MoMo. Once per Accra day. POST /payouts/withdraw { amount } */

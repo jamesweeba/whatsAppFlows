@@ -429,6 +429,13 @@ model Order {
   paystackPaidAt      DateTime?
   /// What Paystack reported collecting, in pesewas.
   paystackAmount      Int?
+  /// How the buyer paid on Paystack ("mobile_money", "card", ...). Card earnings are held before they can be withdrawn.
+  paystackChannel     String?
+  /// When the buyer was sent the "rate your order" list after confirming delivery (sent once).
+  ratingRequestedAt   DateTime?
+  /// The buyer's 1-5 rating of the order, from WhatsApp.
+  buyerRating         Int?
+  ratedAt             DateTime?
   riderName           String?
   riderPhone          String?
   flowCartId          String?             @unique
@@ -438,6 +445,8 @@ model Order {
   ledger              VendorLedgerEntry[]
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
+
+  @@index([tenantId, ratedAt])
 }
 
 model OrderItem {
@@ -506,6 +515,9 @@ model VendorLedgerEntry {
   payout      VendorPayout?   @relation(fields: [payoutId], references: [id], onDelete: SetNull)
   /// For orders: { items, commission, deliveryFee } in pesewas, so statements can show the sums.
   details     Json?
+  /// When the vendor can withdraw this entry (card earnings are held for a few days in case
+  /// the payment is disputed). Null: right away.
+  availableAt DateTime?
   createdAt   DateTime        @default(now())
 
   /// An order earns, or owes commission, once.

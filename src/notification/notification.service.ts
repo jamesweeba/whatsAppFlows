@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { Tenant } from '@prisma/client';
+import { PayoutSource, Tenant, VendorPayout } from '@prisma/client';
 import { optionalEnv } from '../common/config.js';
 import { ghCedis } from '../common/money.util.js';
-import { toInternationalDigits } from '../common/phone.util.js';
+import { toGhanaLocal, toInternationalDigits } from '../common/phone.util.js';
 import { WabaService } from '../waba/waba.service.js';
 
 /**
@@ -55,6 +55,25 @@ export class NotificationService {
       tenant.whatsappPhoneNumberId,
       tenant.ownerPhone,
       `🛒 New order *${order.orderNumber}*${buyer}: ${ghCedis(order.totalAmount)}. Open your dashboard to pack it.`,
+    );
+  }
+
+  /** A withdrawal (or admin payout) landed in the vendor's MoMo wallet. */
+  payoutPaid(tenant: Tenant, payout: Pick<VendorPayout, 'amount' | 'momoNumber' | 'source'>) {
+    return this.fromPlatform(
+      tenant,
+      `✅ ${ghCedis(payout.amount / 100)} has been sent to your MoMo (${toGhanaLocal(payout.momoNumber)}). ` +
+        `${payout.source === PayoutSource.VENDOR ? 'Your withdrawal is complete.' : 'MarketiX paid out your balance.'} Thanks for selling on MarketiX!`,
+    );
+  }
+
+  /** A payout failed and the money is back in the balance. Paystack's reason stays with admins. */
+  payoutFailed(tenant: Tenant, payout: Pick<VendorPayout, 'amount' | 'source'>) {
+    const what = payout.source === PayoutSource.VENDOR ? 'withdrawal' : 'payout';
+    return this.fromPlatform(
+      tenant,
+      `⚠️ Your ${what} of ${ghCedis(payout.amount / 100)} didn't go through. The money is back in your MarketiX balance ` +
+        'and our team has been told. You can withdraw it again from the Money page.',
     );
   }
 

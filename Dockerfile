@@ -35,7 +35,10 @@ COPY prisma/schema.prisma             ./prisma/schema.prisma
 COPY prisma/migrations/               ./prisma/migrations/
 COPY docker-entrypoint.sh             ./docker-entrypoint.sh
 
+# /app/uploads holds vendor KYC documents, product photos and banners. It is created
+# here so the named volume mounted on it in production starts out owned by nestjs.
 RUN chmod +x docker-entrypoint.sh \
+ && mkdir -p /app/uploads \
  && chown -R nestjs:nodejs /app
 
 USER nestjs

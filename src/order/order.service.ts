@@ -32,6 +32,23 @@ export function orderReceivedTap(text: string): string | null {
   return ORDER_RECEIVED_PATTERN.exec(text.trim())?.[1] ?? null;
 }
 
+/** The rows of the "rate your order" list: their id is this prefix, the order number, and the stars. */
+export const ORDER_RATING_PREFIX = 'rate_order:';
+const ORDER_RATING_PATTERN = /^rate_order:(\S+):([1-5])$/;
+const RATING_ROWS: { stars: number; label: string }[] = [
+  { stars: 5, label: 'Excellent' },
+  { stars: 4, label: 'Good' },
+  { stars: 3, label: 'Okay' },
+  { stars: 2, label: 'Poor' },
+  { stars: 1, label: 'Very poor' },
+];
+
+/** The order and rating in a "rate your order" list tap, or null for any other message. */
+export function orderRatingTap(text: string): { orderNumber: string; rating: number } | null {
+  const match = ORDER_RATING_PATTERN.exec(text.trim());
+  return match ? { orderNumber: match[1], rating: Number(match[2]) } : null;
+}
+
 /** Delivery and Flow details that only the server sets, never the vendor-facing DTO. */
 export type OrderDetails = Pick<
   Prisma.OrderUncheckedCreateInput,
@@ -179,11 +196,12 @@ export class OrderService {
    * can't pull an order that has moved on (or was cancelled) back to PAID. Returns false
    * when nothing changed.
    */
-  async markPaid(orderId: string, note: string, amountPesewas: number): Promise<boolean> {
+  async markPaid(orderId: string, note: string, amountPesewas: number, channel: string | null = null): Promise<boolean> {
     const { count } = await this.prisma.order.updateMany({
       where: { id: orderId, status: { in: UNPAID_ORDER_STATUSES } },
       // paystackPaidAt: the money is in MarketiX's Paystack balance, so the vendor can be paid from it.
-      data: { status: OrderStatus.PAID, notes: note, paystackPaidAt: new Date(), paystackAmount: amountPesewas },
+      // paystackChannel: card earnings are held before the vendor can withdraw them.
+      data: { status: OrderStatus.PAID, notes: note, paystackPaidAt: new Date(), paystackAmount: amountPesewas, paystackChannel: channel },
     });
     return count === 1;
   }
@@ -414,6 +432,55 @@ export class OrderService {
       return `Order *${orderNumber}* was cancelled, so there's nothing to confirm. If that's wrong, just reply here.`;
     }
     return `Order *${orderNumber}* isn't out for delivery yet. We'll message you when it's on its way.`;
+  }
+
+  /**
+   * Ask the buyer to rate an order they've confirmed receiving: a 1-5 list on WhatsApp. Sent
+   * once per order, only to the buyer who placed it, and not once it's rated.
+   */
+  async requestRating(tenant: { id: string; name: string; whatsappPhoneNumberId: string | null }, buyerPhone: string, orderNumber: string): Promise<void> {
+    if (!tenant.whatsappPhoneNumberId) return;
+    const order = await this.prisma.order.findFirst({ where: { tenantId: tenant.id, orderNumber } });
+    if (!order || toE164(order.buyerPhone) !== toE164(buyerPhone) || !order.deliveryConfirmedAt || order.buyerRating !== null) return;
+
+    // Claimed first, so a double tap doesn't send two lists.
+    const { count } = await this.prisma.order.updateMany({ where: { id: order.id, ratingRequestedAt: null }, data: { ratingRequestedAt: new Date() } });
+    if (count !== 1) return;
+    try {
+      await this.wabaService.sendInteractiveList({
+        phoneNumberId: tenant.whatsappPhoneNumberId,
+        toPhone: buyerPhone,
+        bodyText: `How was your order *${orderNumber}* from *${tenant.name}*? Your rating helps other buyers and keeps shops on MarketiX at their best.`,
+        buttonText: 'Rate your order',
+        sectionTitle: 'Your rating',
+        rows: RATING_ROWS.map((r) => ({ id: `${ORDER_RATING_PREFIX}${orderNumber}:${r.stars}`, title: '⭐'.repeat(r.stars), description: r.label })),
+      });
+    } catch (err: any) {
+      this.logger.warn(`Rating request for ${orderNumber} failed: ${err?.message || err}`);
+      await this.prisma.order.update({ where: { id: order.id }, data: { ratingRequestedAt: null } }); // can be asked again
+    }
+  }
+
+  /**
+   * The buyer picked a rating from the list. Only the buyer's own, received order can be
+   * rated, and only once. Returns the reply for the buyer.
+   */
+  async rateByBuyer(tenantId: string, buyerPhone: string, orderNumber: string, rating: number): Promise<string> {
+    const order = await this.prisma.order.findFirst({ where: { tenantId, orderNumber } });
+    if (!order || toE164(order.buyerPhone) !== toE164(buyerPhone)) {
+      this.logger.warn(`Ignored rating for ${orderNumber}: not this buyer's order.`);
+      return `We couldn't find order *${orderNumber}* on your number. If you need help, just reply here.`;
+    }
+    if (!order.deliveryConfirmedAt) return `You can rate order *${orderNumber}* once you have it.`;
+    if (!Number.isInteger(rating) || rating < 1 || rating > 5) return 'Please pick a rating from 1 to 5 stars.';
+
+    const { count } = await this.prisma.order.updateMany({ where: { id: order.id, buyerRating: null }, data: { buyerRating: rating, ratedAt: new Date() } });
+    if (count !== 1) return `You've already rated order *${orderNumber}*. Thank you!`;
+
+    this.logger.log(`${orderNumber} rated ${rating}/5 by the buyer.`);
+    if (rating >= 4) return `🙏 Thank you for rating order *${orderNumber}* ${'⭐'.repeat(rating)}! We're glad you enjoyed it.`;
+    if (rating === 3) return `Thanks for rating order *${orderNumber}*. We'll keep working to make your next order better.`;
+    return `😔 We're sorry order *${orderNumber}* wasn't great, and thank you for telling us. MarketiX will look into it. If you'd like to say what went wrong, just reply here.`;
   }
 
   private statusMessage(order: { orderNumber: string; status: OrderStatus; riderName: string | null; riderPhone: string | null; totalAmount: number; paymentMethod: string | null }): string | null {

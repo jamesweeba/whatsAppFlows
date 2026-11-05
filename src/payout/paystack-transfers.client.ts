@@ -139,6 +139,20 @@ export class PaystackTransfersClient implements OnModuleInit {
     return { state: 'unknown', reason: `Paystack reported an unexpected transfer status: ${status || 'none'}.` };
   }
 
+  /**
+   * MarketiX's Paystack balance in cedis (GHS), in pesewas: what's there to pay vendors
+   * from. Null when Paystack can't be asked (or transfers are faked).
+   */
+  async balance(): Promise<number | null> {
+    if (this.fakeMode) return null;
+    const res = await this.request('GET', '/balance');
+    const rows: unknown = res.data?.data;
+    if (!res.ok || !Array.isArray(rows)) return null;
+    const ghs = rows.find((row: any) => String(row?.currency ?? '').toUpperCase() === 'GHS');
+    const amount = Number(ghs?.balance);
+    return Number.isFinite(amount) ? Math.round(amount) : null;
+  }
+
   private reason(res: { data: any; error?: string }, fallback: string): string {
     return res.error || res.data?.message || fallback;
   }

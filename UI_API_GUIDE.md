@@ -458,14 +458,20 @@ MarketiX collects MoMo and card payments in its own Paystack account and credits
 | `409` | Payouts switched off (`PAYOUTS_ENABLED` not `true`) | "Withdrawals aren’t available yet. Your balance is safe." |
 | `409` | No MoMo number | "Add your MoMo number before you withdraw." |
 | `403` | Suspended shop | "Your shop is suspended, so you can’t withdraw. Contact MarketiX support." |
+| `400` | More than `available` (held card earnings can't be withdrawn) | "You can withdraw up to GH₵ 172.00 now. GH₵ 185.00 from card payments can be withdrawn from 8 Nov, 20:26." |
 
 The checks and the new payout run under a per-shop lock, so two taps at once can't both get through. If Paystack's reply to a transfer is unclear (timeout, network error, 5xx), the payout stays `PROCESSING` (counted in `inFlight`, not refunded) because the money may have gone out; it's settled by Paystack's webhook, or checked with Paystack after 10 minutes the next time the shop's money is loaded or paid. Transfer webhooks are confirmed with Paystack's API before any money moves.
+
+**Card hold.** An earning from an order paid by card (any Paystack channel other than `mobile_money`) can be withdrawn only `CARD_EARNINGS_HOLD_DAYS` days (default 3; `0` turns it off) after the buyer confirms, in case the card owner disputes the charge. MoMo earnings aren't held. Admin "Pay now" also sends only what's available.
+
+**WhatsApp to the vendor.** When a payout lands or fails, the vendor gets a message from the platform number ("GH₵ … has been sent to your MoMo" / "didn't go through; the money is back in your balance"). Paystack's reason is never included. Like other platform messages, it only reaches vendors who messaged the platform number in the last 24 hours, until message templates are approved.
 
 **`GET /payouts/summary`**
 
 ```json
 {
-  "balance": 95000, "inFlight": 0,
+  "balance": 95000, "available": 47500, "inFlight": 0,
+  "onHold": { "amount": 47500, "nextReleaseAt": "2026-11-08T14:30:00.000Z", "days": 3 },
   "totals": { "earned": 190000, "commissionOnPaidOrders": 20000, "commissionOnCashOrders": 3000, "paidOut": 92000 },
   "awaitingConfirmation": { "count": 1, "amount": 47500, "orders": [{ "id": "uuid", "orderNumber": "MX-ABC123", "vendorShare": 47500, "deliveredAt": "…" }] },
   "lastPayout": { "id": "uuid", "amount": 92000, "status": "SUCCESS", "momoNumber": "0244111222", "paidAt": "…", "failureReason": null, "createdAt": "…" },
@@ -479,9 +485,28 @@ The checks and the new payout run under a per-shop lock, so two taps at once can
 - `awaitingConfirmation`: delivered, paid orders the buyer hasn't confirmed yet; they are paid when the buyer taps the button.
 - `payouts.enabled` is false until MarketiX switches payouts on: balances still add up and can be withdrawn later.
 - `payouts.nextWithdrawalAt`: `null` when the vendor may withdraw today; otherwise the next midnight in Accra (ISO), because they already withdrew today. (`schedule` and `nextPayoutAt` are removed.)
-- The Withdraw button is off when paused, payouts are off, there's no MoMo number, `inFlight > 0`, `nextWithdrawalAt` is set, or `balance < minPayout`; the screen says which.
+- `available`: what can be withdrawn now (`balance` less `onHold.amount`). `onHold.nextReleaseAt` is when the soonest held earning becomes available.
+- The Withdraw button is off when paused, payouts are off, there's no MoMo number, `inFlight > 0`, `nextWithdrawalAt` is set, or `available < minPayout`; the screen says which. The withdraw form allows up to `available`.
 
-**`GET /payouts/statement?page=1&limit=20`**: the ledger, newest first. Each entry: `{ id, type: "ORDER_EARNING" | "CASH_COMMISSION" | "PAYOUT" | "PAYOUT_REVERSAL", amount, orderNumber, details: { items, commission, deliveryFee } | null, createdAt, payout: { status, reference, failureReason, paidAt } | null }`.
+**`GET /payouts/statement?page=1&limit=20`**: the ledger, newest first. Each entry: `{ id, type: "ORDER_EARNING" | "CASH_COMMISSION" | "PAYOUT" | "PAYOUT_REVERSAL", amount, orderNumber, details: { items, commission, deliveryFee } | null, availableAt, createdAt, payout: { status, reference, failureReason, paidAt } | null }`. `availableAt` is set on held card earnings (null: available straight away).
+
+**`GET /payouts/sales`** (admins: **`GET /admin/tenants/:id/sales-summary`**): how the shop is selling. Paid and confirmed-cash orders only, not cancelled ones; amounts in pesewas.
+
+```json
+{
+  "windowDays": 30,
+  "thisWeek": { "sales": 27000, "orders": 2 },
+  "lastWeek": { "sales": 12500, "orders": 1 },
+  "bestSellers": [{ "productId": "uuid", "name": "Tomatoes (crate)", "quantity": 2, "sales": 20000 }],
+  "buyers": { "total": 2, "repeat": 1 },
+  "rating": { "average": 3.7, "count": 3, "recentLow": [{ "orderId": "uuid", "orderNumber": "MX-ABC123", "rating": 2, "ratedAt": "…" }] }
+}
+```
+
+- `thisWeek` is the last 7 days, `lastWeek` the 7 before. `bestSellers` (top 5 by sales) and `buyers` cover the last `windowDays`; a repeat buyer has more than one order with the shop in all.
+- `rating`: the average of buyer ratings (1–5) over all time; `recentLow` lists ratings of 2 or less from the window.
+
+**Buyer ratings.** After the buyer taps "I got my order", they get a WhatsApp list ("Rate your order", 5 to 1 stars), once per order. Their pick is stored on the order as `buyerRating` (1–5) and `ratedAt`, and shown in order details. Only the buyer's own, confirmed order can be rated, and only once.
 
 **`GET /payouts?status=all|pending|processing|success|failed&page=&limit=`**: the shop's payouts. `status`: `PENDING` (being sent), `PROCESSING` (Paystack accepted it), `SUCCESS`, `FAILED` (the amount is back in the balance). Each payout has `source`: `VENDOR` (a withdrawal), `ADMIN` (Pay now or Retry) or `AUTOMATIC` (from the old 7 am run).
 
@@ -507,15 +532,18 @@ Four tiles. Turn **Free numbers** amber when it is 2 or fewer: approval fails wh
   "orders": { "placed": 8, "sales": 523697, "paidOnline": 2, "cash": 3, "cancelled": 0 },
   "commission": 14000, "vendorEarnings": 131999, "confirmedOrders": 2,
   "paidOut": { "amount": 0, "count": 0 },
+  "failedPayouts": { "amount": 0, "count": 0 },
   "newShops": 3,
   "topShops": [{ "id": "…", "name": "Stylix", "orders": 7, "sales": 510997 }],
-  "needsAttention": { "failedPayouts": 0, "pendingBanners": 0, "waitingForReview": 2 }
+  "needsAttention": { "failedPayouts": 0, "pendingBanners": 0, "waitingForReview": 2, "stuckPayouts": 0 },
+  "money": { "stuckPayouts": { "count": 0, "amount": 0 }, "owedToVendors": 167699, "paystackBalance": 250000, "shortfall": 0 }
 }
 ```
 
 - `orders`: orders placed that day that were paid or confirmed (`sales` leaves out cancelled ones). `cancelled` counts that day's cancelled or refunded orders.
 - `commission`: MarketiX's 10% recorded that day: a MoMo/card order counts once the buyer confirms delivery, a cash order once it's delivered. So it lags sales.
-- `paidOut`: MoMo payouts that landed that day. `nextDate` is null when `date` is today.
+- `paidOut`: MoMo payouts that landed that day; `failedPayouts`: payouts started that day that failed (the money went back to the balances). `nextDate` is null when `date` is today.
+- `money` is right now: `stuckPayouts` are still on their way 10+ minutes after being sent, even after asking Paystack again (check them in the Paystack dashboard); `owedToVendors` is every positive balance, held card earnings included; `paystackBalance` is MarketiX's GHS balance on Paystack (`null` if Paystack couldn't be asked, or transfers are faked); `shortfall` is how much more Paystack needs to cover `owedToVendors` (`0` covered, `null` unknown).
 - `needsAttention` is always the current state, whatever day is shown. Link each count to its page.
 
 UI: shown at the top of the admin home page (Review queue) as "Yesterday at a glance", with ‹ › to step through days.

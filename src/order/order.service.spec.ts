@@ -1,7 +1,7 @@
 import { OrderStatus } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TenantService } from '../tenant/tenant.service.js';
-import { OrderService, orderReceivedTap } from './order.service.js';
+import { orderRatingTap, OrderService, orderReceivedTap } from './order.service.js';
 
 describe('OrderService', () => {
   let service: OrderService;
@@ -26,6 +26,7 @@ describe('OrderService', () => {
     waba = {
       sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-1' }),
       sendInteractiveButtons: vi.fn().mockResolvedValue({ messageId: 'wamid-2' }),
+      sendInteractiveList: vi.fn().mockResolvedValue({ messageId: 'wamid-3' }),
     };
     payouts = { settleOrder: vi.fn().mockResolvedValue(null) };
     service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba, payouts);
@@ -212,6 +213,74 @@ describe('OrderService', () => {
         .mockResolvedValueOnce(order(OrderStatus.DELIVERED, { deliveryConfirmedAt: new Date() }));
       prisma.order.updateMany.mockResolvedValue({ count: 0 });
       expect(await service.confirmReceivedByBuyer('tenant-1', '+233240000000', 'MX-ABC123')).toContain('already marked as received');
+    });
+  });
+
+  describe('buyer ratings', () => {
+    const tenant = { id: 'tenant-1', name: 'Fresh Market', whatsappPhoneNumberId: 'phone-1' };
+    const order = (extra: Record<string, unknown> = {}) => ({
+      id: 'order-1', tenantId: 'tenant-1', orderNumber: 'MX-ABC123', buyerPhone: '+233240000000', status: OrderStatus.DELIVERED,
+      deliveryConfirmedAt: new Date(), buyerRating: null, ratingRequestedAt: null, ...extra,
+    });
+
+    it('reads the order and stars from the list row id', () => {
+      expect(orderRatingTap('rate_order:MX-ABC123:4')).toEqual({ orderNumber: 'MX-ABC123', rating: 4 });
+      expect(orderRatingTap('rate_order:MX-ABC123:6')).toBeNull();
+      expect(orderRatingTap('rate_order:MX-ABC123:0')).toBeNull();
+      expect(orderRatingTap('5 stars')).toBeNull();
+    });
+
+    it('asks once, with five choices, after the buyer confirms', async () => {
+      prisma.order.findFirst.mockResolvedValue(order());
+      prisma.order.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+
+      await service.requestRating(tenant, '233240000000', 'MX-ABC123');
+      await service.requestRating(tenant, '233240000000', 'MX-ABC123'); // a double tap
+      expect(waba.sendInteractiveList).toHaveBeenCalledTimes(1);
+      const list = waba.sendInteractiveList.mock.calls[0][0];
+      expect(list).toMatchObject({ phoneNumberId: 'phone-1', toPhone: '233240000000', buttonText: 'Rate your order' });
+      expect(list.rows.map((r: any) => r.id)).toEqual([5, 4, 3, 2, 1].map((n) => `rate_order:MX-ABC123:${n}`));
+      expect(prisma.order.updateMany).toHaveBeenCalledWith({ where: { id: 'order-1', ratingRequestedAt: null }, data: { ratingRequestedAt: expect.any(Date) } });
+    });
+
+    it("doesn't ask about an unconfirmed, already rated or someone else's order", async () => {
+      for (const o of [order({ deliveryConfirmedAt: null }), order({ buyerRating: 5 }), order({ buyerPhone: '+233209999999' })]) {
+        prisma.order.findFirst.mockResolvedValue(o);
+        await service.requestRating(tenant, '+233240000000', 'MX-ABC123');
+      }
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
+      expect(waba.sendInteractiveList).not.toHaveBeenCalled();
+    });
+
+    it('lets the buyer be asked again if the list could not be sent', async () => {
+      prisma.order.findFirst.mockResolvedValue(order());
+      prisma.order.updateMany.mockResolvedValue({ count: 1 });
+      waba.sendInteractiveList.mockRejectedValue(new Error('outside window'));
+      await service.requestRating(tenant, '+233240000000', 'MX-ABC123');
+      expect(prisma.order.update).toHaveBeenCalledWith({ where: { id: 'order-1' }, data: { ratingRequestedAt: null } });
+    });
+
+    it('records a rating once, from the buyer of a received order', async () => {
+      prisma.order.findFirst.mockResolvedValue(order());
+      prisma.order.updateMany.mockResolvedValueOnce({ count: 1 }).mockResolvedValueOnce({ count: 0 });
+
+      expect(await service.rateByBuyer('tenant-1', '233240000000', 'MX-ABC123', 5)).toContain('Thank you for rating');
+      expect(prisma.order.updateMany).toHaveBeenCalledWith({ where: { id: 'order-1', buyerRating: null }, data: { buyerRating: 5, ratedAt: expect.any(Date) } });
+      expect(await service.rateByBuyer('tenant-1', '233240000000', 'MX-ABC123', 1)).toContain('already rated');
+    });
+
+    it('says sorry for a low rating', async () => {
+      prisma.order.findFirst.mockResolvedValue(order());
+      prisma.order.updateMany.mockResolvedValue({ count: 1 });
+      expect(await service.rateByBuyer('tenant-1', '+233240000000', 'MX-ABC123', 2)).toContain("sorry order *MX-ABC123* wasn't great");
+    });
+
+    it("ignores ratings for someone else's order or one not received", async () => {
+      prisma.order.findFirst.mockResolvedValue(order({ buyerPhone: '+233209999999' }));
+      expect(await service.rateByBuyer('tenant-1', '+233240000000', 'MX-ABC123', 5)).toContain("couldn't find order");
+      prisma.order.findFirst.mockResolvedValue(order({ deliveryConfirmedAt: null }));
+      expect(await service.rateByBuyer('tenant-1', '+233240000000', 'MX-ABC123', 5)).toContain('once you have it');
+      expect(prisma.order.updateMany).not.toHaveBeenCalled();
     });
   });
 

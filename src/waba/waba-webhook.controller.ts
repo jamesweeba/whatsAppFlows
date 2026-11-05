@@ -239,7 +239,7 @@ export class WabaWebhookController {
     }
 
     if (message.type === 'interactive') {
-      const buttonReply = message.interactive?.button_reply;
+      const buttonReply = message.interactive?.button_reply ?? message.interactive?.list_reply;
       if (buttonReply) {
         return { text: buttonReply.id || buttonReply.title || '' };
       }

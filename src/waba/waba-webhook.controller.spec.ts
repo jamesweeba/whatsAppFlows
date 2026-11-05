@@ -139,6 +139,24 @@ describe('WabaWebhookController', () => {
     );
   });
 
+  it('passes the id of a list choice (e.g. a rating) through as the text', async () => {
+    await controller.processPayload(
+      envelope({
+        metadata: { phone_number_id: '1404916169377344' },
+        messages: [
+          {
+            from: '233245655799',
+            id: 'wamid.rate',
+            type: 'interactive',
+            interactive: { type: 'list_reply', list_reply: { id: 'rate_order:MX-1:5', title: '⭐⭐⭐⭐⭐' } },
+          },
+        ],
+      }),
+    );
+
+    expect(chatService.processIncomingMessage).toHaveBeenCalledWith(expect.objectContaining({ text: 'rate_order:MX-1:5' }));
+  });
+
   it('passes shared location pins through to the chat service', async () => {
     await controller.processPayload(
       envelope({

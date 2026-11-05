@@ -90,13 +90,14 @@ export class PaymentController {
     }
 
     const amountPaid = paidPesewas / 100;
-    const channel = data.channel || 'mobile_money';
+    const reportedChannel = typeof data.channel === 'string' && data.channel.trim() ? data.channel.trim().slice(0, 40) : null;
+    const channel = reportedChannel || 'mobile_money';
     const paidAt = data.paid_at || new Date().toISOString();
     const note = [order.notes, `Paystack verified: ${ghCedis(amountPaid)} via ${channel} (${paidAt})`]
       .filter(Boolean)
       .join(' | ');
 
-    if (!(await this.orderService.markPaid(order.id, note, paidPesewas))) {
+    if (!(await this.orderService.markPaid(order.id, note, paidPesewas, reportedChannel))) {
       // A duplicate webhook (or a status change) got there first.
       return { status: 'ALREADY_PAID', reference };
     }

@@ -5,6 +5,7 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard.js';
 import { parseChoice } from '../common/query.util.js';
 import { PAYOUT_STATUS_FILTERS, PayoutReportService } from '../payout/payout-report.service.js';
+import { SalesSummaryService } from '../payout/sales-summary.service.js';
 import { AdminPayoutsService } from './admin-payouts.service.js';
 
 export class PausePayoutsDto {
@@ -25,6 +26,7 @@ export class AdminPayoutsController {
   constructor(
     private readonly reports: PayoutReportService,
     private readonly actions: AdminPayoutsService,
+    private readonly sales: SalesSummaryService,
   ) {}
 
   /** Tiles: owed to and by vendors, paid out and commission in 30 days, failed payouts. GET /admin/payouts/summary */
@@ -59,6 +61,13 @@ export class AdminPayoutsController {
   @HttpCode(HttpStatus.OK)
   retry(@Request() req: any, @Param('id', ParseUUIDPipe) id: string) {
     return this.actions.retry(req.user.id, id);
+  }
+
+  /** One shop's sales, best sellers, repeat buyers and ratings. GET /admin/tenants/:id/sales-summary */
+  @Get('tenants/:id/sales-summary')
+  async shopSales(@Param('id', ParseUUIDPipe) id: string) {
+    await this.reports.ensureShop(id);
+    return this.sales.forShop(id);
   }
 
   /** One shop's money: balance, totals, waiting orders. GET /admin/tenants/:id/payouts/summary */

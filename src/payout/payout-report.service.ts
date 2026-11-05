@@ -3,8 +3,8 @@ import { LedgerEntryType, PayoutStatus, Prisma } from '@prisma/client';
 import { searchSql, whereSql } from '../common/search-sql.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { formatVendorRef } from '../tenant/vendor-ref.js';
-import { COMMISSION_PERCENT, MIN_PAYOUT } from './payout-math.js';
-import { payoutsEnabled, PayoutService } from './payout.service.js';
+import { cardHoldDays, COMMISSION_PERCENT, MIN_PAYOUT } from './payout-math.js';
+import { IN_FLIGHT, payoutsEnabled, PayoutService, STALE_AFTER_MS } from './payout.service.js';
 
 export const PAYOUT_STATUS_FILTERS = ['all', 'pending', 'processing', 'success', 'failed'] as const;
 export type PayoutStatusFilter = (typeof PAYOUT_STATUS_FILTERS)[number];
@@ -31,8 +31,8 @@ export class PayoutReportService {
     const tenant = await this.payouts.ensureTenant(tenantId);
     // Settle long-running transfers first, so the vendor isn't shown (and blocked by) a stuck one.
     await this.payouts.reconcileStale(tenantId).catch(() => undefined);
-    const [balance, byType, inFlight, lastPayout, awaiting, nextWithdrawalAt] = await Promise.all([
-      this.payouts.balanceOf(this.prisma, tenantId),
+    const [funds, byType, inFlight, lastPayout, awaiting, nextWithdrawalAt] = await Promise.all([
+      this.payouts.fundsOf(this.prisma, tenantId),
       this.prisma.vendorLedgerEntry.groupBy({ by: ['type'], where: { tenantId }, _sum: { amount: true } }),
       this.prisma.vendorPayout.aggregate({
         where: { tenantId, status: { in: [PayoutStatus.PENDING, PayoutStatus.PROCESSING] } },
@@ -47,7 +47,11 @@ export class PayoutReportService {
 
     return {
       /** Owed to the vendor now (negative: the vendor owes MarketiX commission on cash orders). */
-      balance,
+      balance: funds.balance,
+      /** The part of the balance the vendor can withdraw now. */
+      available: funds.available,
+      /** Card earnings held for a few days before they can be withdrawn. */
+      onHold: { amount: funds.onHold, nextReleaseAt: funds.nextReleaseAt, days: cardHoldDays() },
       /** Sent to Paystack, waiting for it to land. */
       inFlight: inFlight._sum.amount ?? 0,
       totals: {
@@ -71,6 +75,11 @@ export class PayoutReportService {
       commissionPercent: COMMISSION_PERCENT,
       minPayout: MIN_PAYOUT,
     };
+  }
+
+  /** Throws 404 for an unknown shop. */
+  async ensureShop(tenantId: string) {
+    await this.payouts.ensureTenant(tenantId);
   }
 
   /** The shop's ledger, newest first. */
@@ -142,6 +151,35 @@ export class PayoutReportService {
         SELECT DISTINCT ON ("tenantId") "status" FROM "VendorPayout" ORDER BY "tenantId", "createdAt" DESC, "id" DESC
       ) latest WHERE "status" = 'FAILED'`;
     return count;
+  }
+
+  /**
+   * Right now: payouts still on their way after the 10-minute check with Paystack, what
+   * vendors could withdraw, and whether MarketiX's Paystack balance covers it.
+   */
+  async moneyCheck(now = new Date()) {
+    const stuckWhere: Prisma.VendorPayoutWhereInput = { status: { in: IN_FLIGHT }, createdAt: { lt: new Date(now.getTime() - STALE_AFTER_MS) } };
+    // Ask Paystack about them first, so only ones it still can't settle are reported.
+    const shops = await this.prisma.vendorPayout.findMany({ where: stuckWhere, distinct: ['tenantId'], select: { tenantId: true } });
+    for (const { tenantId } of shops) await this.payouts.reconcileStale(tenantId).catch(() => undefined);
+
+    const [stuck, owed, paystackBalance] = await Promise.all([
+      this.prisma.vendorPayout.aggregate({ where: stuckWhere, _count: true, _sum: { amount: true } }),
+      this.prisma.$queryRaw<{ owed: number }[]>`
+        SELECT COALESCE(SUM(b) FILTER (WHERE b > 0), 0)::int AS "owed"
+        FROM (SELECT SUM("amount") AS b FROM "VendorLedgerEntry" GROUP BY "tenantId") s`,
+      this.payouts.paystackBalance().catch(() => null),
+    ]);
+    const owedToVendors = owed[0]?.owed ?? 0;
+    return {
+      stuckPayouts: { count: stuck._count, amount: stuck._sum.amount ?? 0 },
+      /** Every vendor's positive balance, held card earnings included. */
+      owedToVendors,
+      /** Null when Paystack couldn't be asked. */
+      paystackBalance,
+      /** How much more Paystack needs to cover every balance (0: covered; null: unknown). */
+      shortfall: paystackBalance === null ? null : Math.max(owedToVendors - paystackBalance, 0),
+    };
   }
 
   /** Every shop with money owed either way, or a payout on record: largest balance first. */

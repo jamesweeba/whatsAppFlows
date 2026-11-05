@@ -80,6 +80,28 @@ describe('PaystackTransfersClient', () => {
     });
   });
 
+  describe('balance', () => {
+    const balance = () => new PaystackTransfersClient().balance();
+
+    it('reads the cedi balance in pesewas', async () => {
+      fetchMock.mockReturnValue(reply(200, { status: true, data: [{ currency: 'NGN', balance: 1 }, { currency: 'GHS', balance: 1234500 }] }));
+      expect(await balance()).toBe(1234500);
+      expect(fetchMock).toHaveBeenCalledWith('https://api.paystack.co/balance', expect.objectContaining({ method: 'GET' }));
+    });
+
+    it('is unknown when Paystack refuses, is unreachable, has no cedi balance, or transfers are faked', async () => {
+      fetchMock.mockReturnValueOnce(reply(401, { status: false, message: 'Invalid key' }));
+      expect(await balance()).toBeNull();
+      fetchMock.mockRejectedValueOnce(new Error('ECONNRESET'));
+      expect(await balance()).toBeNull();
+      fetchMock.mockReturnValueOnce(reply(200, { status: true, data: [{ currency: 'NGN', balance: 5 }] }));
+      expect(await balance()).toBeNull();
+      process.env.PAYSTACK_FAKE_TRANSFERS = 'success';
+      expect(await balance()).toBeNull();
+      expect(fetchMock).toHaveBeenCalledTimes(3);
+    });
+  });
+
   describe('PAYSTACK_FAKE_TRANSFERS (local testing)', () => {
     const client = () => new PaystackTransfersClient();
     const send = () => client().transfer({ amount: 1000, recipientCode: 'RCP_FAKE', reference: 'payout_x', reason: 'test' });

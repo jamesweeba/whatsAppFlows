@@ -17,7 +17,8 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('payouts (real database)', () => {
     transfer: vi.fn(),
     verifyTransfer: vi.fn(),
   };
-  const service = new PayoutService(prisma, transfers as any);
+  const notifications = { payoutPaid: vi.fn(), payoutFailed: vi.fn() };
+  const service = new PayoutService(prisma, transfers as any, notifications as any);
   const reports = new PayoutReportService(prisma, service);
   /** The vendor withdraws `amount` (default: the whole balance). */
   const withdraw = async (amount?: number) => service.withdraw(tenantId, userId, amount ?? (await balance()));
@@ -29,7 +30,7 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('payouts (real database)', () => {
   let tenantId = '';
   let n = 0;
 
-  const order = (data: Partial<{ paymentMethod: PaymentMethod; status: OrderStatus; totalAmount: number; deliveryFee: number; paid: boolean; confirmed: boolean; paystackAmount: number }>) =>
+  const order = (data: Partial<{ paymentMethod: PaymentMethod; status: OrderStatus; totalAmount: number; deliveryFee: number; paid: boolean; confirmed: boolean; paystackAmount: number; channel: string }>) =>
     prisma.order.create({
       data: {
         tenantId,
@@ -41,6 +42,7 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('payouts (real database)', () => {
         deliveryFee: data.deliveryFee ?? 50,
         ...(data.paid !== false && data.paymentMethod !== PaymentMethod.COD && { paystackPaidAt: new Date(), paystackAmount: data.paystackAmount ?? 105000 }),
         ...(data.confirmed !== false && { deliveryConfirmedAt: new Date() }),
+        ...(data.channel && { paystackChannel: data.channel }),
       },
     });
   const balance = () => service.balanceOf(prisma, tenantId);
@@ -64,6 +66,8 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('payouts (real database)', () => {
     transfers.createMomoRecipient.mockReset().mockResolvedValue({ ok: true, code: 'RCP_test' });
     transfers.transfer.mockReset().mockResolvedValue({ ok: true, status: 'pending', transferCode: 'TRF_test' });
     transfers.verifyTransfer.mockReset().mockResolvedValue({ state: 'success' });
+    notifications.payoutPaid.mockReset().mockResolvedValue(true);
+    notifications.payoutFailed.mockReset().mockResolvedValue(true);
     await prisma.vendorLedgerEntry.deleteMany({ where: { tenantId } });
     await prisma.vendorPayout.deleteMany({ where: { tenantId } });
     await prisma.order.deleteMany({ where: { tenantId } });
@@ -331,5 +335,92 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('payouts (real database)', () => {
   it('never credits more than Paystack collected for an order', async () => {
     await service.settleOrder((await order({ paystackAmount: 50000 })).id);
     expect(await balance()).toBe(50000);
+  });
+
+  // ───────────── Card hold ─────────────
+
+  it('holds card earnings for 3 days before they can be withdrawn; MoMo earnings are not held', async () => {
+    await service.settleOrder((await order({ channel: 'mobile_money' })).id);
+    await service.settleOrder((await order({ channel: 'card' })).id);
+    const funds = await service.fundsOf(prisma, tenantId);
+    expect(funds).toMatchObject({ balance: 190000, available: 95000, onHold: 95000 });
+    const days = (funds.nextReleaseAt!.getTime() - Date.now()) / (24 * 60 * 60 * 1000);
+    expect(days).toBeGreaterThan(2.99);
+    expect(days).toBeLessThanOrEqual(3);
+
+    await expect(withdraw(95001)).rejects.toThrow(/up to GH₵ 950\.00 now\. GH₵ 950\.00 from card payments can be withdrawn from/);
+    await withdraw(95000);
+    expect(await balance()).toBe(95000);
+  });
+
+  it('releases a held card earning once its hold ends, and admins can only pay what is released', async () => {
+    await service.settleOrder((await order({ paymentMethod: PaymentMethod.CARD })).id); // paid before channels were recorded
+    await expect(service.payTenant(tenantId, null)).rejects.toThrow(/Nothing to pay now: GH₵ 950\.00 from card payments is on hold/);
+    await expect(withdraw(95000)).rejects.toThrow(/Nothing to withdraw yet/);
+
+    await prisma.vendorLedgerEntry.updateMany({ where: { tenantId }, data: { availableAt: new Date(Date.now() - 1000) } });
+    expect(await service.fundsOf(prisma, tenantId)).toMatchObject({ available: 95000, onHold: 0, nextReleaseAt: null });
+    await withdraw(95000);
+    expect(await balance()).toBe(0);
+  });
+
+  it('shows the vendor what is on hold', async () => {
+    await service.settleOrder((await order({ channel: 'card' })).id);
+    const summary = await reports.shopSummary(tenantId);
+    expect(summary).toMatchObject({ balance: 95000, available: 0, onHold: { amount: 95000, days: 3 } });
+    expect(summary.onHold.nextReleaseAt).toBeInstanceOf(Date);
+  });
+
+  // ───────────── WhatsApp to the vendor ─────────────
+
+  it('tells the vendor once when a withdrawal lands', async () => {
+    transfers.transfer.mockResolvedValueOnce({ ok: true, status: 'success', transferCode: 'TRF_now' });
+    await service.settleOrder((await order({})).id);
+    const payout = await withdraw();
+    expect(payout).toMatchObject({ status: PayoutStatus.SUCCESS, transferCode: 'TRF_now' });
+    await vi.waitFor(() => expect(notifications.payoutPaid).toHaveBeenCalledTimes(1));
+    expect(notifications.payoutPaid).toHaveBeenCalledWith(expect.objectContaining({ id: tenantId }), expect.objectContaining({ amount: 95000, source: PayoutSource.VENDOR }));
+
+    await service.handleTransferEvent('transfer.success', { reference: payout.reference }); // a later webhook
+    await new Promise((r) => setTimeout(r, 50));
+    expect(notifications.payoutPaid).toHaveBeenCalledTimes(1);
+    expect(notifications.payoutFailed).not.toHaveBeenCalled();
+  });
+
+  it('tells the vendor when a pending withdrawal lands later, or fails', async () => {
+    await service.settleOrder((await order({})).id);
+    const first = await withdraw(50000);
+    expect(notifications.payoutPaid).not.toHaveBeenCalled();
+    await service.handleTransferEvent('transfer.success', { reference: first.reference });
+    await vi.waitFor(() => expect(notifications.payoutPaid).toHaveBeenCalledTimes(1));
+
+    await yesterday();
+    const second = await withdraw(45000);
+    transfers.verifyTransfer.mockResolvedValue({ state: 'failed', reason: 'Starter business limit' });
+    await service.handleTransferEvent('transfer.failed', { reference: second.reference });
+    await vi.waitFor(() => expect(notifications.payoutFailed).toHaveBeenCalledTimes(1));
+    expect(notifications.payoutFailed).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ amount: 45000 }));
+  });
+
+  // ───────────── Daily money check ─────────────
+
+  it('reports payouts still stuck after the 10-minute check, and whether Paystack covers the balances', async () => {
+    transfers.transfer.mockResolvedValueOnce({ ok: false, unknown: true, reason: 'timeout' });
+    await service.settleOrder((await order({})).id);
+    await service.settleOrder((await order({})).id);
+    await withdraw(95000);
+    await prisma.$executeRaw`UPDATE "VendorPayout" SET "createdAt" = NOW() - INTERVAL '11 minutes', "updatedAt" = NOW() - INTERVAL '11 minutes' WHERE "tenantId" = ${tenantId}`;
+    transfers.verifyTransfer.mockResolvedValue({ state: 'pending' });
+    const paystackBalance = vi.spyOn(service, 'paystackBalance').mockResolvedValue(0);
+
+    const check = await reports.moneyCheck();
+    expect(transfers.verifyTransfer).toHaveBeenCalled(); // asked Paystack first
+    expect(check.stuckPayouts).toEqual({ count: 1, amount: 95000 });
+    expect(check.owedToVendors).toBeGreaterThanOrEqual(95000);
+    expect(check.shortfall).toBe(check.owedToVendors);
+
+    paystackBalance.mockResolvedValue(null);
+    expect((await reports.moneyCheck()).shortfall).toBeNull();
+    paystackBalance.mockRestore();
   });
 });

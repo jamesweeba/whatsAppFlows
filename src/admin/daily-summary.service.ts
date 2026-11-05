@@ -12,8 +12,10 @@ const inList = (statuses: string[]) => Prisma.join(statuses);
 const dayOf = (date: Date) => date.toISOString().slice(0, 10);
 
 /**
- * One day of MarketiX at a glance for admins: sales, commission, payouts and new shops on
- * that day (Accra time), plus what needs an admin right now. Amounts are pesewas.
+ * One day of MarketiX at a glance for admins: sales, commission, payouts (sent and failed)
+ * and new shops on that day (Accra time), plus what needs an admin right now: failed or
+ * stuck payouts, and whether the Paystack balance covers what vendors are owed. Amounts
+ * are pesewas.
  */
 @Injectable()
 export class DailySummaryService {
@@ -33,7 +35,7 @@ export class DailySummaryService {
     if (day > today) throw new BadRequestException("That day hasn't happened yet.");
     const to = new Date(from.getTime() + DAY_MS);
 
-    const [orders, topShops, ledger, paidOut, newShops, failedPayouts, pendingBanners, waitingForReview] = await Promise.all([
+    const [orders, topShops, ledger, paidOut, failedThatDay, newShops, failedPayouts, pendingBanners, waitingForReview, money] = await Promise.all([
       this.prisma.$queryRaw<{ placed: number; sales: number; paidOnline: number; cash: number; cancelled: number }[]>`
         SELECT COUNT(*) FILTER (WHERE "status"::text IN (${inList(PAID_ORDER_STATUSES)}))::int AS "placed",
                COALESCE(ROUND(SUM("totalAmount" * 100) FILTER (WHERE "status"::text IN (${inList(PAID_ORDER_STATUSES)}))), 0)::int AS "sales",
@@ -53,10 +55,12 @@ export class DailySummaryService {
                COUNT(*) FILTER (WHERE "type" IN ('ORDER_EARNING', 'CASH_COMMISSION'))::int AS "confirmedOrders"
         FROM "VendorLedgerEntry" WHERE "createdAt" >= ${from} AND "createdAt" < ${to}`,
       this.prisma.vendorPayout.aggregate({ where: { status: 'SUCCESS', paidAt: { gte: from, lt: to } }, _sum: { amount: true }, _count: true }),
+      this.prisma.vendorPayout.aggregate({ where: { status: 'FAILED', createdAt: { gte: from, lt: to } }, _sum: { amount: true }, _count: true }),
       this.prisma.tenant.count({ where: { createdAt: { gte: from, lt: to } } }),
       this.payoutReports.unresolvedFailures(),
       this.prisma.tenant.count({ where: { bannerPendingAt: { not: null } } }),
       this.prisma.tenant.count({ where: { status: { in: REVIEWABLE } } }),
+      this.payoutReports.moneyCheck(now),
     ]);
 
     const o = orders[0];
@@ -70,10 +74,14 @@ export class DailySummaryService {
       vendorEarnings: l?.vendorEarnings ?? 0,
       confirmedOrders: l?.confirmedOrders ?? 0,
       paidOut: { amount: paidOut._sum.amount ?? 0, count: paidOut._count },
+      /** Payouts that failed that day (the money went back to the vendors' balances). */
+      failedPayouts: { amount: failedThatDay._sum.amount ?? 0, count: failedThatDay._count },
       newShops,
       topShops,
       /** Right now, whatever day is shown. */
-      needsAttention: { failedPayouts, pendingBanners, waitingForReview },
+      needsAttention: { failedPayouts, pendingBanners, waitingForReview, stuckPayouts: money.stuckPayouts.count },
+      /** Right now: whether MarketiX's Paystack balance covers what vendors are owed. */
+      money,
     };
   }
 }

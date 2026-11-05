@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { momoNetworkOf, orderSplit } from './payout-math.js';
+import { cardHoldDays, earningAvailableAt, isDisputablePayment, momoNetworkOf, orderSplit } from './payout-math.js';
 
 describe('orderSplit', () => {
   it('takes 10% of the items only; the vendor keeps the whole delivery fee', () => {
@@ -29,5 +29,30 @@ describe('momoNetworkOf', () => {
     ['0301234567', null],
   ])('%s → %s', (phone, network) => {
     expect(momoNetworkOf(phone)).toBe(network);
+  });
+});
+
+describe('card hold', () => {
+  it('holds card and other non-MoMo Paystack payments, not mobile money', () => {
+    expect(isDisputablePayment({ paystackChannel: 'card', paymentMethod: 'MOMO' })).toBe(true);
+    expect(isDisputablePayment({ paystackChannel: 'bank', paymentMethod: 'CARD' })).toBe(true);
+    expect(isDisputablePayment({ paystackChannel: 'mobile_money', paymentMethod: 'CARD' })).toBe(false);
+    // Paid before the channel was recorded: go by what the buyer picked.
+    expect(isDisputablePayment({ paystackChannel: null, paymentMethod: 'CARD' })).toBe(true);
+    expect(isDisputablePayment({ paystackChannel: null, paymentMethod: 'MOMO' })).toBe(false);
+  });
+
+  it('reads CARD_EARNINGS_HOLD_DAYS, falling back to 3 days for anything odd', () => {
+    expect(cardHoldDays({})).toBe(3);
+    expect(cardHoldDays({ CARD_EARNINGS_HOLD_DAYS: '7' })).toBe(7);
+    expect(cardHoldDays({ CARD_EARNINGS_HOLD_DAYS: '0' })).toBe(0);
+    for (const odd of ['-1', '2.5', 'three', '31']) expect(cardHoldDays({ CARD_EARNINGS_HOLD_DAYS: odd })).toBe(3);
+  });
+
+  it('sets when a card earning can be withdrawn', () => {
+    const now = new Date('2026-11-05T10:00:00Z');
+    expect(earningAvailableAt({ paystackChannel: 'card', paymentMethod: 'CARD' }, now, 3)).toEqual(new Date('2026-11-08T10:00:00Z'));
+    expect(earningAvailableAt({ paystackChannel: 'card', paymentMethod: 'CARD' }, now, 0)).toBeNull();
+    expect(earningAvailableAt({ paystackChannel: 'mobile_money', paymentMethod: 'MOMO' }, now, 3)).toBeNull();
   });
 });

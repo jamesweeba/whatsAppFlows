@@ -56,6 +56,11 @@ export const WELCOME_BODY_TEXT = 'Hi 👋 What would you like to do today?';
 /** WhatsApp caps interactive reply-button titles and CTA labels at 20 characters. */
 const BUTTON_TITLE_MAX = 20;
 const REPLY_BUTTON_LIMIT = 3;
+/** WhatsApp list message limits. */
+const LIST_ROW_LIMIT = 10;
+const LIST_ROW_TITLE_MAX = 24;
+const LIST_ROW_DESCRIPTION_MAX = 72;
+const LIST_SECTION_TITLE_MAX = 24;
 
 /** Meta's view of the Flow encryption key on one phone number. */
 export type FlowKeyResult = 'ALREADY_VALID' | 'UPLOADED' | 'SKIPPED';
@@ -170,6 +175,38 @@ export class WabaService {
     };
     this.applyHeaderFooter(interactive, options.headerText, options.footerText);
 
+    return this.sendMessage(options.phoneNumberId, options.toPhone, { type: 'interactive', interactive });
+  }
+
+  /**
+   * Send an interactive list message: a button that opens up to ten choices. WhatsApp sends
+   * the chosen row's id back as `interactive.list_reply.id`.
+   */
+  async sendInteractiveList(options: {
+    phoneNumberId: string;
+    toPhone: string;
+    bodyText: string;
+    buttonText: string;
+    sectionTitle: string;
+    rows: { id: string; title: string; description?: string }[];
+  }): Promise<{ messageId: string }> {
+    const interactive = {
+      type: 'list',
+      body: { text: options.bodyText },
+      action: {
+        button: options.buttonText.slice(0, BUTTON_TITLE_MAX),
+        sections: [
+          {
+            title: options.sectionTitle.slice(0, LIST_SECTION_TITLE_MAX),
+            rows: options.rows.slice(0, LIST_ROW_LIMIT).map((row) => ({
+              id: row.id,
+              title: row.title.slice(0, LIST_ROW_TITLE_MAX),
+              ...(row.description && { description: row.description.slice(0, LIST_ROW_DESCRIPTION_MAX) }),
+            })),
+          },
+        ],
+      },
+    };
     return this.sendMessage(options.phoneNumberId, options.toPhone, { type: 'interactive', interactive });
   }
 
