@@ -203,6 +203,13 @@ describe('PromoterBotService', () => {
     expect(waba.sendInteractiveButtons).not.toHaveBeenCalled();
   });
 
+  it("sends nothing when PLATFORM_PHONE_NUMBER_ID is a shop's number", async () => {
+    (prisma as any).tenant = { findUnique: vi.fn().mockResolvedValue({ name: "Auntie Esi's" }) };
+    await bot.onModuleInit();
+    await send(PROMOTER_IDS.START);
+    expect(waba.sendTextMessage).not.toHaveBeenCalled();
+  });
+
   it('asks people with hidden numbers to use a visible one', async () => {
     expect(await send('promote', 'GH.989894404158856')).toContain('hide it');
     expect(prisma.rows.size).toBe(0);

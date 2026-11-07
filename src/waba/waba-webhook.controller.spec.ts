@@ -77,7 +77,24 @@ describe('WabaWebhookController', () => {
     expect(chatService.processIncomingMessage).not.toHaveBeenCalled();
   });
 
+  it("keeps a shop's messages with the shop even if PLATFORM_PHONE_NUMBER_ID is set to its number", async () => {
+    vi.stubEnv('PLATFORM_PHONE_NUMBER_ID', '1404916169377344');
+    try {
+      await controller.processPayload(
+        envelope({
+          metadata: { phone_number_id: '1404916169377344' },
+          messages: [{ from: '0245655799', id: 'wamid.shop', type: 'text', text: { body: 'Hello' } }],
+        }),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+    expect(chatService.processIncomingMessage).toHaveBeenCalledTimes(1);
+    expect(promoterBot.handle).not.toHaveBeenCalled();
+  });
+
   it('sends messages on the platform number to the promoter bot, not the shop chat', async () => {
+    tenantService.findByPhoneNumberId.mockResolvedValue(null);
     vi.stubEnv('PLATFORM_PHONE_NUMBER_ID', 'PLATFORM_ID');
     try {
       await controller.processPayload(
@@ -96,7 +113,6 @@ describe('WabaWebhookController', () => {
 
     expect(promoterBot.handle).toHaveBeenCalledWith({ phone: '+233244111222', text: 'I want to promote', messageId: 'wamid.p1' });
     expect(promoterBot.handle).toHaveBeenCalledWith({ phone: '+233244111222', text: 'promoter:start', messageId: 'wamid.p2' });
-    expect(tenantService.findByPhoneNumberId).not.toHaveBeenCalled();
     expect(chatService.processIncomingMessage).not.toHaveBeenCalled();
   });
 

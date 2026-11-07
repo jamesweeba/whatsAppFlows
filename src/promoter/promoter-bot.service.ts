@@ -1,4 +1,4 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { Injectable, Logger, OnModuleInit } from '@nestjs/common';
 import { Prisma, Promoter, PromoterSignupStep as Step, PromoterStatus } from '@prisma/client';
 import { optionalEnv } from '../common/config.js';
 import { formatGhanaLocal, isGhanaMobile, isHiddenNumber, toGhanaLocal, toInternationalDigits } from '../common/phone.util.js';
@@ -45,8 +45,10 @@ const TEXT = {
  * shops, invites and links. A promoter is known by their WhatsApp number; there is no login.
  */
 @Injectable()
-export class PromoterBotService {
+export class PromoterBotService implements OnModuleInit {
   private readonly logger = new Logger(PromoterBotService.name);
+  /** Set at startup when PLATFORM_PHONE_NUMBER_ID belongs to a shop: the bot then sends nothing. */
+  private platformIsShopNumber = false;
 
   constructor(
     private readonly prisma: PrismaService,
@@ -54,6 +56,23 @@ export class PromoterBotService {
     private readonly promoters: PromoterService,
     private readonly transfers: PaystackTransfersClient,
   ) {}
+
+  /** Says at startup whether the promoter bot can work, and refuses a platform number that is a shop's. */
+  async onModuleInit() {
+    const id = PromoterBotService.platformNumberId();
+    if (!id) {
+      this.logger.warn('PLATFORM_PHONE_NUMBER_ID is not set: the promoter bot and vendor WhatsApp alerts are off.');
+      return;
+    }
+    const shop = await this.prisma.tenant.findUnique({ where: { whatsappPhoneNumberId: id }, select: { name: true } }).catch(() => null);
+    if (shop) {
+      this.platformIsShopNumber = true;
+      this.logger.error(
+        `PLATFORM_PHONE_NUMBER_ID is the number of the shop "${shop.name}". Its messages stay with the shop and the promoter bot is off. ` +
+          'Give the platform its own WhatsApp number.',
+      );
+    }
+  }
 
   /** The platform number's Meta id, or '' when it isn't configured. */
   static platformNumberId(): string {
@@ -308,7 +327,8 @@ export class PromoterBotService {
   private sender(): string | null {
     const id = PromoterBotService.platformNumberId();
     if (!id) this.logger.warn('Promoter message skipped: PLATFORM_PHONE_NUMBER_ID is not set.');
-    return id || null;
+    else if (this.platformIsShopNumber) this.logger.warn("Promoter message skipped: PLATFORM_PHONE_NUMBER_ID is a shop's number.");
+    return id && !this.platformIsShopNumber ? id : null;
   }
 
   private async say(phone: string, text: string) {

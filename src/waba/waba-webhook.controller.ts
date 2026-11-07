@@ -95,12 +95,16 @@ export class WabaWebhookController {
         if (!value?.messages?.length) continue;
 
         const phoneNumberId: string | undefined = value.metadata?.phone_number_id;
-        const platformNumberId = PromoterBotService.platformNumberId();
-        if (phoneNumberId && platformNumberId && phoneNumberId === platformNumberId) {
+        const tenant = phoneNumberId ? await this.tenantService.findByPhoneNumberId(phoneNumberId) : null;
+        const toPlatform = Boolean(phoneNumberId) && phoneNumberId === PromoterBotService.platformNumberId();
+        // A shop's own number always reaches the shop, even if PLATFORM_PHONE_NUMBER_ID is set to it by mistake.
+        if (toPlatform && !tenant) {
           await this.handlePromoterMessages(value);
           continue;
         }
-        const tenant = phoneNumberId ? await this.tenantService.findByPhoneNumberId(phoneNumberId) : null;
+        if (toPlatform) {
+          this.logger.error(`PLATFORM_PHONE_NUMBER_ID is ${tenant!.name}'s number; handling the message as the shop's. Give the platform its own number.`);
+        }
         if (!tenant || !isLive(tenant)) {
           await this.replyShopUnavailable(phoneNumberId, tenant, value);
           continue;
