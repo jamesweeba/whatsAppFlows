@@ -76,17 +76,10 @@ export class WabaController {
    */
   @Post('request-otp')
   async requestOtp(@Request() req: any, @Body() dto: RequestOtpDto) {
-    this.assertOwnNumberOnboarding();
-    const tenant = await this.tenantService.findByUser(req.user.id);
-
-    if (!tenant.whatsappPhoneNumberId) {
-      throw new BadRequestException(
-        'Tenant phone number is not onboarded to WABA yet. Please call /waba/onboard first.',
-      );
-    }
+    const { tenant, phoneNumberId } = await this.onboardedTenant(req.user.id);
 
     await this.wabaService.requestVerificationCode({
-      phoneNumberId: tenant.whatsappPhoneNumberId,
+      phoneNumberId,
       codeMethod: dto.codeMethod,
       language: dto.language,
     });
@@ -109,17 +102,10 @@ export class WabaController {
    */
   @Post('verify-otp')
   async verifyOtp(@Request() req: any, @Body() dto: VerifyOtpDto) {
-    this.assertOwnNumberOnboarding();
-    const tenant = await this.tenantService.findByUser(req.user.id);
-
-    if (!tenant.whatsappPhoneNumberId) {
-      throw new BadRequestException(
-        'Tenant phone number is not onboarded to WABA yet. Please call /waba/onboard first.',
-      );
-    }
+    const { tenant, phoneNumberId } = await this.onboardedTenant(req.user.id);
 
     await this.wabaService.verifyCodeAndRegister({
-      phoneNumberId: tenant.whatsappPhoneNumberId,
+      phoneNumberId,
       code: dto.code,
       pin: dto.pin,
     });
@@ -134,7 +120,7 @@ export class WabaController {
 
     // The number is registered either way; a missing Flow key is reported, not fatal.
     let flowKeyWarning: string | undefined;
-    await this.wabaService.ensureFlowEncryptionKey(tenant.whatsappPhoneNumberId).catch((err: Error) => {
+    await this.wabaService.ensureFlowEncryptionKey(phoneNumberId).catch((err: Error) => {
       flowKeyWarning = `The ordering Flow will not open on this number until its encryption key is set up: ${err.message}`;
     });
 
@@ -143,6 +129,16 @@ export class WabaController {
       tenant: updatedTenant,
       ...(flowKeyWarning ? { flowKeyWarning } : {}),
     };
+  }
+
+  /** The caller's shop, once /waba/onboard has given it a Meta phone number id. */
+  private async onboardedTenant(userId: string) {
+    this.assertOwnNumberOnboarding();
+    const tenant = await this.tenantService.findByUser(userId);
+    if (!tenant.whatsappPhoneNumberId) {
+      throw new BadRequestException('Tenant phone number is not onboarded to WABA yet. Please call /waba/onboard first.');
+    }
+    return { tenant, phoneNumberId: tenant.whatsappPhoneNumberId };
   }
 
   /** 404 rather than 403, so the routes look absent when the feature is off. */

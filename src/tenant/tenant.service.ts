@@ -14,8 +14,9 @@ import { UpdateTenantDto } from './dto/update-tenant.dto.js';
 import { extractCountryCode } from './utils/country-code.util.js';
 
 /** Strip class instances down to plain JSON for a Prisma Json column. */
-function toJson(value: object[]): Prisma.InputJsonValue {
-  return JSON.parse(JSON.stringify(value));
+/** Undefined stays undefined, so Prisma leaves the field alone. */
+function toJson(value: object[] | undefined): Prisma.InputJsonValue | undefined {
+  return value === undefined ? undefined : JSON.parse(JSON.stringify(value));
 }
 
 /**
@@ -63,7 +64,7 @@ export class TenantService {
       data: {
         name: dto.name,
         slug,
-        ...(dto.countryCode && { countryCode: dto.countryCode }),
+        countryCode: dto.countryCode || undefined,
         ownerFullName: dto.ownerFullName,
         ownerPhone: dto.ownerPhone,
         market: dto.market,
@@ -71,10 +72,10 @@ export class TenantService {
         momoNumber: dto.momoNumber,
         momoName: dto.momoName,
         description: dto.description,
-        ...(dto.deliveryFee !== undefined && { deliveryFee: dto.deliveryFee }),
-        ...(dto.pickupNote !== undefined && { pickupNote: dto.pickupNote }),
-        ...(dto.deliveryAreas !== undefined && { deliveryAreas: toJson(dto.deliveryAreas) }),
-        ...(dto.deliverySlots !== undefined && { deliverySlots: toJson(dto.deliverySlots) }),
+        deliveryFee: dto.deliveryFee,
+        pickupNote: dto.pickupNote,
+        deliveryAreas: toJson(dto.deliveryAreas),
+        deliverySlots: toJson(dto.deliverySlots),
         userId,
         status: TenantStatus.PENDING,
         wabaStatus: WabaStatus.PENDING_REGISTRATION,
@@ -183,20 +184,20 @@ export class TenantService {
     return this.prisma.tenant.update({
       where: { userId },
       data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(dto.description !== undefined && { description: dto.description }),
-        ...(dto.ownerFullName !== undefined && { ownerFullName: dto.ownerFullName }),
-        ...(dto.ownerPhone !== undefined && { ownerPhone: dto.ownerPhone }),
-        ...(dto.market !== undefined && { market: dto.market }),
-        ...(dto.stallLocation !== undefined && { stallLocation: dto.stallLocation }),
-        ...(dto.momoNumber !== undefined && { momoNumber: dto.momoNumber }),
-        ...(dto.momoName !== undefined && { momoName: dto.momoName }),
-        ...(dto.whatsappNumber !== undefined && { whatsappNumber: dto.whatsappNumber }),
-        ...(countryCode !== undefined && { countryCode }),
-        ...(dto.deliveryFee !== undefined && { deliveryFee: dto.deliveryFee }),
-        ...(dto.pickupNote !== undefined && { pickupNote: dto.pickupNote }),
-        ...(dto.deliveryAreas !== undefined && { deliveryAreas: toJson(dto.deliveryAreas) }),
-        ...(dto.deliverySlots !== undefined && { deliverySlots: toJson(dto.deliverySlots) }),
+        name: dto.name,
+        description: dto.description,
+        ownerFullName: dto.ownerFullName,
+        ownerPhone: dto.ownerPhone,
+        market: dto.market,
+        stallLocation: dto.stallLocation,
+        momoNumber: dto.momoNumber,
+        momoName: dto.momoName,
+        whatsappNumber: dto.whatsappNumber,
+        countryCode,
+        deliveryFee: dto.deliveryFee,
+        pickupNote: dto.pickupNote,
+        deliveryAreas: toJson(dto.deliveryAreas),
+        deliverySlots: toJson(dto.deliverySlots),
       },
     });
   }

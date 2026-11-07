@@ -4,7 +4,7 @@ import { Transform, Type } from 'class-transformer';
 import { IsDate, IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard.js';
-import { measureParam, videoSlot } from '../product/product.controller.js';
+import { measureParam, videoSlot } from '../product/video-params.js';
 import { AdminVideoService } from './admin-video.service.js';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
