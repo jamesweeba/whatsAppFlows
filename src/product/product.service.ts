@@ -324,6 +324,10 @@ export class ProductService {
       },
       include: PRODUCT_INCLUDE,
     });
+    if (dto.measures !== undefined) {
+      // A deleted measure takes its video with it (kept measures keep their codes, and videos).
+      await this.videoService.pruneMeasures(product, product.measures.map((m) => m.code));
+    }
     await this.onboardingService.markStockedIfReady(tenant.id);
     return withPhotoUrl(product);
   }

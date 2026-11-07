@@ -89,7 +89,7 @@ export class ReviewService {
       this.numberPool.countFree(),
       this.prisma.tenant.count({ where: { status: TenantStatus.ACTIVE } }),
       this.prisma.tenant.count({ where: { bannerPendingAt: { not: null } } }),
-      this.prisma.product.count({ where: { videoStatus: ProductVideoStatus.PENDING } }),
+      this.prisma.productVideo.count({ where: { status: ProductVideoStatus.PENDING } }),
     ]);
     return { waiting, moreInfo, freeNumbers, activeShops, pendingBanners, pendingVideos };
   }
@@ -138,7 +138,7 @@ export class ReviewService {
         where: { tenantId },
         orderBy: { createdAt: 'asc' },
         take: PRODUCT_SAMPLE_SIZE,
-        include: { category: { select: { id: true, title: true } }, measures: { orderBy: { sortOrder: 'asc' } } },
+        include: { category: { select: { id: true, title: true } }, measures: { orderBy: { sortOrder: 'asc' } }, videos: true },
       }),
       this.prisma.product.count({ where: { tenantId, inStock: true } }),
       this.prisma.product.count({ where: { tenantId, categoryId: null } }),
@@ -178,7 +178,7 @@ export class ReviewService {
         orderBy: [{ createdAt: 'asc' }, { id: 'asc' }],
         skip: (safePage - 1) * safeLimit,
         take: safeLimit,
-        include: { category: { select: { id: true, title: true } }, measures: { orderBy: { sortOrder: 'asc' } } },
+        include: { category: { select: { id: true, title: true } }, measures: { orderBy: { sortOrder: 'asc' } }, videos: true },
       }),
       this.prisma.product.count({ where }),
       this.prisma.product.count({ where: base }),
@@ -186,7 +186,11 @@ export class ReviewService {
     ]);
 
     return {
-      data: products.map((p) => ({ ...withPhotoUrl(p), video: videoState(p, { forAdmin: true }) })),
+      data: products.map(({ videos, ...p }) => ({
+        ...withPhotoUrl(p),
+        /** Each video of the product: measureCode '' is the whole product. */
+        videos: videos.map((v) => ({ measureCode: v.measureCode, ...videoState(p.id, v.measureCode, v, { forAdmin: true }) })),
+      })),
       meta: { total, page: safePage, limit: safeLimit, totalPages: Math.ceil(total / safeLimit) },
       // Tab badges; they follow `search` but not `stock`.
       counts: { all, in: inStock, out: all - inStock },

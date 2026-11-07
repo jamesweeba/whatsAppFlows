@@ -4,7 +4,7 @@ import { Transform, Type } from 'class-transformer';
 import { IsDate, IsNotEmpty, IsString, MaxLength } from 'class-validator';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { Roles, RolesGuard } from '../auth/guards/roles.guard.js';
-import { videoSlot } from '../product/product.controller.js';
+import { measureParam, videoSlot } from '../product/product.controller.js';
 import { AdminVideoService } from './admin-video.service.js';
 
 const trim = ({ value }: { value: unknown }) => (typeof value === 'string' ? value.trim() : value);
@@ -47,46 +47,46 @@ export class AdminVideoController {
     return this.videos.waiting({ page, limit });
   }
 
-  /** GET /admin/products/:id/video */
+  /** GET /admin/products/:id/video (?measure=<code> for a measure's video) */
   @Get('products/:id/video')
-  state(@Param('id', ParseUUIDPipe) id: string) {
-    return this.videos.state(id);
+  state(@Param('id', ParseUUIDPipe) id: string, @Query('measure') measure?: string) {
+    return this.videos.state(id, measureParam(measure));
   }
 
   /** The pending or live video (MP4). GET /admin/products/:id/video/{pending|live} */
   @Get('products/:id/video/:slot')
   @Header('Cache-Control', 'private, no-store')
-  async file(@Param('id', ParseUUIDPipe) id: string, @Param('slot') slot: string) {
-    const { mimeType, stream } = await this.videos.open(id, videoSlot(slot), 'video');
+  async file(@Param('id', ParseUUIDPipe) id: string, @Param('slot') slot: string, @Query('measure') measure?: string) {
+    const { mimeType, stream } = await this.videos.open(id, measureParam(measure), videoSlot(slot), 'video');
     return new StreamableFile(stream, { type: mimeType, disposition: 'inline' });
   }
 
   /** Its still (JPEG). GET /admin/products/:id/video/{pending|live}/poster */
   @Get('products/:id/video/:slot/poster')
   @Header('Cache-Control', 'private, no-store')
-  async poster(@Param('id', ParseUUIDPipe) id: string, @Param('slot') slot: string) {
-    const { mimeType, stream } = await this.videos.open(id, videoSlot(slot), 'poster');
+  async poster(@Param('id', ParseUUIDPipe) id: string, @Param('slot') slot: string, @Query('measure') measure?: string) {
+    const { mimeType, stream } = await this.videos.open(id, measureParam(measure), videoSlot(slot), 'poster');
     return new StreamableFile(stream, { type: mimeType, disposition: 'inline' });
   }
 
-  /** POST /admin/products/:id/video/approve { uploadedAt } */
+  /** POST /admin/products/:id/video/approve { uploadedAt } (?measure=<code> for a measure's video) */
   @Post('products/:id/video/approve')
   @HttpCode(HttpStatus.OK)
-  approve(@Request() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ApproveVideoDto) {
-    return this.videos.approve(req.user.id, id, dto.uploadedAt);
+  approve(@Request() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() dto: ApproveVideoDto, @Query('measure') measure?: string) {
+    return this.videos.approve(req.user.id, id, measureParam(measure), dto.uploadedAt);
   }
 
-  /** POST /admin/products/:id/video/reject { uploadedAt, reason } */
+  /** POST /admin/products/:id/video/reject { uploadedAt, reason } (?measure=<code> for a measure's video) */
   @Post('products/:id/video/reject')
   @HttpCode(HttpStatus.OK)
-  reject(@Request() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectVideoDto) {
-    return this.videos.reject(req.user.id, id, dto.uploadedAt, dto.reason);
+  reject(@Request() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RejectVideoDto, @Query('measure') measure?: string) {
+    return this.videos.reject(req.user.id, id, measureParam(measure), dto.uploadedAt, dto.reason);
   }
 
   /** Take a live video down. POST /admin/products/:id/video/remove { reason } */
   @Post('products/:id/video/remove')
   @HttpCode(HttpStatus.OK)
-  remove(@Request() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RemoveVideoDto) {
-    return this.videos.remove(req.user.id, id, dto.reason);
+  remove(@Request() req: any, @Param('id', ParseUUIDPipe) id: string, @Body() dto: RemoveVideoDto, @Query('measure') measure?: string) {
+    return this.videos.remove(req.user.id, id, measureParam(measure), dto.reason);
   }
 }

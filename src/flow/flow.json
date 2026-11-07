@@ -873,6 +873,7 @@
                   "payload": {
                     "step": "send_video",
                     "sku": "${data.sku}",
+                    "measure": "${form.measure}",
                     "category": "${data.category}",
                     "page": "${data.page}",
                     "video": "1"

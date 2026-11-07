@@ -158,8 +158,8 @@ describe('ReviewService', () => {
   describe('products (every product of a shop)', () => {
     beforeEach(() => {
       prisma.product.findMany = vi.fn().mockResolvedValue([
-        { id: 'p1', name: 'Tomatoes', photoUpdatedAt: new Date(1700000000000) },
-        { id: 'p2', name: 'Onions', photoUpdatedAt: null },
+        { id: 'p1', name: 'Tomatoes', photoUpdatedAt: new Date(1700000000000), videos: [{ measureCode: 'olonka', status: 'PENDING', uploadedAt: new Date(1700000000000), pendingSeconds: 9, pendingTrimmed: false, message: null, approvedAt: null, liveSeconds: null }] },
+        { id: 'p2', name: 'Onions', photoUpdatedAt: null, videos: [] },
       ]);
       prisma.product.count = vi.fn(async ({ where }: any) => (where.inStock === true ? 30 : where.inStock === false ? 12 : 42));
     });
@@ -172,6 +172,9 @@ describe('ReviewService', () => {
       expect(result.data.map((p: any) => p.photoUrl)).toEqual(['/api/v1/products/p1/photo?v=1700000000000', null]);
       expect(result.meta).toEqual({ total: 42, page: 2, limit: 20, totalPages: 3 });
       expect(result.counts).toEqual({ all: 42, in: 30, out: 12 });
+      expect(result.data[0].videos).toEqual([
+        expect.objectContaining({ measureCode: 'olonka', status: 'PENDING', pending: expect.objectContaining({ url: '/api/v1/admin/products/p1/video/pending?measure=olonka' }) }),
+      ]);
     });
 
     it('filters by name and stock, and caps the page size at 50', async () => {

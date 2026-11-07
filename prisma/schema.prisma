@@ -279,22 +279,8 @@ model Product {
   measures       ProductMeasure[]
   /// Promoter commission for this product's links, whole percent (1-20). Null: the shop's rate.
   promoterRate   Int?
-  /// The vendor's latest video upload: being converted, waiting for an admin, turned down... (see VIDEO_SPEC.md).
-  /// The approved, live video is separate: it exists when videoApprovedAt is set.
-  videoStatus         ProductVideoStatus @default(NONE)
-  /// When the pending upload arrived; also tells a finished conversion it is still the latest upload.
-  videoUploadedAt     DateTime?
-  /// Length of the pending video, and whether it was cut to the 30-second limit.
-  pendingVideoSeconds Int?
-  pendingVideoTrimmed Boolean            @default(false)
-  /// Shown to the vendor: why an admin turned the upload down, or why converting it failed.
-  videoMessage        String?
-  /// When an admin approved the live video. Null: no video for buyers.
-  videoApprovedAt     DateTime?
-  liveVideoSeconds    Int?
-  /// Meta's copy of the live video for the shop's number, reused for 25 days.
-  waVideoMediaId      String?
-  waVideoUploadedAt   DateTime?
+  /// Videos of the whole product and of its measures (see VIDEO_SPEC.md).
+  videos         ProductVideo[]
   promoLinks     PromoLink[]
   tenantId       String
   tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -819,7 +805,38 @@ model PromoterPayout {
   @@index([status, createdAt])
 }
 
-/// Where a product's latest video upload stands. The live (approved) video is tracked separately.
+/// A short video of a product, or of one of its measures (e.g. the olonka, the table top).
+/// The latest upload (converted, then approved by an admin) and the live, approved video are
+/// tracked side by side: buyers keep the live one while a new upload waits.
+model ProductVideo {
+  id                String             @id @default(uuid())
+  productId         String
+  product           Product            @relation(fields: [productId], references: [id], onDelete: Cascade)
+  /// '' for the whole product; otherwise a ProductMeasure code (codes survive product edits).
+  measureCode       String             @default("")
+  /// The latest upload: being converted, waiting for an admin, turned down...
+  status            ProductVideoStatus @default(NONE)
+  /// When the pending upload arrived; also tells a finished conversion it is still the latest upload.
+  uploadedAt        DateTime?
+  pendingSeconds    Int?
+  /// The upload was cut to the 30-second limit.
+  pendingTrimmed    Boolean            @default(false)
+  /// Shown to the vendor: why an admin turned the upload down, or why converting it failed.
+  message           String?
+  /// When an admin approved the live video. Null: no video for buyers.
+  approvedAt        DateTime?
+  liveSeconds       Int?
+  /// Meta's copy of the live video for the shop's number, reused for 25 days.
+  waMediaId         String?
+  waMediaUploadedAt DateTime?
+  createdAt         DateTime           @default(now())
+  updatedAt         DateTime           @updatedAt
+
+  @@unique([productId, measureCode])
+  @@index([status])
+}
+
+/// Where a video's latest upload stands. The live (approved) video is tracked separately.
 enum ProductVideoStatus {
   /// No upload waiting.
   NONE
