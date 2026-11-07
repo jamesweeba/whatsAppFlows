@@ -124,7 +124,7 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('promoter commission and payouts (rea
     await releaseHolds(); // GH₵ 30 available
     transfers.transfer.mockResolvedValue({ ok: true, status: 'success', transferCode: 'TRF_1' });
 
-    expect(await promoterPayouts.withdraw(promoterId)).toEqual({ kind: 'paid', amount: 3000, momoNumber: '0244111222' });
+    expect(await promoterPayouts.withdraw(promoterId)).toMatchObject({ kind: 'paid', amount: 3000, momoNumber: '0244111222' });
     expect(transfers.transfer).toHaveBeenCalledWith(expect.objectContaining({ amount: 3000, recipientCode: 'RCP_TEST' }));
     expect(await promoterBalance()).toMatchObject({ balance: 0, available: 0 });
     // The bot tells them the result itself; no second "it landed" message.
@@ -140,7 +140,7 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('promoter commission and payouts (rea
     await prisma.promoterPayout.updateMany({ where: { promoterId }, data: { createdAt: new Date(Date.now() - 2 * 86_400_000) } }); // yesterday's
     transfers.transfer.mockResolvedValueOnce({ ok: false, reason: 'Recipient rejected' });
     const failed = await promoterPayouts.withdraw(promoterId);
-    expect(failed).toEqual({ kind: 'failed', amount: 3000, momoNumber: '0244111222' });
+    expect(failed).toMatchObject({ kind: 'failed', amount: 3000, momoNumber: '0244111222' });
     expect(await promoterBalance()).toMatchObject({ balance: 3000, available: 3000 });
 
     transfers.transfer.mockResolvedValueOnce({ ok: true, status: 'pending', transferCode: 'TRF_2' });

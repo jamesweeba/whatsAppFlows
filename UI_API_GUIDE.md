@@ -982,6 +982,24 @@ Money owed to vendors and the MoMo transfers that pay them (amounts in pesewas; 
 
 `GET /admin/orders/:id` includes `paystackPaidAt` and `settlement: { type, amount, createdAt } | null` (the order's ledger entry), so the order detail can show "credited to the vendor" or offer **Release to vendor**.
 
+### 5.7c Promoters
+
+People who share shops' links and earn commission (vendor side: 4.12; design: `PROMOTERS_SPEC.md`). Amounts in pesewas.
+
+**`GET /admin/promoters/summary`**: `{ promoters: { active, suspended, signingUp }, owedToPromoters, commissionLast30Days, failedPayouts }`. `failedPayouts` counts failures with nothing sent to that promoter since.
+
+**`GET /admin/promoters?search=&status=active|suspended|signing_up&page=&limit=`**: newest first. `search` matches the name, or phone/MoMo digits in any format. Each row: `{ id, fullName, phone, status, suspendedReason, createdAt, momo: { number, name, verified }, shops, buyers, orders, ownNumberOrders, earned, balance, available }`. `shops`: shops that approved them; `ownNumberOrders`: orders placed or paid with the promoter's own number (they earn nothing; worth a look).
+
+**`GET /admin/promoters/:id`**: the profile plus `money: { balance, available, onHold, nextReleaseAt, earned }`, `shops` (each membership with its status and links), `referrals` (20 most recent buyers: shop, link, order, commission, `state` and `reason` as in 4.12, plus `WAITING` and `EXPIRED` for buyers who tapped and never ordered), `payouts` (10 most recent) and `ledger` (20 most recent: `COMMISSION`, `PAYOUT`, `PAYOUT_REVERSAL`).
+
+| Action | Request | Notes |
+|---|---|---|
+| Suspend | `POST /admin/promoters/:id/suspend` `{ reason }` | Their links stop counting, new orders aren't credited to them, they can't withdraw. Earned money stays. They're told on WhatsApp (without the reason). 409 if already suspended. Audit: `PROMOTER_SUSPENDED`. |
+| Reinstate | `POST /admin/promoters/:id/reinstate` | Back to `ACTIVE` (or `SIGNING_UP` if they never finished). Audit: `PROMOTER_REINSTATED`. |
+| Retry a payout | `POST /admin/promoter-payouts/:id/retry` | Only the latest failed payout; sends the whole available balance now (not limited to once a day or GH₵ 20). 409 with the reason if it can't. Audit: `PROMOTER_PAYOUT_RETRIED`. |
+
+**`GET /admin/promoter-payouts?status=all|failed|processing|success&search=&page=&limit=`**: each `{ id, createdAt, amount, status, reference, momoNumber, momoName, failureReason, paidAt, byAdmin, superseded, promoter: { id, fullName, phone } }`. Show Retry only on `FAILED` and not `superseded`.
+
 ### 5.8 Audit log
 
 Every admin action: who did it, when, and why. Entries are written in the same transaction as the action (an action that fails leaves no entry) and **cannot be edited or deleted**: there are no endpoints for it, and the database refuses `UPDATE` / `DELETE` on the table. Names are copied into each entry, so it still reads correctly after a shop is renamed or deleted.

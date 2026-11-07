@@ -58,6 +58,9 @@ enum AuditAction {
   PAYOUTS_PAUSED
   PAYOUTS_RESUMED
   ORDER_RELEASED
+  PROMOTER_SUSPENDED
+  PROMOTER_REINSTATED
+  PROMOTER_PAYOUT_RETRIED
 }
 
 /// A pool number's state. COOLING numbers count as FREE once released over 7 days ago.
@@ -635,6 +638,8 @@ model Promoter {
   momoVerifiedAt        DateTime?
   termsAcceptedAt       DateTime?
   status                PromoterStatus          @default(SIGNING_UP)
+  /// Why an admin suspended them (shown to admins). Cleared on reinstatement.
+  suspendedReason       String?
   signupStep            PromoterSignupStep?     @default(ASK_NAME)
   /// An invite they started sign-up from (JOIN <code>), accepted once sign-up finishes.
   pendingInviteCode     String?
@@ -785,6 +790,8 @@ model PromoterPayout {
   momoName      String?
   failureReason String?
   paidAt        DateTime?
+  /// The admin who sent it (a retry). Null: the promoter withdrew it themselves.
+  initiatedById String?
   entries       PromoterLedgerEntry[]
   createdAt     DateTime              @default(now())
   updatedAt     DateTime              @updatedAt

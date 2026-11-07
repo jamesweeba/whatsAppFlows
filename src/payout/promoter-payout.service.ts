@@ -6,7 +6,7 @@ import { NotificationService } from '../notification/notification.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { COMMISSION_HOLD_DAYS } from '../promoter/promoter-rules.js';
 import { referralState } from '../promoter/referral-rules.js';
-import { formatAccra, type Funds, ghs, IN_FLIGHT, momoNetworkOf, payoutsEnabled, STALE_AFTER_MS } from './payout-math.js';
+import { formatAccra, type Funds, ghs, IN_FLIGHT, MIN_PAYOUT, momoNetworkOf, payoutsEnabled, STALE_AFTER_MS } from './payout-math.js';
 import { PaystackTransfersClient, type TransferState } from './paystack-transfers.client.js';
 import { startOfAccraDay } from './withdrawal-day.js';
 
@@ -22,7 +22,7 @@ type Payout = Prisma.PromoterPayoutGetPayload<object>;
 export type WithdrawResult =
   | { kind: 'refused'; message: string }
   /** Paid at once, on its way (Paystack will confirm), or failed and put back. */
-  | { kind: 'paid' | 'processing' | 'failed'; amount: number; momoNumber: string };
+  | { kind: 'paid' | 'processing' | 'failed'; amount: number; momoNumber: string; payoutId: string };
 
 /** A reason not to withdraw, thrown inside the transaction so nothing is written. */
 class Refusal extends Error {}
@@ -138,9 +138,25 @@ export class PromoterPayoutService {
   // ───────────────────────── Withdrawals ─────────────────────────
 
   /** Send everything available to the promoter's MoMo. The bot tells them the result. */
-  async withdraw(promoterId: string): Promise<WithdrawResult> {
+  withdraw(promoterId: string): Promise<WithdrawResult> {
+    return this.start(promoterId, null);
+  }
+
+  /**
+   * An admin's "Retry": send the promoter's whole available balance now. Not limited to once
+   * a day or GH₵ 20, and doesn't use up the promoter's own withdrawal for the day. The
+   * promoter is told the outcome on WhatsApp.
+   */
+  payNow(promoterId: string, adminId: string): Promise<WithdrawResult> {
+    return this.start(promoterId, adminId);
+  }
+
+  private async start(promoterId: string, adminId: string | null): Promise<WithdrawResult> {
     await this.reconcileStale(promoterId);
-    if (!payoutsEnabled()) return { kind: 'refused', message: 'Withdrawals aren’t available yet. Your earnings are safe and keep adding up.' };
+    if (!payoutsEnabled()) {
+      return { kind: 'refused', message: adminId ? 'Payouts are turned off (PAYOUTS_ENABLED).' : 'Withdrawals aren’t available yet. Your earnings are safe and keep adding up.' };
+    }
+    const minimum = adminId ? MIN_PAYOUT : PROMOTER_MIN_WITHDRAWAL;
 
     let started: { payout: Payout; promoter: Prisma.PromoterGetPayload<object> };
     try {
@@ -148,18 +164,28 @@ export class PromoterPayoutService {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ppayout:${promoterId}`}))`;
         const promoter = await tx.promoter.findUnique({ where: { id: promoterId } });
         if (!promoter) throw new Refusal('We couldn’t find your account.');
-        if (promoter.status !== PromoterStatus.ACTIVE) throw new Refusal('Your account is paused, so you can’t withdraw. Please contact MarketiX support.');
-        if (!promoter.momoNumber) throw new Refusal('Add your MoMo number before you withdraw.');
-        if (await tx.promoterPayout.count({ where: { promoterId, status: { in: IN_FLIGHT } } })) {
-          throw new Refusal('Your last withdrawal is still on its way. Please wait for it to land.');
+        if (promoter.status !== PromoterStatus.ACTIVE) {
+          throw new Refusal(adminId ? 'This promoter is not active. Reinstate them first.' : 'Your account is paused, so you can’t withdraw. Please contact MarketiX support.');
         }
-        const today = await tx.promoterPayout.count({ where: { promoterId, status: { not: PayoutStatus.FAILED }, createdAt: { gte: startOfAccraDay() } } });
-        if (today) throw new Refusal('You can withdraw once a day. Try again tomorrow.');
+        if (!promoter.momoNumber) throw new Refusal(adminId ? 'This promoter has no MoMo number.' : 'Add your MoMo number before you withdraw.');
+        if (await tx.promoterPayout.count({ where: { promoterId, status: { in: IN_FLIGHT } } })) {
+          throw new Refusal(adminId ? 'A payout to this promoter is already on its way.' : 'Your last withdrawal is still on its way. Please wait for it to land.');
+        }
+        if (!adminId) {
+          const today = await tx.promoterPayout.count({
+            where: { promoterId, initiatedById: null, status: { not: PayoutStatus.FAILED }, createdAt: { gte: startOfAccraDay() } },
+          });
+          if (today) throw new Refusal('You can withdraw once a day. Try again tomorrow.');
+        }
 
         const funds = await this.fundsOf(tx, promoterId);
-        if (funds.available < PROMOTER_MIN_WITHDRAWAL) {
+        if (funds.available < minimum) {
           const held = funds.onHold > 0 ? ` ${ghs(funds.onHold)} more is on its way: the next part is ready on ${formatAccra(funds.nextReleaseAt!)}.` : '';
-          throw new Refusal(`You can withdraw once you have ${ghs(PROMOTER_MIN_WITHDRAWAL)} ready. You have ${ghs(Math.max(funds.available, 0))} now.${held}`);
+          throw new Refusal(
+            adminId
+              ? `Nothing to pay: ${ghs(Math.max(funds.available, 0))} is available.${held}`
+              : `You can withdraw once you have ${ghs(minimum)} ready. You have ${ghs(Math.max(funds.available, 0))} now.${held}`,
+          );
         }
         const payout = await tx.promoterPayout.create({
           data: {
@@ -168,6 +194,7 @@ export class PromoterPayoutService {
             reference: `ppayout_${randomUUID().replace(/-/g, '')}`,
             momoNumber: promoter.momoNumber,
             momoName: promoter.momoName ?? promoter.fullName,
+            initiatedById: adminId,
           },
         });
         // Off the balance now, so it can't be sent twice; put back if the transfer fails.
@@ -179,14 +206,15 @@ export class PromoterPayoutService {
       throw err;
     }
 
-    const payout = await this.sendTransfer(started.payout, started.promoter);
+    // The bot replies to a promoter's own withdrawal; an admin's is announced here.
+    const payout = await this.sendTransfer(started.payout, started.promoter, Boolean(adminId));
     const kind = payout.status === PayoutStatus.SUCCESS ? 'paid' : payout.status === PayoutStatus.FAILED ? 'failed' : 'processing';
-    return { kind, amount: payout.amount, momoNumber: payout.momoNumber };
+    return { kind, amount: payout.amount, momoNumber: payout.momoNumber, payoutId: payout.id };
   }
 
-  private async sendTransfer(payout: Payout, promoter: Prisma.PromoterGetPayload<object>): Promise<Payout> {
+  private async sendTransfer(payout: Payout, promoter: Prisma.PromoterGetPayload<object>, notify: boolean): Promise<Payout> {
     const recipient = await this.recipientFor(promoter);
-    if ('reason' in recipient) return this.fail(payout.id, recipient.reason, false);
+    if ('reason' in recipient) return this.fail(payout.id, recipient.reason, notify);
 
     const result = await this.transfers.transfer({
       amount: payout.amount,
@@ -198,14 +226,14 @@ export class PromoterPayoutService {
       this.logger.warn(`Promoter payout ${payout.reference}: no clear answer from Paystack (${result.reason}); left in flight until Paystack confirms.`);
       return this.prisma.promoterPayout.update({ where: { id: payout.id }, data: { status: PayoutStatus.PROCESSING } });
     }
-    if (!result.ok) return this.fail(payout.id, result.reason, false);
+    if (!result.ok) return this.fail(payout.id, result.reason, notify);
 
     this.logger.log(`Promoter payout ${payout.reference}: ${ghs(payout.amount)} accepted by Paystack (${result.status}).`);
     if (result.status !== 'success') {
       return this.prisma.promoterPayout.update({ where: { id: payout.id }, data: { status: PayoutStatus.PROCESSING, transferCode: result.transferCode } });
     }
     await this.prisma.promoterPayout.updateMany({ where: { id: payout.id, status: { in: IN_FLIGHT } }, data: { transferCode: result.transferCode } });
-    await this.succeed(payout.id, false);
+    await this.succeed(payout.id, notify);
     return this.prisma.promoterPayout.findUniqueOrThrow({ where: { id: payout.id } });
   }
 

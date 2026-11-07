@@ -199,13 +199,14 @@ export class ReferralService {
     return count > 0;
   }
 
-  /** The buyer's latest unexpired referral for the shop that isn't on a paid or confirmed order. */
+  /** The buyer's latest unexpired referral for the shop that isn't on a paid or confirmed order (and whose promoter isn't suspended). */
   private openReferral(tenantId: string, buyerPhone: string, now: Date) {
     return this.prisma.referral.findFirst({
       where: {
         tenantId,
         buyerPhone,
         expiresAt: { gt: now },
+        promoter: { status: PromoterStatus.ACTIVE },
         OR: [{ orderId: null }, { order: { status: { notIn: PAID_ORDER_STATUSES } } }],
       },
       orderBy: { tappedAt: 'desc' },

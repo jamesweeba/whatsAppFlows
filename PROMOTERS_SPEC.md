@@ -2,7 +2,7 @@
 
 Promoters share a vendor's shop or products on WhatsApp. When a new buyer orders through their link, the promoter earns a commission that the vendor pays.
 
-*Status, 7 Nov 2026: phases 1 (bot), 2 (vendor side), 3 (attribution) and 4 (money) built; admin to do.*
+*Status, 7 Nov 2026: all five phases built (bot, vendor side, attribution, money, admin).*
 
 ---
 
@@ -199,7 +199,7 @@ A new request also triggers a WhatsApp alert to the vendor's `ownerPhone` throug
 | Method & path | Purpose |
 |---|---|
 | `GET /admin/promoters` | List and search promoters: shops, balance, lifetime earnings, self-referral flags |
-| `POST /admin/promoters/:id/suspend` and `/reinstate` | A suspended promoter's links stop counting and they can't withdraw (written to `AuditLog`) |
+| `POST /admin/promoters/:id/suspend` `{ reason }` and `/reinstate` | A suspended promoter's links stop counting, new orders aren't credited to them, and they can't withdraw (written to `AuditLog`) |
 | `GET /admin/promoter-payouts` and `POST …/:id/retry` | Same as vendor payouts |
 
 ---
