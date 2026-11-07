@@ -60,6 +60,8 @@ export class PayoutReportService {
         commissionOnPaidOrders: commissionOnPaid,
         /** MarketiX's 10% on cash orders (taken off the balance). */
         commissionOnCashOrders: -sum(LedgerEntryType.CASH_COMMISSION),
+        /** Paid to promoters for orders they brought in (taken off those orders' earnings). */
+        promoterCommission: -sum(LedgerEntryType.PROMOTER_COMMISSION),
         paidOut: await this.paidOut({ tenantId }),
       },
       awaitingConfirmation: awaiting,

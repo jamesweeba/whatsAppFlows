@@ -1,3 +1,4 @@
+import { PayoutStatus } from '@prisma/client';
 import { toGhanaLocal } from '../common/phone.util.js';
 
 /** MarketiX's commission on the items of each order (not on the delivery fee). */
@@ -88,3 +89,27 @@ const accraDateTime = new Intl.DateTimeFormat('en-GB', { timeZone: 'UTC', day: '
 
 /** "8 Nov, 14:30" in Accra (GMT all year). */
 export const formatAccra = (date: Date) => accraDateTime.format(date);
+
+/** Payouts in flight: at most one per shop, so a balance is never sent twice. */
+export const IN_FLIGHT: PayoutStatus[] = [PayoutStatus.PENDING, PayoutStatus.PROCESSING];
+
+/**
+ * A payout still in flight after this long is checked with Paystack before the shop is paid
+ * again. Long enough that a transfer request still on its way to Paystack has landed.
+ */
+export const STALE_AFTER_MS = 10 * 60 * 1000;
+
+/** Transfers only go out when PAYOUTS_ENABLED=true; otherwise balances just accrue. */
+export const payoutsEnabled = () => process.env.PAYOUTS_ENABLED?.trim().toLowerCase() === 'true';
+
+/** A shop's balance split into what can be withdrawn now and what's held (card earnings). */
+export interface Funds {
+  /** The whole balance (negative: the vendor owes MarketiX). */
+  balance: number;
+  /** What can be withdrawn now. */
+  available: number;
+  /** Card earnings not yet withdrawable. */
+  onHold: number;
+  /** When the next held earning becomes withdrawable, or null. */
+  nextReleaseAt: Date | null;
+}

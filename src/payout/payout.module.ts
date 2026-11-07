@@ -6,13 +6,14 @@ import { PaystackTransfersClient } from './paystack-transfers.client.js';
 import { PayoutReportService } from './payout-report.service.js';
 import { PayoutController } from './payout.controller.js';
 import { PayoutService } from './payout.service.js';
+import { PromoterPayoutService } from './promoter-payout.service.js';
 import { SalesSummaryService } from './sales-summary.service.js';
 
 /** The vendor money ledger and MoMo payouts through Paystack Transfers. */
 @Module({
   imports: [PrismaModule, TenantModule, forwardRef(() => NotificationModule)],
   controllers: [PayoutController],
-  providers: [PayoutService, PayoutReportService, PaystackTransfersClient, SalesSummaryService],
-  exports: [PayoutService, PayoutReportService, SalesSummaryService, PaystackTransfersClient],
+  providers: [PayoutService, PayoutReportService, PaystackTransfersClient, SalesSummaryService, PromoterPayoutService],
+  exports: [PayoutService, PayoutReportService, SalesSummaryService, PaystackTransfersClient, PromoterPayoutService],
 })
 export class PayoutModule {}

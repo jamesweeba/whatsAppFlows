@@ -31,6 +31,8 @@ export const PROMOTER_IDS = {
   AGREE: 'promoter:agree',
   SHOPS: 'promoter:shops',
   LINKS: 'promoter:links',
+  EARNINGS: 'promoter:earnings',
+  WITHDRAW: 'promoter:withdraw',
   /** + page number, e.g. promoter:shops:1 */
   SHOPS_PAGE: 'promoter:shops:',
   /** + tenant id */
@@ -43,6 +45,8 @@ export type PromoterCommand =
   | { kind: 'shops'; page: number }
   | { kind: 'request'; tenantId: string }
   | { kind: 'links' }
+  | { kind: 'earnings' }
+  | { kind: 'withdraw' }
   | { kind: 'help' }
   | { kind: 'yes' }
   | { kind: 'no' }
@@ -66,6 +70,10 @@ export function parsePromoterCommand(raw: string): PromoterCommand {
       return { kind: 'shops', page: 0 };
     case PROMOTER_IDS.LINKS:
       return { kind: 'links' };
+    case PROMOTER_IDS.EARNINGS:
+      return { kind: 'earnings' };
+    case PROMOTER_IDS.WITHDRAW:
+      return { kind: 'withdraw' };
   }
   if (text.startsWith(PROMOTER_IDS.REQUEST)) return { kind: 'request', tenantId: text.slice(PROMOTER_IDS.REQUEST.length) };
   if (text.startsWith(PROMOTER_IDS.SHOPS_PAGE)) {
@@ -78,6 +86,8 @@ export function parsePromoterCommand(raw: string): PromoterCommand {
   if (join) return { kind: 'join', code: join[1] };
   if (/^(FIND )?SHOPS?$/.test(upper)) return { kind: 'shops', page: 0 };
   if (/^(MY )?LINKS?$/.test(upper)) return { kind: 'links' };
+  if (/^(MY )?(EARNINGS?|BALANCE)$/.test(upper)) return { kind: 'earnings' };
+  if (/^(WITHDRAW|CASH ?OUT)$/.test(upper)) return { kind: 'withdraw' };
   if (/^(HELP|MENU)$/.test(upper)) return { kind: 'help' };
   if (/^(I )?AGREE$/.test(upper)) return { kind: 'agree' };
   if (/^(YES|Y|YEAH|OK)$/.test(upper)) return { kind: 'yes' };

@@ -41,6 +41,7 @@ describe('PromoterBotService', () => {
   let waba: { sendTextMessage: ReturnType<typeof vi.fn>; sendInteractiveButtons: ReturnType<typeof vi.fn>; sendInteractiveList: ReturnType<typeof vi.fn> };
   let promoters: Record<string, ReturnType<typeof vi.fn>>;
   let transfers: { resolveMomoName: ReturnType<typeof vi.fn> };
+  let payouts: { summary: ReturnType<typeof vi.fn>; withdraw: ReturnType<typeof vi.fn> };
   let bot: PromoterBotService;
   let n = 0;
 
@@ -74,7 +75,8 @@ describe('PromoterBotService', () => {
       activeLinks: vi.fn().mockResolvedValue([]),
     };
     transfers = { resolveMomoName: vi.fn().mockResolvedValue({ ok: true, name: 'AMA MENSAH' }) };
-    bot = new PromoterBotService(prisma as any, waba as any, promoters as any, transfers as any);
+    payouts = { summary: vi.fn(), withdraw: vi.fn() };
+    bot = new PromoterBotService(prisma as any, waba as any, promoters as any, transfers as any, payouts as any);
   });
 
   afterEach(() => vi.unstubAllEnvs());
@@ -185,6 +187,26 @@ describe('PromoterBotService', () => {
       expect(waba.sendTextMessage).toHaveBeenCalledTimes(3);
       expect(reply).toContain('ref%20AAAAAA');
       expect(reply).toContain('*Rice* from');
+    });
+
+    it('shows earnings with a Withdraw button once enough is ready', async () => {
+      payouts.summary.mockResolvedValue({
+        balance: 4500, available: 2500, onHold: 2000, nextReleaseAt: new Date('2026-11-14T10:00:00Z'), inFlight: 0, earned: 4500, minWithdrawal: 2000,
+        recent: [{ amount: 1500, shopName: "Auntie Esi's", orderNumber: 'MX-AB12CD' }],
+      });
+      const reply = await send('earnings');
+      expect(reply).toContain('Ready to withdraw: *GH₵ 25.00*');
+      expect(reply).toContain('On the way: GH₵ 20.00');
+      expect(reply).toContain("GH₵ 15.00 · Auntie Esi's · MX-AB12CD");
+      expect(waba.sendInteractiveButtons.mock.calls[0][0].buttons).toEqual([{ id: PROMOTER_IDS.WITHDRAW, title: 'Withdraw GH₵ 25.00' }]);
+    });
+
+    it('says why a withdrawal was refused, or that the money is on its way', async () => {
+      payouts.withdraw.mockResolvedValueOnce({ kind: 'refused', message: 'You can withdraw once a day. Try again tomorrow.' });
+      expect(await send('WITHDRAW')).toBe('You can withdraw once a day. Try again tomorrow.');
+      promoter().momoNumber = '0244111222';
+      payouts.withdraw.mockResolvedValueOnce({ kind: 'processing', amount: 2500, momoNumber: '0244111222' });
+      expect(await send(PROMOTER_IDS.WITHDRAW)).toContain('GH₵ 25.00 is on its way to your MoMo (024 411 1222)');
     });
 
     it('shows the menu for anything else, and nothing for a suspended promoter but a notice', async () => {

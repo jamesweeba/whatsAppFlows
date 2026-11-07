@@ -472,7 +472,7 @@ The checks and the new payout run under a per-shop lock, so two taps at once can
 {
   "balance": 95000, "available": 47500, "inFlight": 0,
   "onHold": { "amount": 47500, "nextReleaseAt": "2026-11-08T14:30:00.000Z", "days": 3 },
-  "totals": { "earned": 190000, "commissionOnPaidOrders": 20000, "commissionOnCashOrders": 3000, "paidOut": 92000 },
+  "totals": { "earned": 190000, "commissionOnPaidOrders": 20000, "commissionOnCashOrders": 3000, "promoterCommission": 1500, "paidOut": 92000 },
   "awaitingConfirmation": { "count": 1, "amount": 47500, "orders": [{ "id": "uuid", "orderNumber": "MX-ABC123", "vendorShare": 47500, "deliveredAt": "…" }] },
   "lastPayout": { "id": "uuid", "amount": 92000, "status": "SUCCESS", "momoNumber": "0244111222", "paidAt": "…", "failureReason": null, "createdAt": "…" },
   "payouts": { "enabled": true, "paused": false, "pausedReason": null, "nextWithdrawalAt": null },
@@ -488,7 +488,7 @@ The checks and the new payout run under a per-shop lock, so two taps at once can
 - `available`: what can be withdrawn now (`balance` less `onHold.amount`). `onHold.nextReleaseAt` is when the soonest held earning becomes available.
 - The Withdraw button is off when paused, payouts are off, there's no MoMo number, `inFlight > 0`, `nextWithdrawalAt` is set, or `available < minPayout`; the screen says which. The withdraw form allows up to `available`.
 
-**`GET /payouts/statement?page=1&limit=20`**: the ledger, newest first. Each entry: `{ id, type: "ORDER_EARNING" | "CASH_COMMISSION" | "PAYOUT" | "PAYOUT_REVERSAL", amount, orderNumber, details: { items, commission, deliveryFee } | null, availableAt, createdAt, payout: { status, reference, failureReason, paidAt } | null }`. `availableAt` is set on held card earnings (null: available straight away).
+**`GET /payouts/statement?page=1&limit=20`**: the ledger, newest first. Each entry: `{ id, type: "ORDER_EARNING" | "CASH_COMMISSION" | "PROMOTER_COMMISSION" | "PAYOUT" | "PAYOUT_REVERSAL", amount, orderNumber, details: { items, commission, deliveryFee } | { promoterId, promoterName, linkCode, ratePercent, base } | null, availableAt, createdAt, payout: { status, reference, failureReason, paidAt } | null }`. `availableAt` is set on held card earnings (null: available straight away).
 
 **`GET /payouts/sales`** (admins: **`GET /admin/tenants/:id/sales-summary`**): how the shop is selling. Paid and confirmed-cash orders only, not cancelled ones; amounts in pesewas.
 

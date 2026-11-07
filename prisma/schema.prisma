@@ -510,6 +510,8 @@ enum LedgerEntryType {
   PAYOUT
   /// A payout that failed or was reversed, credited back (positive).
   PAYOUT_REVERSAL
+  /// A promoter's commission on a paid order they brought in, taken off the vendor's earning (negative).
+  PROMOTER_COMMISSION
 }
 
 /// Money MarketiX owes each vendor, in pesewas: positive entries are owed to the vendor,
@@ -638,6 +640,12 @@ model Promoter {
   pendingInviteCode     String?
   /// The last inbound WhatsApp message handled, so a webhook Meta retries is not handled twice.
   lastInboundMessageId  String?
+  /// Paystack transfer recipient for momoNumber, made on the first withdrawal.
+  paystackRecipientCode String?
+  /// The MoMo number the recipient above was made for.
+  paystackRecipientFor  String?
+  ledger                PromoterLedgerEntry[]
+  payouts               PromoterPayout[]
   memberships           PromoterMembership[]
   links                 PromoLink[]
   referrals             Referral[]
@@ -727,4 +735,60 @@ model Referral {
 
   @@index([tenantId, buyerPhone, tappedAt])
   @@index([promoterId, tappedAt])
+}
+
+enum PromoterLedgerEntryType {
+  /// Commission on an order the promoter brought in (positive), withdrawable from availableAt.
+  COMMISSION
+  /// Money sent to the promoter's MoMo (negative).
+  PAYOUT
+  /// A payout that failed or was reversed, credited back (positive).
+  PAYOUT_REVERSAL
+}
+
+/// Money MarketiX owes each promoter, in pesewas, like VendorLedgerEntry: the balance is the
+/// sum. Rows are never edited or deleted. Order and shop are copied in, not linked, so the
+/// record outlives them.
+model PromoterLedgerEntry {
+  id          String                  @id @default(uuid())
+  promoterId  String
+  promoter    Promoter                @relation(fields: [promoterId], references: [id], onDelete: Restrict)
+  type        PromoterLedgerEntryType
+  amount      Int
+  orderId     String?
+  orderNumber String?
+  tenantId    String?
+  shopName    String?
+  payoutId    String?
+  payout      PromoterPayout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  /// When the promoter can withdraw it. Null: right away.
+  availableAt DateTime?
+  createdAt   DateTime                @default(now())
+
+  /// An order pays its promoter once.
+  @@unique([orderId, type])
+  @@index([promoterId, createdAt])
+}
+
+/// One Paystack transfer from a promoter's balance to their MoMo, like VendorPayout.
+model PromoterPayout {
+  id            String                @id @default(uuid())
+  promoterId    String
+  promoter      Promoter              @relation(fields: [promoterId], references: [id], onDelete: Restrict)
+  /// Pesewas.
+  amount        Int
+  status        PayoutStatus          @default(PENDING)
+  /// Our transfer reference ("ppayout_..."), sent to Paystack and echoed in its webhooks.
+  reference     String                @unique
+  transferCode  String?
+  momoNumber    String
+  momoName      String?
+  failureReason String?
+  paidAt        DateTime?
+  entries       PromoterLedgerEntry[]
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@index([promoterId, createdAt])
+  @@index([status, createdAt])
 }

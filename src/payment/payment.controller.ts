@@ -14,6 +14,7 @@ import { ghCedis } from '../common/money.util.js';
 import { CANCELLED_ORDER_STATUSES, UNPAID_ORDER_STATUSES } from '../order/order-status-groups.js';
 import { OrderService } from '../order/order.service.js';
 import { PayoutService } from '../payout/payout.service.js';
+import { PromoterPayoutService } from '../payout/promoter-payout.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { PaystackService } from './paystack.service.js';
 
@@ -26,6 +27,7 @@ export class PaymentController {
     private readonly orderService: OrderService,
     private readonly wabaService: WabaService,
     private readonly payouts: PayoutService,
+    private readonly promoterPayouts: PromoterPayoutService,
   ) {}
 
   /**
@@ -48,8 +50,8 @@ export class PaymentController {
     this.logger.log(`Paystack webhook ${event} for reference ${data?.reference}`);
 
     if (typeof event === 'string' && event.startsWith('transfer.')) {
-      // A vendor payout landed, failed or was reversed.
-      const known = await this.payouts.handleTransferEvent(event, data);
+      // A vendor or promoter payout landed, failed or was reversed.
+      const known = (await this.payouts.handleTransferEvent(event, data)) || (await this.promoterPayouts.handleTransferEvent(event, data));
       return { status: known ? 'PROCESSED' : 'UNKNOWN_TRANSFER', event };
     }
 

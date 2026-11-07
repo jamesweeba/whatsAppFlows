@@ -87,6 +87,11 @@ export class NotificationService {
     );
   }
 
+  /** A message to a promoter (earnings, payouts), from the platform number. */
+  toPromoter(phone: string, text: string) {
+    return this.send(optionalEnv('PLATFORM_PHONE_NUMBER_ID') || null, phone, text);
+  }
+
   private fromPlatform(tenant: Tenant, text: string) {
     return this.send(optionalEnv('PLATFORM_PHONE_NUMBER_ID') || null, tenant.ownerPhone, text);
   }

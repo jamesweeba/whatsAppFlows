@@ -3,7 +3,8 @@ import { Prisma, Promoter, PromoterSignupStep as Step, PromoterStatus } from '@p
 import { optionalEnv } from '../common/config.js';
 import { formatGhanaLocal, isGhanaMobile, isHiddenNumber, toGhanaLocal, toInternationalDigits } from '../common/phone.util.js';
 import { PaystackTransfersClient } from '../payout/paystack-transfers.client.js';
-import { momoNetworkOf } from '../payout/payout-math.js';
+import { formatAccra, ghs, momoNetworkOf } from '../payout/payout-math.js';
+import { PromoterPayoutService } from '../payout/promoter-payout.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { cleanFullName, COMMISSION_HOLD_DAYS, parsePromoterCommand, PROMOTER_IDS, PromoterCommand, REFERRAL_DAYS, shareText } from './promoter-rules.js';
@@ -32,7 +33,9 @@ const TEXT = {
     `• Commission is ready to withdraw ${COMMISSION_HOLD_DAYS} days after delivery.\n` +
     '• Each shop decides who promotes it and sets its own commission.\n' +
     '• No fake orders and no ordering through your own link. Accounts that cheat are closed and not paid.',
-  menu: '*What would you like to do?*\n\n• *SHOPS*: find shops to promote\n• *LINKS*: get your links to share\n• *HELP*: show this menu',
+  menu:
+    '*What would you like to do?*\n\n• *SHOPS*: find shops to promote\n• *LINKS*: get your links to share\n' +
+    '• *EARNINGS*: see what you have earned\n• *WITHDRAW*: send your earnings to your MoMo\n• *HELP*: show this menu',
   noShops: 'No shops are taking new promoters right now. Please check back soon.',
   noLinks: "You don't have any links yet. Send *SHOPS* to find a shop to promote.",
   invalidInvite: "That invite code isn't valid any more. Ask the shop to send you a new link.",
@@ -55,6 +58,7 @@ export class PromoterBotService implements OnModuleInit {
     private readonly waba: WabaService,
     private readonly promoters: PromoterService,
     private readonly transfers: PaystackTransfersClient,
+    private readonly payouts: PromoterPayoutService,
   ) {}
 
   /** Says at startup whether the promoter bot can work, and refuses a platform number that is a shop's. */
@@ -108,6 +112,10 @@ export class PromoterBotService implements OnModuleInit {
         return this.reportJoin(promoter, await this.promoters.acceptInvite(promoter, command.code));
       case 'links':
         return this.sendLinks(promoter);
+      case 'earnings':
+        return this.sendEarnings(promoter);
+      case 'withdraw':
+        return this.withdraw(promoter);
       default:
         return this.sendMenu(phone);
     }
@@ -296,10 +304,49 @@ export class PromoterBotService implements OnModuleInit {
     }
   }
 
+  // ───────────────────────── Money ─────────────────────────
+
+  private async sendEarnings(promoter: Promoter) {
+    const e = await this.payouts.summary(promoter.id);
+    if (e.earned === 0 && e.balance === 0) {
+      return this.say(promoter.phone, "You haven't earned anything yet. Share your links (send *LINKS*): you earn when a new customer's first order is paid and delivered.");
+    }
+    const lines = [
+      '*Your earnings*',
+      '',
+      `Ready to withdraw: *${ghs(Math.max(e.available, 0))}*`,
+      ...(e.onHold > 0 ? [`On the way: ${ghs(e.onHold)} (next part ready ${formatAccra(e.nextReleaseAt!)})`] : []),
+      ...(e.inFlight > 0 ? [`Being sent to your MoMo: ${ghs(e.inFlight)}`] : []),
+      `Earned in total: ${ghs(e.earned)}`,
+    ];
+    if (e.recent.length) {
+      lines.push('', '*Latest*', ...e.recent.map((r) => `• ${ghs(r.amount)} · ${r.shopName ?? 'a shop'} · ${r.orderNumber ?? ''}`.trim()));
+    }
+    const body = lines.join('\n');
+    if (e.available >= e.minWithdrawal) return this.buttons(promoter.phone, body, [{ id: PROMOTER_IDS.WITHDRAW, title: `Withdraw ${ghs(e.available)}`.slice(0, 20) }]);
+    return this.say(promoter.phone, `${body}\n\nYou can withdraw once you have ${ghs(e.minWithdrawal)} ready.`);
+  }
+
+  private async withdraw(promoter: Promoter) {
+    const result = await this.payouts.withdraw(promoter.id);
+    const to = formatGhanaLocal(promoter.momoNumber ?? '');
+    switch (result.kind) {
+      case 'refused':
+        return this.say(promoter.phone, result.message);
+      case 'paid':
+        return this.say(promoter.phone, `✅ ${ghs(result.amount)} has been sent to your MoMo (${to}).`);
+      case 'processing':
+        return this.say(promoter.phone, `⏳ ${ghs(result.amount)} is on its way to your MoMo (${to}). I'll message you when it lands.`);
+      case 'failed':
+        return this.say(promoter.phone, `⚠️ We couldn't send ${ghs(result.amount)} this time. It's back in your balance and our team has been told. Please try again later.`);
+    }
+  }
+
   private sendMenu(phone: string) {
     return this.buttons(phone, TEXT.menu, [
       { id: PROMOTER_IDS.SHOPS, title: 'Find shops' },
       { id: PROMOTER_IDS.LINKS, title: 'My links' },
+      { id: PROMOTER_IDS.EARNINGS, title: 'My earnings' },
     ]);
   }
 

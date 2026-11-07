@@ -2,7 +2,7 @@
 
 Promoters share a vendor's shop or products on WhatsApp. When a new buyer orders through their link, the promoter earns a commission that the vendor pays.
 
-*Status, 7 Nov 2026: phases 1 (bot), 2 (vendor side) and 3 (attribution) built; money and admin to do.*
+*Status, 7 Nov 2026: phases 1 (bot), 2 (vendor side), 3 (attribution) and 4 (money) built; admin to do.*
 
 ---
 
