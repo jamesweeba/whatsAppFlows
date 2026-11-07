@@ -47,9 +47,12 @@ function fakePrisma(state: { products: any[]; categories: any[]; carts: any[]; l
     product: {
       findMany: vi.fn(async ({ where, skip = 0, take }: any) => {
         const found = state.products.filter((p) => matches(p, where)).sort((a, b) => a.name.localeCompare(b.name));
-        return found.slice(skip, take ? skip + take : undefined);
+        return found.slice(skip, take ? skip + take : undefined).map(withVideos);
       }),
-      findFirst: vi.fn(async ({ where }: any) => state.products.find((p) => matches(p, where)) ?? null),
+      findFirst: vi.fn(async ({ where }: any) => {
+        const found = state.products.find((p) => matches(p, where));
+        return found ? withVideos(found) : null;
+      }),
       count: vi.fn(async ({ where }: any) => state.products.filter((p) => matches(p, where)).length),
     },
     category: {
@@ -61,6 +64,9 @@ function fakePrisma(state: { products: any[]; categories: any[]; carts: any[]; l
     order: { findFirst: vi.fn(async () => state.lastOrder) },
   };
 }
+
+/** Products as Prisma returns them with `videos` included: the live videos' measure codes ('' = whole product). */
+const withVideos = (p: any) => ({ ...p, videos: p.videos ?? [] });
 
 const measure = (code: string, label: string, price: number, sortOrder = 0) => ({ code, label, price, sortOrder, description: null });
 
@@ -84,6 +90,8 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     deliveryAreas: [{ id: 'knust', title: 'KNUST Campus' }, { id: 'ayigya', title: 'Ayigya' }],
     deliverySlots: [{ id: 'today_pm', title: 'Today, 5 pm – 7 pm' }],
   };
+
+  const tomatoes = () => state.products.find((p) => p.id === 'sku_tomatoes');
 
   const act = (action: string, data: Record<string, any> = {}) =>
     service.handleFlowAction({
@@ -134,7 +142,15 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
 
     banners = { flowThumbnailBase64: vi.fn().mockResolvedValue(null) };
     productPhotos = { flowPhotoBase64: vi.fn().mockResolvedValue(null), flowThumbnailBase64: vi.fn().mockResolvedValue(null) };
-    productVideos = { sendToBuyer: vi.fn().mockResolvedValue('sent') };
+    productVideos = {
+      // Like the real one: the chosen measure's live video, or else the whole product's.
+      liveVideoFor: vi.fn(async (productId: string, measureCode: string | null) => {
+        const videos: { measureCode: string }[] = state.products.find((p) => p.id === productId)?.videos ?? [];
+        const pick = videos.find((v) => measureCode && v.measureCode === measureCode) ?? videos.find((v) => v.measureCode === '');
+        return pick ? { id: `video-${productId}-${pick.measureCode}`, productId, measureCode: pick.measureCode } : null;
+      }),
+      sendToBuyer: vi.fn().mockResolvedValue('sent'),
+    };
 
     waba = {
       sendFlowMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-flow' }),
@@ -170,7 +186,8 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       service.handleFlowAction({ version: '3.0', action: 'data_exchange', screen, flow_token: TOKEN, data });
 
     it('treats a PRODUCT request carrying `video` as "Watch video", never as Add to basket', async () => {
-      const result = await bare('PRODUCT', { sku: 'sku_tomatoes', category: 'veg_fruits', page: '1', video: '1' });
+      state.products.find((p) => p.id === 'sku_tomatoes').videos = [{ measureCode: '' }];
+      const result = await bare('PRODUCT', { sku: 'sku_tomatoes', measure: 'basket', category: 'veg_fruits', page: '1', video: '1' });
       expect(result.screen).toBe('PRODUCT');
       expect(productVideos.sendToBuyer).toHaveBeenCalled();
       expect(state.carts[0]?.lines ?? []).toEqual([]);
@@ -513,29 +530,62 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     it('offers "Watch video" only for products with an approved video, and marks them in the catalogue', async () => {
       expect((await act('open_product', { sku: 'sku_tomatoes' })).data).toMatchObject({ has_video: false, has_video_note: false, video_link_label: '🎥 Watch video' });
 
-      state.products.find((p) => p.id === 'sku_tomatoes').videoApprovedAt = new Date();
+      tomatoes().videos = [{ measureCode: '' }];
       expect((await act('open_product', { sku: 'sku_tomatoes' })).data.has_video).toBe(true);
       const catalogue = await act('open_category');
-      const tomatoes = catalogue.data.products.find((r: any) => r.id === 'sku_tomatoes');
-      expect(tomatoes['main-content'].metadata).toMatch(/^🎥 Video · /);
+      const row = catalogue.data.products.find((r: any) => r.id === 'sku_tomatoes');
+      expect(row['main-content'].metadata).toMatch(/^🎥 Video · /);
     });
 
-    it('sends the video to the chat in the background and says so on the product screen', async () => {
-      state.products.find((p) => p.id === 'sku_tomatoes').videoApprovedAt = new Date();
-      const result = await act('send_video', { sku: 'sku_tomatoes', video: '1' });
+    it('marks the measures that have their own video', async () => {
+      tomatoes().videos = [{ measureCode: 'basket' }];
+      const result = await act('open_product', { sku: 'sku_tomatoes' });
+      expect(result.data.has_video).toBe(true);
+      const byId = Object.fromEntries(result.data.measures.map((m: any) => [m.id, m.description]));
+      expect(byId).toEqual({ olonka: undefined, basket: '🎥 Video', tabletop: undefined });
+    });
+
+    it("sends the chosen measure's video, keeps that measure selected, and says so", async () => {
+      tomatoes().videos = [{ measureCode: '' }, { measureCode: 'basket' }];
+      const result = await act('send_video', { sku: 'sku_tomatoes', measure: 'basket', video: '1' });
 
       expect(result.screen).toBe('PRODUCT');
       expect(result.data).toMatchObject({
-        sku: 'sku_tomatoes',
+        current_measure: 'basket',
         video_link_label: '✅ Sent to your chat',
         has_video_note: true,
-        video_note: expect.stringContaining('on its way to your chat'),
+        video_note: expect.stringContaining('The Basket video is on its way to your chat'),
       });
-      expect(productVideos.sendToBuyer).toHaveBeenCalledWith(expect.objectContaining({ id: 'tenant-1' }), 'sku_tomatoes', expect.any(String));
+      expect(productVideos.liveVideoFor).toHaveBeenCalledWith('sku_tomatoes', 'basket');
+      expect(productVideos.sendToBuyer).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'tenant-1' }),
+        expect.objectContaining({ measureCode: 'basket' }),
+        expect.any(String),
+        'Tomatoes · Basket',
+      );
       expect(state.carts[0]?.lines ?? []).toEqual([]); // nothing added to the basket
     });
 
+    it("falls back to the whole product's video for a measure without one", async () => {
+      tomatoes().videos = [{ measureCode: '' }];
+      const result = await act('send_video', { sku: 'sku_tomatoes', measure: 'olonka', video: '1' });
+      expect(productVideos.sendToBuyer).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ measureCode: '' }), expect.any(String), 'Tomatoes');
+      expect(result.data.video_note).toContain('The video is on its way');
+    });
+
+    it("says so when the chosen measure has no video and there's no product video", async () => {
+      tomatoes().videos = [{ measureCode: 'basket' }];
+      const result = await act('send_video', { sku: 'sku_tomatoes', measure: 'tabletop', video: '1' });
+      expect(productVideos.sendToBuyer).not.toHaveBeenCalled();
+      expect(result.data).toMatchObject({
+        current_measure: 'tabletop',
+        video_link_label: '🎥 Watch video',
+        video_note: expect.stringContaining('There’s no video for Table top yet'),
+      });
+    });
+
     it('apologises in the chat when the video could not be sent', async () => {
+      tomatoes().videos = [{ measureCode: '' }];
       productVideos.sendToBuyer.mockResolvedValue('failed');
       await act('send_video', { sku: 'sku_tomatoes', video: '1' });
       await vi.waitFor(() => expect(waba.sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.stringContaining('couldn’t send that video')));

@@ -10,13 +10,13 @@ Vendors can add a short video to a product. An admin approves it, and buyers can
 
 | Topic | v1 rule |
 |---|---|
-| What gets a video | **Per product, optional.** The photo stays as it is. The video is an extra, never a replacement. |
+| What gets a video | **The whole product, and each measure, all optional.** A measure (olonka, table top...) can have its own video; buyers who choose a measure without one see the whole product's. The photo stays as it is. |
 | Length | **30 seconds at most.** Longer uploads are cut to their first 30 seconds, and the vendor is told. |
 | Approval | **An admin approves every video** before buyers see it, as with shop banners. Rejections carry a reason the vendor sees. |
 | Replacing | A new upload waits for approval. Buyers keep seeing the approved one until then. |
 | Removing | The vendor can remove their video at any time, with no approval needed. |
 | How buyers watch | **"🎥 Watch video"** on the product screen of the order form. The server sends the video to the buyer's chat, and their basket is kept. |
-| Marking | Products with an approved video show **🎥** in the catalogue. |
+| Marking | Products with any approved video show **🎥 Video** in the catalogue; measures with their own video say **🎥 Video** on the product screen. |
 
 ---
 
@@ -51,7 +51,11 @@ Vendors can add a short video to a product. An admin approves it, and buyers can
 - Meta keeps uploaded media for 30 days, so after **25 days** the server uploads it again. A send that fails because the media expired also re-uploads once.
 - This needs no public URL and keeps video files private on our server.
 
-### Data model (Product)
+### Data model
+
+*Since 8 Nov 2026 videos live in their own table, `ProductVideo`, one row per product and measure (`measureCode` '' = the whole product; measure codes survive product edits). Deleting a measure deletes its video. The fields below are that row's (renamed: `status`, `uploadedAt`, `pendingSeconds`, `pendingTrimmed`, `message`, `approvedAt`, `liveSeconds`, `waMediaId`, `waMediaUploadedAt`). Files: `videos/<shop>/<product>/` for the whole product, `.../m-<code>/` for a measure.*
+
+#### Fields (originally on Product)
 | Field | Meaning |
 |---|---|
 | `videoStatus` | `NONE`, `PROCESSING`, `PENDING` (waiting for an admin), `REJECTED` or `FAILED` (conversion failed). Approved = `videoApprovedAt` is set. |
@@ -75,7 +79,7 @@ Files are kept like banners: `videos/<tenant>/<product>/pending.mp4`, `live.mp4`
 - `POST /admin/products/:id/video/approve` and `.../reject` `{ reason }` decide (audit: `VIDEO_APPROVED`, `VIDEO_REJECTED`). `POST .../remove` `{ reason }` takes a live video down (audit: `VIDEO_REMOVED`).
 
 ### The order form (Flow)
-- PRODUCT screen: a new `EmbeddedLink` *"🎥 Watch video"* (`visible: ${data.has_video}`) sends `data_exchange { step: "send_video", sku }`. The server sends the video to the buyer from the shop's number and re-shows PRODUCT with a one-line note.
+- PRODUCT screen: a new `EmbeddedLink` *"🎥 Watch video"* (inside `If ${data.has_video}`) sends `data_exchange { step: "send_video", sku, measure: ${form.measure}, video: "1" }`: the chosen measure's video, or else the whole product's, or a note that there's none for that measure. The server sends the video to the buyer from the shop's number and re-shows PRODUCT with a one-line note.
 - CATALOGUE rows: "🎥 Video ·" before the price for products with an approved video.
 - `flow.json` changes, so it has to be re-uploaded to Meta (see PROJECT.md, "Keeping the Flow on Meta in sync").
 - To stop repeated taps sending the same video over and over, a product's video goes to the same buyer at most once a minute.

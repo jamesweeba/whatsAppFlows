@@ -28,6 +28,13 @@ import { MAX_PHOTO_BYTES, ProductPhotoService } from './product-photo.service.js
 import { ProductVideoService, VIDEO_UPLOAD_DIR, type VideoSlot } from './product-video.service.js';
 import { MAX_VIDEO_UPLOAD_BYTES } from './video-converter.js';
 
+/** A measure code from `?measure=` ('' or missing: the whole product). Codes are lowercase letters, digits and _. */
+export function measureParam(value: string | undefined): string {
+  const code = (value ?? '').trim();
+  if (code && !/^[a-z0-9_]{1,40}$/.test(code)) throw new BadRequestException('Unknown measure.');
+  return code;
+}
+
 /** `pending` or `live`, from the URL. */
 export function videoSlot(value: string): VideoSlot {
   if (value !== 'pending' && value !== 'live') throw new BadRequestException('Use pending or live.');
@@ -143,46 +150,53 @@ export class ProductController {
   }
 
   /**
-   * Upload a video for a product. Multipart form: `file` (any phone video, max 100 MB). It is
+   * Upload a video for a product, or for one of its measures with `?measure=<code>`.
+   * Multipart form: `file` (any phone video, max 100 MB). It is
    * converted in the background (`status: PROCESSING`), then waits for an admin. Returns the
    * video state. POST /products/:id/video
    */
   @Post(':id/video')
   @UseInterceptors(FileInterceptor('file', { dest: VIDEO_UPLOAD_DIR, limits: { fileSize: MAX_VIDEO_UPLOAD_BYTES } }))
-  async uploadVideo(@Request() req: any, @Param('id') id: string, @UploadedFile() file: Express.Multer.File) {
-    return this.videoService.upload(req.user.id, id, file);
+  async uploadVideo(@Request() req: any, @Param('id') id: string, @UploadedFile() file: Express.Multer.File, @Query('measure') measure?: string) {
+    return this.videoService.upload(req.user.id, id, measureParam(measure), file);
   }
 
-  /** The video's state: `{ status, live, pending, message }`. GET /products/:id/video */
+  /** Every video of the product: `{ product, measures: [{ code, label, video }] }`. GET /products/:id/videos */
+  @Get(':id/videos')
+  async videos(@Request() req: any, @Param('id') id: string) {
+    return this.videoService.overview(req.user.id, id);
+  }
+
+  /** One video's state: `{ status, live, pending, message }`. GET /products/:id/video[?measure=] */
   @Get(':id/video')
-  async videoState(@Request() req: any, @Param('id') id: string) {
-    return this.videoService.state(req.user.id, id);
+  async videoState(@Request() req: any, @Param('id') id: string, @Query('measure') measure?: string) {
+    return this.videoService.state(req.user.id, id, measureParam(measure));
   }
 
-  /** Drop the upload that isn't approved yet. DELETE /products/:id/video/pending */
+  /** Drop the upload that isn't approved yet. DELETE /products/:id/video/pending[?measure=] */
   @Delete(':id/video/pending')
-  async cancelVideo(@Request() req: any, @Param('id') id: string) {
-    return this.videoService.cancelPending(req.user.id, id);
+  async cancelVideo(@Request() req: any, @Param('id') id: string, @Query('measure') measure?: string) {
+    return this.videoService.cancelPending(req.user.id, id, measureParam(measure));
   }
 
-  /** Take the live video down. DELETE /products/:id/video */
+  /** Take the live video down. DELETE /products/:id/video[?measure=] */
   @Delete(':id/video')
-  async removeVideo(@Request() req: any, @Param('id') id: string) {
-    return this.videoService.removeLive(req.user.id, id);
+  async removeVideo(@Request() req: any, @Param('id') id: string, @Query('measure') measure?: string) {
+    return this.videoService.removeLive(req.user.id, id, measureParam(measure));
   }
 
-  /** The vendor's own video (MP4) or its still (JPEG). GET /products/:id/video/{pending|live}[/poster] */
+  /** The vendor's own video (MP4) or its still (JPEG). GET /products/:id/video/{pending|live}[/poster][?measure=] */
   @Get(':id/video/:slot')
   @Header('Cache-Control', 'private, no-store')
-  async videoFile(@Request() req: any, @Param('id') id: string, @Param('slot') slot: string) {
-    const { mimeType, stream } = await this.videoService.openOwn(req.user.id, id, videoSlot(slot), 'video');
+  async videoFile(@Request() req: any, @Param('id') id: string, @Param('slot') slot: string, @Query('measure') measure?: string) {
+    const { mimeType, stream } = await this.videoService.openOwn(req.user.id, id, measureParam(measure), videoSlot(slot), 'video');
     return new StreamableFile(stream, { type: mimeType, disposition: 'inline' });
   }
 
   @Get(':id/video/:slot/poster')
   @Header('Cache-Control', 'private, no-store')
-  async videoPoster(@Request() req: any, @Param('id') id: string, @Param('slot') slot: string) {
-    const { mimeType, stream } = await this.videoService.openOwn(req.user.id, id, videoSlot(slot), 'poster');
+  async videoPoster(@Request() req: any, @Param('id') id: string, @Param('slot') slot: string, @Query('measure') measure?: string) {
+    const { mimeType, stream } = await this.videoService.openOwn(req.user.id, id, measureParam(measure), videoSlot(slot), 'poster');
     return new StreamableFile(stream, { type: mimeType, disposition: 'inline' });
   }
 

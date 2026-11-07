@@ -573,12 +573,13 @@ All of these are blocked (403) while the shop is suspended.
 
 ### 4.13 Product videos
 
-An optional short video per product (design: `VIDEO_SPEC.md`). It uploads on its own (not with the product form), is converted on the server, and buyers only see it once an admin approves it. Video files need the login token, so fetch them as blobs.
+Optional short videos: one for the whole product and one per measure (design: `VIDEO_SPEC.md`). Every request below takes `?measure=<code>` for a measure's video; without it, it's the whole product's. Buyers who choose a measure without its own video get the whole product's. It uploads on its own (not with the product form), is converted on the server, and buyers only see it once an admin approves it. Video files need the login token, so fetch them as blobs.
 
 | Request | Notes |
 |---|---|
 | `POST /products/:id/video` (multipart `file`, any phone video up to 100 MB) | Returns the state with `status: "PROCESSING"`. Longer than 30 s: the first 30 s are kept (`pending.trimmed`). 503 if the server can't process video. |
-| `GET /products/:id/video` | `{ status, live, pending, message }` (below). Poll every few seconds while `PROCESSING`. |
+| `GET /products/:id/videos` | All of them: `{ product, measures: [{ code, label, video }] }` (each `video` / `product` as below). Poll while any is `PROCESSING`. |
+| `GET /products/:id/video` | One: `{ status, live, pending, message }` (below). |
 | `GET /products/:id/video/{pending\|live}` and `.../poster` | The MP4 / a JPEG still. |
 | `DELETE /products/:id/video/pending` | Cancel or dismiss the upload that isn't approved. |
 | `DELETE /products/:id/video` | Take the live video down (no approval needed). |
@@ -591,7 +592,7 @@ An optional short video per product (design: `VIDEO_SPEC.md`). It uploads on its
 ```
 
 - `status` is the latest upload: `NONE`, `PROCESSING`, `PENDING` (waiting for an admin), `REJECTED` or `FAILED`; `message` says why for the last two. `live` is independent: buyers keep the approved video while a new one waits.
-- Products also carry `videoStatus`, `videoApprovedAt` and `liveVideoSeconds`.
+- Deleting a measure (saving the product without it) deletes its video; editing a measure keeps it.
 
 ## 5. Admin app
 
@@ -1024,7 +1025,7 @@ People who share shops' links and earn commission (vendor side: 4.12; design: `P
 
 ### 5.7d Product videos
 
-**`GET /admin/videos?page=&limit=`**: videos waiting for approval, oldest first: `{ productId, productName, tenant: { id, name }, video }` (`video` as in 4.13, with `/api/v1/admin/products/:id/video/...` file URLs). `GET /admin/summary` has `pendingVideos`; the admin product list (`GET /admin/tenants/:id/products`) has `video` on each product.
+**`GET /admin/videos?page=&limit=`**: videos waiting for approval, oldest first: `{ productId, productName, measure: { code, label } | null, tenant: { id, name }, video }` (`measure` null = the whole product; `video` as in 4.13, with `/api/v1/admin/products/:id/video/...` file URLs). Every action below takes `?measure=<code>` for a measure's video. `GET /admin/summary` has `pendingVideos`; the admin product list (`GET /admin/tenants/:id/products`) has `videos: [{ measureCode, ...state }]` on each product.
 
 | Action | Request | Notes |
 |---|---|---|

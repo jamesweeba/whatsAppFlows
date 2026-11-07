@@ -29,13 +29,14 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('admin videos (real database)', () =>
   let productId = '';
   const uploadedAt = new Date('2026-11-07T10:00:00Z');
 
-  /** Puts a converted upload in place, as the converter would. */
-  const pendingUpload = async () => {
-    const dir = join(storageDir, `videos/${tenantId}/${productId}`);
+  /** Puts a converted upload in place, as the converter would ('' = the whole product). */
+  const pendingUpload = async (measureCode = '') => {
+    const dir = join(storageDir, `videos/${tenantId}/${productId}${measureCode ? `/m-${measureCode}` : ''}`);
     mkdirSync(dir, { recursive: true });
     writeFileSync(join(dir, 'pending.mp4'), 'mp4');
     writeFileSync(join(dir, 'pending.jpg'), 'jpg');
-    await prisma.product.update({ where: { id: productId }, data: { videoStatus: Status.PENDING, videoUploadedAt: uploadedAt, pendingVideoSeconds: 12 } });
+    const data = { status: Status.PENDING, uploadedAt, pendingSeconds: 12 };
+    await prisma.productVideo.upsert({ where: { productId_measureCode: { productId, measureCode } }, create: { productId, measureCode, ...data }, update: data });
   };
   const lastAudit = (action: AuditAction) => prisma.auditLog.findFirstOrThrow({ where: { actorId: adminId, action }, orderBy: { createdAt: 'desc' } });
 
@@ -48,7 +49,7 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('admin videos (real database)', () =>
     userIds.push(admin.id, vendor.id);
     adminId = admin.id;
     tenantId = (await prisma.tenant.create({ data: { name: 'Video Admin Shop', slug: `videoadmin-${stamp}`, userId: vendor.id, status: TenantStatus.ACTIVE } })).id;
-    productId = (await prisma.product.create({ data: { name: 'Palm oil', price: 50, tenantId } })).id;
+    productId = (await prisma.product.create({ data: { name: 'Palm oil', price: 50, tenantId, measures: { create: [{ code: 'litre', label: '1 litre', price: 50 }] } } })).id;
   });
 
   afterAll(async () => {
@@ -63,25 +64,40 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('admin videos (real database)', () =>
     const { data } = await service.waiting({ limit: 50 });
     expect(data.find((row) => row.productId === productId)).toMatchObject({
       productName: 'Palm oil',
+      measure: null,
       tenant: { name: 'Video Admin Shop' },
       video: { status: Status.PENDING, pending: { seconds: 12, url: `/api/v1/admin/products/${productId}/video/pending` } },
     });
 
-    await expect(service.approve(adminId, productId, new Date(0))).rejects.toBeInstanceOf(ConflictException);
-    const state = await service.approve(adminId, productId, uploadedAt);
+    await expect(service.approve(adminId, productId, '', new Date(0))).rejects.toBeInstanceOf(ConflictException);
+    const state = await service.approve(adminId, productId, '', uploadedAt);
     expect(state).toMatchObject({ status: Status.NONE, live: { seconds: 12 } });
-    expect((await lastAudit(AuditAction.VIDEO_APPROVED)).details).toContain('Palm oil');
+    expect((await lastAudit(AuditAction.VIDEO_APPROVED)).details).toContain('"Palm oil"');
+  });
+
+  it("shows a measure's video with the measure's name, and approves it on its own", async () => {
+    await pendingUpload('litre');
+    const { data } = await service.waiting({ limit: 50 });
+    expect(data.find((row) => row.productId === productId)).toMatchObject({
+      measure: { code: 'litre', label: '1 litre' },
+      video: { pending: { url: `/api/v1/admin/products/${productId}/video/pending?measure=litre` } },
+    });
+    await service.approve(adminId, productId, 'litre', uploadedAt);
+    const log = await lastAudit(AuditAction.VIDEO_APPROVED);
+    expect(log.details).toContain('"Palm oil · 1 litre"');
+    expect(log.metadata).toMatchObject({ productId, measureCode: 'litre' });
+    expect((await service.state(productId, '')).live).not.toBeNull(); // the whole-product video is untouched
   });
 
   it('takes a live video down with a reason the vendor sees', async () => {
-    const state = await service.remove(adminId, productId, 'Shows a different brand.');
+    const state = await service.remove(adminId, productId, '', 'Shows a different brand.');
     expect(state).toMatchObject({ status: Status.REJECTED, message: 'Shows a different brand.', live: null });
     expect((await lastAudit(AuditAction.VIDEO_REMOVED)).metadata).toMatchObject({ productId });
   });
 
   it('rejects a waiting upload with a reason', async () => {
     await pendingUpload();
-    const state = await service.reject(adminId, productId, uploadedAt, 'Too dark to see the oil.');
+    const state = await service.reject(adminId, productId, '', uploadedAt, 'Too dark to see the oil.');
     expect(state).toMatchObject({ status: Status.REJECTED, message: 'Too dark to see the oil.', pending: null });
     expect((await lastAudit(AuditAction.VIDEO_REJECTED)).details).toContain('Too dark');
   });

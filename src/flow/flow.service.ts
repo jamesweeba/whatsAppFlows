@@ -61,7 +61,10 @@ interface Measure {
   description?: string | null;
 }
 
-type CatalogProduct = Product & { measures: ProductMeasure[] };
+type CatalogProduct = Product & { measures: ProductMeasure[]; videos?: { measureCode: string }[] };
+
+/** Which of a product's videos buyers can watch: the whole product's ('') and its measures'. */
+const LIVE_VIDEOS = { where: { approvedAt: { not: null } }, select: { measureCode: true } } as const;
 
 interface PricedLine extends CartLineRef {
   product: CatalogProduct;
@@ -392,7 +395,7 @@ export class FlowService implements OnModuleInit {
         return this.productScreen(tenant, cart, text(data?.sku), text(data?.measure) || NONE, category, page);
 
       case 'send_video':
-        return this.sendVideo(tenant, cart, text(data?.sku), buyerPhone, category, page);
+        return this.sendVideo(tenant, cart, data ?? {}, buyerPhone, category, page);
 
       case 'add_line':
         return this.addLine(tenant, cart, data ?? {}, category, page);
@@ -896,7 +899,7 @@ export class FlowService implements OnModuleInit {
     const [products, lines, title] = await Promise.all([
       this.prisma.product.findMany({
         where,
-        include: { measures: true },
+        include: { measures: true, videos: LIVE_VIDEOS },
         orderBy: { name: 'asc' },
         skip: (page - 1) * PRODUCTS_PER_PAGE,
         take: PRODUCTS_PER_PAGE,
@@ -980,7 +983,7 @@ export class FlowService implements OnModuleInit {
     // WhatsApp rejects a NavigationList where only some rows have `end`, so the basket
     // count goes in the metadata line instead.
     const basics = qty > 0 ? `✓ ${qty} in basket · ${ghsCompact(total)}` : measures.map((m) => m.label).join(' · ');
-    const metadata = product.videoApprovedAt ? `🎥 Video · ${basics}` : basics;
+    const metadata = product.videos?.length ? `🎥 Video · ${basics}` : basics;
     return {
       id: product.id,
       'main-content': {
@@ -995,9 +998,21 @@ export class FlowService implements OnModuleInit {
 
   // ───────────────────────── PRODUCT ─────────────────────────
 
-  private async productScreen(tenant: Tenant, cart: FlowCart, sku: string, measure: string, category: string, page: number, videoNote = '') {
+  /**
+   * `video`: after "Watch video", the note to show under the link, whether a video went out
+   * (the link then says so), and the measure the buyer had chosen (kept selected).
+   */
+  private async productScreen(
+    tenant: Tenant,
+    cart: FlowCart,
+    sku: string,
+    measure: string,
+    category: string,
+    page: number,
+    video: { note: string; sent: boolean; selected?: string } | null = null,
+  ) {
     const product = sku
-      ? await this.prisma.product.findFirst({ where: { id: sku, tenantId: tenant.id, inStock: true }, include: { measures: true } })
+      ? await this.prisma.product.findFirst({ where: { id: sku, tenantId: tenant.id, inStock: true }, include: { measures: true, videos: LIVE_VIDEOS } })
       : null;
     if (!product) {
       return this.catalogueScreen(tenant, cart, category, page);
@@ -1008,16 +1023,26 @@ export class FlowService implements OnModuleInit {
     const line = fromBasket ? lines.find((l) => l.sku === sku && l.measure === measure) : lines.find((l) => l.sku === sku);
 
     const measures = this.measuresOf(product);
-    const options: Option[] = measures.map((m) => ({
-      id: m.code,
-      title: truncate(`${m.label} · ${ghsCompact(m.price)}`, LIMIT.optionTitle),
-      ...(m.description ? { description: truncate(m.description, LIMIT.optionDescription) } : {}),
-    }));
+    const measureVideos = new Set(product.videos.map((v) => v.measureCode));
+    const options: Option[] = measures.map((m) => {
+      // Measures with their own video say so, so buyers know which one to pick before tapping "Watch video".
+      const description = [m.description, measureVideos.has(m.code) ? '🎥 Video' : null].filter(Boolean).join(' · ');
+      return {
+        id: m.code,
+        title: truncate(`${m.label} · ${ghsCompact(m.price)}`, LIMIT.optionTitle),
+        ...(description ? { description: truncate(description, LIMIT.optionDescription) } : {}),
+      };
+    });
     if (line) {
       options.push({ id: REMOVE_MEASURE, title: 'Remove from basket' });
     }
 
-    const currentMeasure = line && measures.some((m) => m.code === line.measure) ? line.measure : measures[0].code;
+    const currentMeasure =
+      video?.selected && measures.some((m) => m.code === video.selected)
+        ? video.selected
+        : line && measures.some((m) => m.code === line.measure)
+          ? line.measure
+          : measures[0].code;
     await this.saveCart(cart, lines, { sku, measure: line?.measure ?? null, fromBasket });
 
     return screen('PRODUCT', {
@@ -1032,30 +1057,43 @@ export class FlowService implements OnModuleInit {
       current_measure: currentMeasure,
       current_qty: String(Math.min(MAX_QTY, line?.qty ?? 1)),
       button_label: line ? 'Update basket' : 'Add to basket',
-      has_video: Boolean(product.videoApprovedAt),
+      has_video: product.videos.length > 0,
       // After a tap the link itself says it worked (the note below it can be off-screen on small phones).
-      video_link_label: videoNote ? VIDEO_LINK_SENT : VIDEO_LINK,
-      has_video_note: Boolean(videoNote),
-      video_note: videoNote || ' ',
+      video_link_label: video?.sent ? VIDEO_LINK_SENT : VIDEO_LINK,
+      has_video_note: Boolean(video?.note),
+      video_note: video?.note || ' ',
     });
   }
 
   /**
-   * "🎥 Watch video": the video goes to the buyer's chat in the background (uploading it to
-   * Meta can take longer than a Flow response may), and PRODUCT comes back with a note. If
-   * sending fails, the buyer gets a short apology in the chat instead.
+   * "🎥 Watch video": sends the video of the measure the buyer has chosen, or else the whole
+   * product's. It goes to the chat in the background (uploading to Meta can take longer than
+   * a Flow response may), and PRODUCT comes back with a note. If sending fails, the buyer gets
+   * a short apology in the chat instead.
    */
-  private async sendVideo(tenant: Tenant, cart: FlowCart, sku: string, buyerPhone: string | null, category: string, page: number) {
-    if (!buyerPhone) {
-      return this.productScreen(tenant, cart, sku, NONE, category, page, 'Videos can’t be sent to this chat. Please try again from WhatsApp.');
+  private async sendVideo(tenant: Tenant, cart: FlowCart, data: Record<string, any>, buyerPhone: string | null, category: string, page: number) {
+    const sku = text(data.sku);
+    const chosen = text(data.measure);
+    const selected = chosen && chosen !== REMOVE_MEASURE && chosen !== NONE ? chosen : undefined;
+    const again = (note: string, sent: boolean) => this.productScreen(tenant, cart, sku, NONE, category, page, { note, sent, selected });
+
+    if (!buyerPhone) return again('Videos can’t be sent to this chat. Please try again from WhatsApp.', false);
+    const video = await this.productVideos.liveVideoFor(sku, selected ?? null);
+    const product = await this.prisma.product.findFirst({ where: { id: sku, tenantId: tenant.id }, include: { measures: true } });
+    if (!video || !product) {
+      const label = product?.measures.find((m) => m.code === selected)?.label;
+      return again(`There’s no video${label ? ` for ${label}` : ''} yet. Pick a measure marked 🎥 Video to watch one.`, false);
     }
-    void this.productVideos.sendToBuyer(tenant, sku, buyerPhone).then((outcome) => {
+
+    const measureLabel = video.measureCode ? product.measures.find((m) => m.code === video.measureCode)?.label : null;
+    const title = measureLabel ? `${product.name} · ${measureLabel}` : product.name;
+    void this.productVideos.sendToBuyer(tenant, video, buyerPhone, title).then((outcome) => {
       if (outcome !== 'failed' || !tenant.whatsappPhoneNumberId) return;
       return this.wabaService
         .sendTextMessage(tenant.whatsappPhoneNumberId, buyerPhone, 'Sorry, we couldn’t send that video just now. Please try again in a moment.')
         .catch(() => undefined);
     });
-    return this.productScreen(tenant, cart, sku, NONE, category, page, '✅ The video is on its way to your chat. Close this form to watch it; your basket is saved.');
+    return again(`✅ The ${measureLabel ? `${measureLabel} ` : ''}video is on its way to your chat. Close this form to watch it; your basket is saved.`, true);
   }
 
   /**
