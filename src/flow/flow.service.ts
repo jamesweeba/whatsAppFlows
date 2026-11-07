@@ -102,6 +102,10 @@ const SHOP_ROW_ID = 'shop';
 const MAX_QTY = 10;
 
 /** Text caps enforced by the Flow validator (see the endpoint contract). */
+/** The PRODUCT screen's video link, before and after a tap. WhatsApp allows 25 characters. */
+const VIDEO_LINK = '🎥 Watch video';
+const VIDEO_LINK_SENT = '✅ Sent to your chat';
+
 const LIMIT = {
   navTitle: 30,
   screenTitle: 30,
@@ -1029,6 +1033,8 @@ export class FlowService implements OnModuleInit {
       current_qty: String(Math.min(MAX_QTY, line?.qty ?? 1)),
       button_label: line ? 'Update basket' : 'Add to basket',
       has_video: Boolean(product.videoApprovedAt),
+      // After a tap the link itself says it worked (the note below it can be off-screen on small phones).
+      video_link_label: videoNote ? VIDEO_LINK_SENT : VIDEO_LINK,
       has_video_note: Boolean(videoNote),
       video_note: videoNote || ' ',
     });
@@ -1049,7 +1055,7 @@ export class FlowService implements OnModuleInit {
         .sendTextMessage(tenant.whatsappPhoneNumberId, buyerPhone, 'Sorry, we couldn’t send that video just now. Please try again in a moment.')
         .catch(() => undefined);
     });
-    return this.productScreen(tenant, cart, sku, NONE, category, page, '🎥 Sending the video to your chat. Close this form to watch it; your basket is saved.');
+    return this.productScreen(tenant, cart, sku, NONE, category, page, '✅ The video is on its way to your chat. Close this form to watch it; your basket is saved.');
   }
 
   /**

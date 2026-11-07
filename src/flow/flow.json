@@ -820,7 +820,11 @@
         },
         "video_note": {
           "type": "string",
-          "__example__": "🎥 Sending the video to your chat. Close this form to watch it; your basket is saved."
+          "__example__": "✅ The video is on its way to your chat. Close this form to watch it; your basket is saved."
+        },
+        "video_link_label": {
+          "type": "string",
+          "__example__": "🎥 Watch video"
         }
       },
       "layout": {
@@ -840,17 +844,6 @@
           {
             "type": "TextCaption",
             "text": "${data.note}"
-          },
-          {
-            "type": "If",
-            "condition": "${data.has_video_note}",
-            "then": [
-              {
-                "type": "TextBody",
-                "text": "${data.video_note}",
-                "font-weight": "bold"
-              }
-            ]
           },
           {
             "type": "RadioButtonsGroup",
@@ -874,7 +867,7 @@
             "then": [
               {
                 "type": "EmbeddedLink",
-                "text": "🎥 Watch video",
+                "text": "${data.video_link_label}",
                 "on-click-action": {
                   "name": "data_exchange",
                   "payload": {
@@ -885,6 +878,17 @@
                     "video": "1"
                   }
                 }
+              }
+            ]
+          },
+          {
+            "type": "If",
+            "condition": "${data.has_video_note}",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "${data.video_note}",
+                "font-weight": "bold"
               }
             ]
           },
