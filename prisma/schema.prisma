@@ -185,6 +185,14 @@ model Tenant {
   paystackRecipientFor  String?
   /// The reviewer's due-diligence ticks while UNDER_REVIEW; cleared on each decision.
   reviewChecks          Json?
+  /// Promoters: approved promoters can share this shop's links (see PROMOTERS_SPEC.md).
+  promotionsEnabled     Boolean             @default(false)
+  /// Listed under SHOPS on the promoter bot so new promoters can ask to join; invites work either way.
+  acceptPromoterRequests Boolean            @default(true)
+  /// Promoter commission on items, whole percent (1-20). Required before promotions can be enabled.
+  promoterRate          Int?
+  promoterMemberships   PromoterMembership[]
+  promoLinks            PromoLink[]
   documents             VendorDocument[]
   reviews               VendorReview[]
   notes                 VendorNote[]
@@ -262,6 +270,9 @@ model Product {
   categoryId     String?
   category       Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   measures       ProductMeasure[]
+  /// Promoter commission for this product's links, whole percent (1-20). Null: the shop's rate.
+  promoterRate   Int?
+  promoLinks     PromoLink[]
   tenantId       String
   tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   orderItems     OrderItem[]
@@ -570,4 +581,110 @@ model VendorPayout {
   @@index([tenantId, createdAt])
   @@index([status, createdAt])
   @@index([tenantId, source, createdAt])
+}
+
+// ───────────────────────── Promoters ─────────────────────────
+// People who share shops' links on WhatsApp and earn a commission on new buyers' orders.
+// They use the platform number's bot; there is no promoter login. See PROMOTERS_SPEC.md.
+
+enum PromoterStatus {
+  /// Going through the sign-up chat (see signupStep).
+  SIGNING_UP
+  ACTIVE
+  /// Stopped by an admin: links stop counting and withdrawals are blocked.
+  SUSPENDED
+}
+
+/// Where a promoter is in the sign-up chat.
+enum PromoterSignupStep {
+  ASK_NAME
+  ASK_MOMO
+  CONFIRM_MOMO_NAME
+  ASK_TERMS
+}
+
+enum PromoterMembershipStatus {
+  /// The promoter asked to promote the shop; waiting for the vendor.
+  REQUESTED
+  /// The vendor invited a phone number; waiting for that person to send JOIN <code>.
+  INVITED
+  APPROVED
+  DECLINED
+  /// The vendor removed an approved promoter. Their links are deactivated.
+  REMOVED
+}
+
+/// One per WhatsApp number. A vendor can be a promoter with the same number.
+model Promoter {
+  id                    String                  @id @default(uuid())
+  /// E.164, e.g. +233244111222. Their identity: the bot knows them by it.
+  phone                 String                  @unique
+  fullName              String?
+  /// Ghana local, e.g. 0244111222.
+  momoNumber            String?
+  /// Paystack mobile-money bank code: MTN, VOD or ATL.
+  momoNetwork           String?
+  /// The name Paystack says the MoMo number is registered to. Null if Paystack could not tell us.
+  momoName              String?
+  /// Set when momoName came from Paystack (not just what the promoter typed).
+  momoVerifiedAt        DateTime?
+  termsAcceptedAt       DateTime?
+  status                PromoterStatus          @default(SIGNING_UP)
+  signupStep            PromoterSignupStep?     @default(ASK_NAME)
+  /// An invite they started sign-up from (JOIN <code>), accepted once sign-up finishes.
+  pendingInviteCode     String?
+  /// The last inbound WhatsApp message handled, so a webhook Meta retries is not handled twice.
+  lastInboundMessageId  String?
+  memberships           PromoterMembership[]
+  links                 PromoLink[]
+  createdAt             DateTime                @default(now())
+  modifiedAt            DateTime                @updatedAt
+}
+
+/// A promoter's relationship with one shop: requested, invited, approved...
+model PromoterMembership {
+  id               String                   @id @default(uuid())
+  tenantId         String
+  tenant           Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Null while an invite has not been accepted.
+  promoterId       String?
+  promoter         Promoter?                @relation(fields: [promoterId], references: [id], onDelete: Cascade)
+  status           PromoterMembershipStatus
+  /// Invites: the number the vendor invited (E.164); only that number can accept.
+  invitedPhone     String?
+  /// Invites: the code in the join link (JOIN <code>). Cleared once accepted or cancelled.
+  inviteCode       String?                  @unique
+  /// Invites: products the vendor chose. Empty: the whole shop.
+  inviteProductIds String[]                 @default([])
+  requestedAt      DateTime                 @default(now())
+  decidedAt        DateTime?
+  removedAt        DateTime?
+  links            PromoLink[]
+  createdAt        DateTime                 @default(now())
+  modifiedAt       DateTime                 @updatedAt
+
+  @@unique([tenantId, promoterId])
+  @@index([tenantId, status])
+}
+
+/// One shareable link: the whole shop (productId null) or one product. Buyers' first
+/// message carries "(ref <code>)". At most one active link per membership and product,
+/// enforced by partial unique indexes in the migration.
+model PromoLink {
+  id           String             @id @default(uuid())
+  /// 6 characters without look-alikes, e.g. K7Q2MX.
+  code         String             @unique
+  membershipId String
+  membership   PromoterMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  tenantId     String
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  promoterId   String
+  promoter     Promoter           @relation(fields: [promoterId], references: [id], onDelete: Cascade)
+  productId    String?
+  product      Product?           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  active       Boolean            @default(true)
+  createdAt    DateTime           @default(now())
+  modifiedAt   DateTime           @updatedAt
+
+  @@index([promoterId, active])
 }

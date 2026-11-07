@@ -13,6 +13,6 @@ import { SalesSummaryService } from './sales-summary.service.js';
   imports: [PrismaModule, TenantModule, forwardRef(() => NotificationModule)],
   controllers: [PayoutController],
   providers: [PayoutService, PayoutReportService, PaystackTransfersClient, SalesSummaryService],
-  exports: [PayoutService, PayoutReportService, SalesSummaryService],
+  exports: [PayoutService, PayoutReportService, SalesSummaryService, PaystackTransfersClient],
 })
 export class PayoutModule {}

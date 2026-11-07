@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ChatService } from '../chat/chat.service.js';
 import { FlowService } from '../flow/flow.service.js';
+import { PromoterBotService } from '../promoter/promoter-bot.service.js';
 import { TenantService } from '../tenant/tenant.service.js';
 import { WabaService } from './waba.service.js';
 import { WabaWebhookController } from './waba-webhook.controller.js';
@@ -12,6 +13,7 @@ describe('WabaWebhookController', () => {
   let tenantService: { findByPhoneNumberId: ReturnType<typeof vi.fn>; findPoolNumber: ReturnType<typeof vi.fn> };
   let wabaService: { sendTextMessage: ReturnType<typeof vi.fn> };
   let flowService: { handleFailedDelivery: ReturnType<typeof vi.fn> };
+  let promoterBot: { handle: ReturnType<typeof vi.fn> };
 
   const envelope = (value: Record<string, any>) => ({
     object: 'whatsapp_business_account',
@@ -31,6 +33,7 @@ describe('WabaWebhookController', () => {
     };
     wabaService = { sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid.reply' }) };
     flowService = { handleFailedDelivery: vi.fn().mockResolvedValue(false) };
+    promoterBot = { handle: vi.fn().mockResolvedValue(undefined) };
 
     const module: TestingModule = await Test.createTestingModule({
       controllers: [WabaWebhookController],
@@ -39,6 +42,7 @@ describe('WabaWebhookController', () => {
         { provide: TenantService, useValue: tenantService },
         { provide: WabaService, useValue: wabaService },
         { provide: FlowService, useValue: flowService },
+        { provide: PromoterBotService, useValue: promoterBot },
       ],
     }).compile();
 
@@ -70,6 +74,29 @@ describe('WabaWebhookController', () => {
 
     expect(flowService.handleFailedDelivery).toHaveBeenCalledTimes(1);
     expect(flowService.handleFailedDelivery).toHaveBeenCalledWith('wamid.loc');
+    expect(chatService.processIncomingMessage).not.toHaveBeenCalled();
+  });
+
+  it('sends messages on the platform number to the promoter bot, not the shop chat', async () => {
+    vi.stubEnv('PLATFORM_PHONE_NUMBER_ID', 'PLATFORM_ID');
+    try {
+      await controller.processPayload(
+        envelope({
+          metadata: { phone_number_id: 'PLATFORM_ID' },
+          contacts: [{ wa_id: '233244111222' }],
+          messages: [
+            { from: '233244111222', id: 'wamid.p1', type: 'text', text: { body: 'I want to promote' } },
+            { from: '233244111222', id: 'wamid.p2', type: 'interactive', interactive: { button_reply: { id: 'promoter:start', title: 'Become a promoter' } } },
+          ],
+        }),
+      );
+    } finally {
+      vi.unstubAllEnvs();
+    }
+
+    expect(promoterBot.handle).toHaveBeenCalledWith({ phone: '+233244111222', text: 'I want to promote', messageId: 'wamid.p1' });
+    expect(promoterBot.handle).toHaveBeenCalledWith({ phone: '+233244111222', text: 'promoter:start', messageId: 'wamid.p2' });
+    expect(tenantService.findByPhoneNumberId).not.toHaveBeenCalled();
     expect(chatService.processIncomingMessage).not.toHaveBeenCalled();
   });
 
