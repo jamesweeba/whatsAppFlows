@@ -571,6 +571,28 @@ All of these are blocked (403) while the shop is suspended.
 - `baseAmount`: the items (not delivery); for a product link, that product's lines only. `commissionAmount` = `baseAmount × ratePercent`. Show it struck through for `NO_COMMISSION`.
 - How orders get here: a buyer's first message to the shop carries `(ref <code>)` from the promoter's link; their first paid or confirmed order with the shop within 14 days is credited to the last link they tapped. A cancelled or unpaid first order doesn't use it up. Orders vendors create by hand are never credited.
 
+### 4.13 Product videos
+
+An optional short video per product (design: `VIDEO_SPEC.md`). It uploads on its own (not with the product form), is converted on the server, and buyers only see it once an admin approves it. Video files need the login token, so fetch them as blobs.
+
+| Request | Notes |
+|---|---|
+| `POST /products/:id/video` (multipart `file`, any phone video up to 100 MB) | Returns the state with `status: "PROCESSING"`. Longer than 30 s: the first 30 s are kept (`pending.trimmed`). 503 if the server can't process video. |
+| `GET /products/:id/video` | `{ status, live, pending, message }` (below). Poll every few seconds while `PROCESSING`. |
+| `GET /products/:id/video/{pending\|live}` and `.../poster` | The MP4 / a JPEG still. |
+| `DELETE /products/:id/video/pending` | Cancel or dismiss the upload that isn't approved. |
+| `DELETE /products/:id/video` | Take the live video down (no approval needed). |
+
+```json
+{ "status": "PENDING",
+  "live": { "approvedAt": "…", "seconds": 8, "url": "/api/v1/products/…/video/live", "posterUrl": "…/live/poster" },
+  "pending": { "uploadedAt": "…", "seconds": 12, "trimmed": false, "url": "/api/v1/products/…/video/pending", "posterUrl": "…/pending/poster" },
+  "message": null }
+```
+
+- `status` is the latest upload: `NONE`, `PROCESSING`, `PENDING` (waiting for an admin), `REJECTED` or `FAILED`; `message` says why for the last two. `live` is independent: buyers keep the approved video while a new one waits.
+- Products also carry `videoStatus`, `videoApprovedAt` and `liveVideoSeconds`.
+
 ## 5. Admin app
 
 Every route below requires a `SUPER_ADMIN` token; vendors get `403`. Base path: `/admin`.
@@ -999,6 +1021,17 @@ People who share shops' links and earn commission (vendor side: 4.12; design: `P
 | Retry a payout | `POST /admin/promoter-payouts/:id/retry` | Only the latest failed payout; sends the whole available balance now (not limited to once a day or GH₵ 20). 409 with the reason if it can't. Audit: `PROMOTER_PAYOUT_RETRIED`. |
 
 **`GET /admin/promoter-payouts?status=all|failed|processing|success&search=&page=&limit=`**: each `{ id, createdAt, amount, status, reference, momoNumber, momoName, failureReason, paidAt, byAdmin, superseded, promoter: { id, fullName, phone } }`. Show Retry only on `FAILED` and not `superseded`.
+
+### 5.7d Product videos
+
+**`GET /admin/videos?page=&limit=`**: videos waiting for approval, oldest first: `{ productId, productName, tenant: { id, name }, video }` (`video` as in 4.13, with `/api/v1/admin/products/:id/video/...` file URLs). `GET /admin/summary` has `pendingVideos`; the admin product list (`GET /admin/tenants/:id/products`) has `video` on each product.
+
+| Action | Request | Notes |
+|---|---|---|
+| Watch | `GET /admin/products/:id/video/{pending\|live}` and `.../poster` | |
+| Approve | `POST /admin/products/:id/video/approve` `{ uploadedAt }` | `uploadedAt` = `video.pending.uploadedAt` of what you watched; 409 if the vendor changed it since. Audit: `VIDEO_APPROVED`. |
+| Reject | `POST /admin/products/:id/video/reject` `{ uploadedAt, reason }` | The vendor sees `reason`. Audit: `VIDEO_REJECTED`. |
+| Take down | `POST /admin/products/:id/video/remove` `{ reason }` | Removes the live video. Audit: `VIDEO_REMOVED`. |
 
 ### 5.8 Audit log
 

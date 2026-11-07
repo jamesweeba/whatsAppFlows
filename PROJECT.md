@@ -30,7 +30,7 @@ A NestJS + Prisma (PostgreSQL) backend that lets Ghanaian market vendors take gr
 | `flow/` | The WhatsApp Flow data endpoint: decrypt the request, route it to a step, build the next screen, encrypt the response. Owns the server-side basket (`FlowCart`) and order placement. `flow.json` is the Flow definition uploaded to Meta. |
 | `order/` | Order creation (server-side totals), receipts, status changes with buyer notifications, location pins. |
 | `payment/` | Paystack MoMo charges and the `charge.success` webhook. |
-| `product/` | Products, measures, and Excel bulk upload. |
+| `product/` | Products, measures, Excel bulk upload, photos, and product videos (`product-video.service.ts`: upload, ffmpeg conversion in `video-converter.ts`, approval, sending to buyers; see [VIDEO_SPEC.md](VIDEO_SPEC.md)). Video conversion needs `ffmpeg` (the Dockerfile installs it). |
 | `category/` | The platform-wide predefined category list (`GET /categories`). The only code that reads the `Category` table; products, the upload and the Flow use `CategoryService`. |
 | `tenant/` | Vendor shop settings: delivery fee, delivery areas and slots. |
 | `promoter/` | Promoters (see [PROMOTERS_SPEC.md](PROMOTERS_SPEC.md)): the WhatsApp bot on the platform number (`PLATFORM_PHONE_NUMBER_ID`) for sign-up, finding shops, invites and links; shop memberships and links. Messages to the platform number go here instead of `chat/`. |

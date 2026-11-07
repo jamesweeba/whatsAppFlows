@@ -22,7 +22,8 @@ WORKDIR /app
 
 ENV NODE_ENV=production
 
-RUN apk add --no-cache openssl \
+# ffmpeg (with ffprobe) converts vendors' product videos to the MP4 WhatsApp can play.
+RUN apk add --no-cache openssl ffmpeg \
  && addgroup -g 1001 -S nodejs \
  && adduser  -S nestjs -u 1001
 

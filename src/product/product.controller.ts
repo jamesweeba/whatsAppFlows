@@ -25,6 +25,14 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { ParseExcelFilePipe } from './pipes/parse-excel-file.pipe.js';
 import { BulkUploadDto } from './dto/bulk-upload.dto.js';
 import { MAX_PHOTO_BYTES, ProductPhotoService } from './product-photo.service.js';
+import { ProductVideoService, VIDEO_UPLOAD_DIR, type VideoSlot } from './product-video.service.js';
+import { MAX_VIDEO_UPLOAD_BYTES } from './video-converter.js';
+
+/** `pending` or `live`, from the URL. */
+export function videoSlot(value: string): VideoSlot {
+  if (value !== 'pending' && value !== 'live') throw new BadRequestException('Use pending or live.');
+  return value;
+}
 
 @Controller('api/v1/products')
 @UseGuards(JwtAuthGuard)
@@ -32,6 +40,7 @@ export class ProductController {
   constructor(
     private readonly productService: ProductService,
     private readonly photoService: ProductPhotoService,
+    private readonly videoService: ProductVideoService,
   ) { }
 
   /**
@@ -131,6 +140,50 @@ export class ProductController {
   @Delete(':id/photo')
   async removePhoto(@Request() req: any, @Param('id') id: string) {
     return this.photoService.remove(req.user.id, id);
+  }
+
+  /**
+   * Upload a video for a product. Multipart form: `file` (any phone video, max 100 MB). It is
+   * converted in the background (`status: PROCESSING`), then waits for an admin. Returns the
+   * video state. POST /products/:id/video
+   */
+  @Post(':id/video')
+  @UseInterceptors(FileInterceptor('file', { dest: VIDEO_UPLOAD_DIR, limits: { fileSize: MAX_VIDEO_UPLOAD_BYTES } }))
+  async uploadVideo(@Request() req: any, @Param('id') id: string, @UploadedFile() file: Express.Multer.File) {
+    return this.videoService.upload(req.user.id, id, file);
+  }
+
+  /** The video's state: `{ status, live, pending, message }`. GET /products/:id/video */
+  @Get(':id/video')
+  async videoState(@Request() req: any, @Param('id') id: string) {
+    return this.videoService.state(req.user.id, id);
+  }
+
+  /** Drop the upload that isn't approved yet. DELETE /products/:id/video/pending */
+  @Delete(':id/video/pending')
+  async cancelVideo(@Request() req: any, @Param('id') id: string) {
+    return this.videoService.cancelPending(req.user.id, id);
+  }
+
+  /** Take the live video down. DELETE /products/:id/video */
+  @Delete(':id/video')
+  async removeVideo(@Request() req: any, @Param('id') id: string) {
+    return this.videoService.removeLive(req.user.id, id);
+  }
+
+  /** The vendor's own video (MP4) or its still (JPEG). GET /products/:id/video/{pending|live}[/poster] */
+  @Get(':id/video/:slot')
+  @Header('Cache-Control', 'private, no-store')
+  async videoFile(@Request() req: any, @Param('id') id: string, @Param('slot') slot: string) {
+    const { mimeType, stream } = await this.videoService.openOwn(req.user.id, id, videoSlot(slot), 'video');
+    return new StreamableFile(stream, { type: mimeType, disposition: 'inline' });
+  }
+
+  @Get(':id/video/:slot/poster')
+  @Header('Cache-Control', 'private, no-store')
+  async videoPoster(@Request() req: any, @Param('id') id: string, @Param('slot') slot: string) {
+    const { mimeType, stream } = await this.videoService.openOwn(req.user.id, id, videoSlot(slot), 'poster');
+    return new StreamableFile(stream, { type: mimeType, disposition: 'inline' });
   }
 
   /**

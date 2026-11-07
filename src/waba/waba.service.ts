@@ -333,6 +333,40 @@ export class WabaService {
     }
   }
 
+  /**
+   * Uploads a file (e.g. a product video) to Meta for one number and returns its media id.
+   * Meta keeps it for 30 days; it can be sent from that number as often as needed.
+   * POST /{phone-number-id}/media
+   */
+  async uploadMedia(phoneNumberId: string, data: Buffer, mimeType: string, fileName: string): Promise<string> {
+    const form = new FormData();
+    form.append('messaging_product', 'whatsapp');
+    form.append('type', mimeType);
+    form.append('file', new Blob([new Uint8Array(data)], { type: mimeType }), fileName);
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}/${phoneNumberId}/media`, {
+        method: 'POST',
+        headers: { Authorization: `Bearer ${this.accessToken}` },
+        body: form,
+        signal: AbortSignal.timeout(120_000),
+      });
+    } catch (err: any) {
+      throw new InternalServerErrorException(`Failed to upload media to Meta: ${err?.message || err}`);
+    }
+    const json: any = await res.json().catch(() => null);
+    if (!res.ok || !json?.id) {
+      this.logger.error(`Meta media upload error: ${JSON.stringify(json?.error ?? json)}`);
+      throw new BadRequestException(`Meta WABA Error: ${json?.error?.message || `media upload failed with status ${res.status}`}`);
+    }
+    return String(json.id);
+  }
+
+  /** A video message, from media uploaded with uploadMedia(). */
+  sendVideo(phoneNumberId: string, toPhone: string, mediaId: string, caption?: string): Promise<{ messageId: string }> {
+    return this.sendMessage(phoneNumberId, toPhone, { type: 'video', video: { id: mediaId, ...(caption && { caption: caption.slice(0, 1024) }) } });
+  }
+
   // ───────────────────────── Internals ─────────────────────────
 
   private messagesUrl(phoneNumberId: string): string {

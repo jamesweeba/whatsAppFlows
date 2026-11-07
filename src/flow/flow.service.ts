@@ -38,6 +38,7 @@ import { ADD_MORE_ICON, BASKET_EMPTY_ICON, BASKET_ICON, CHECKOUT_ICON } from './
 import { PLACEHOLDER_PHOTO } from './placeholder-image.js';
 import { ShopBannerService } from '../tenant/shop-banner.service.js';
 import { ProductPhotoService } from '../product/product-photo.service.js';
+import { ProductVideoService } from '../product/product-video.service.js';
 
 /** One basket line as stored on the FlowCart. Prices are never stored: they are read from the DB at render time. */
 export interface CartLineRef {
@@ -233,6 +234,7 @@ export class FlowService implements OnModuleInit {
     private readonly notifications: NotificationService,
     private readonly categoryService: CategoryService,
     private readonly productPhotos: ProductPhotoService,
+    private readonly productVideos: ProductVideoService,
     private readonly banners: ShopBannerService,
   ) {}
 
@@ -385,6 +387,9 @@ export class FlowService implements OnModuleInit {
       case 'open_product':
         return this.productScreen(tenant, cart, text(data?.sku), text(data?.measure) || NONE, category, page);
 
+      case 'send_video':
+        return this.sendVideo(tenant, cart, text(data?.sku), buyerPhone, category, page);
+
       case 'add_line':
         return this.addLine(tenant, cart, data ?? {}, category, page);
 
@@ -422,7 +427,8 @@ export class FlowService implements OnModuleInit {
         // The Search button sends the query; picking from the item list sends a product id.
         return data?.query === undefined && sku && sku !== NONE ? 'open_product' : 'search';
       case 'PRODUCT':
-        // The footer sends the chosen quantity; "Back to list" sends only category and page.
+        // "Watch video" sends `video`; the footer sends the chosen quantity; "Back to list" sends only category and page.
+        if (data?.video !== undefined) return 'send_video';
         return data?.qty !== undefined ? 'add_line' : 'open_category';
       case 'CHECKOUT':
         // "Place order" always sends cart_id; the "Edit basket" link never does.
@@ -969,7 +975,8 @@ export class FlowService implements OnModuleInit {
 
     // WhatsApp rejects a NavigationList where only some rows have `end`, so the basket
     // count goes in the metadata line instead.
-    const metadata = qty > 0 ? `✓ ${qty} in basket · ${ghsCompact(total)}` : measures.map((m) => m.label).join(' · ');
+    const basics = qty > 0 ? `✓ ${qty} in basket · ${ghsCompact(total)}` : measures.map((m) => m.label).join(' · ');
+    const metadata = product.videoApprovedAt ? `🎥 Video · ${basics}` : basics;
     return {
       id: product.id,
       'main-content': {
@@ -984,7 +991,7 @@ export class FlowService implements OnModuleInit {
 
   // ───────────────────────── PRODUCT ─────────────────────────
 
-  private async productScreen(tenant: Tenant, cart: FlowCart, sku: string, measure: string, category: string, page: number) {
+  private async productScreen(tenant: Tenant, cart: FlowCart, sku: string, measure: string, category: string, page: number, videoNote = '') {
     const product = sku
       ? await this.prisma.product.findFirst({ where: { id: sku, tenantId: tenant.id, inStock: true }, include: { measures: true } })
       : null;
@@ -1021,7 +1028,28 @@ export class FlowService implements OnModuleInit {
       current_measure: currentMeasure,
       current_qty: String(Math.min(MAX_QTY, line?.qty ?? 1)),
       button_label: line ? 'Update basket' : 'Add to basket',
+      has_video: Boolean(product.videoApprovedAt),
+      has_video_note: Boolean(videoNote),
+      video_note: videoNote || ' ',
     });
+  }
+
+  /**
+   * "🎥 Watch video": the video goes to the buyer's chat in the background (uploading it to
+   * Meta can take longer than a Flow response may), and PRODUCT comes back with a note. If
+   * sending fails, the buyer gets a short apology in the chat instead.
+   */
+  private async sendVideo(tenant: Tenant, cart: FlowCart, sku: string, buyerPhone: string | null, category: string, page: number) {
+    if (!buyerPhone) {
+      return this.productScreen(tenant, cart, sku, NONE, category, page, 'Videos can’t be sent to this chat. Please try again from WhatsApp.');
+    }
+    void this.productVideos.sendToBuyer(tenant, sku, buyerPhone).then((outcome) => {
+      if (outcome !== 'failed' || !tenant.whatsappPhoneNumberId) return;
+      return this.wabaService
+        .sendTextMessage(tenant.whatsappPhoneNumberId, buyerPhone, 'Sorry, we couldn’t send that video just now. Please try again in a moment.')
+        .catch(() => undefined);
+    });
+    return this.productScreen(tenant, cart, sku, NONE, category, page, '🎥 Sending the video to your chat. Close this form to watch it; your basket is saved.');
   }
 
   /**

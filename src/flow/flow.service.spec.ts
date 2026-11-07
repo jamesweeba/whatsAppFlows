@@ -72,6 +72,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
   let orderService: any;
   let waba: any;
   let productPhotos: any;
+  let productVideos: any;
   let banners: any;
 
   const tenant = {
@@ -133,6 +134,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
 
     banners = { flowThumbnailBase64: vi.fn().mockResolvedValue(null) };
     productPhotos = { flowPhotoBase64: vi.fn().mockResolvedValue(null), flowThumbnailBase64: vi.fn().mockResolvedValue(null) };
+    productVideos = { sendToBuyer: vi.fn().mockResolvedValue('sent') };
 
     waba = {
       sendFlowMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-flow' }),
@@ -140,7 +142,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-text' }),
     };
 
-    service = new FlowService(prisma as any, {} as any, paystack, orderService, waba, { orderAlert: vi.fn().mockResolvedValue(true) } as any, new CategoryService(prisma as any, {} as any), productPhotos as any, banners);
+    service = new FlowService(prisma as any, {} as any, paystack, orderService, waba, { orderAlert: vi.fn().mockResolvedValue(true) } as any, new CategoryService(prisma as any, {} as any), productPhotos as any, productVideos as any, banners);
   });
 
   it('answers the health-check ping', async () => {
@@ -166,6 +168,13 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
   describe('when WhatsApp drops the step from the payload', () => {
     const bare = (screen: string, data: Record<string, any>) =>
       service.handleFlowAction({ version: '3.0', action: 'data_exchange', screen, flow_token: TOKEN, data });
+
+    it('treats a PRODUCT request carrying `video` as "Watch video", never as Add to basket', async () => {
+      const result = await bare('PRODUCT', { sku: 'sku_tomatoes', category: 'veg_fruits', page: '1', video: '1' });
+      expect(result.screen).toBe('PRODUCT');
+      expect(productVideos.sendToBuyer).toHaveBeenCalled();
+      expect(state.carts[0]?.lines ?? []).toEqual([]);
+    });
 
     it('opens the category chosen on WELCOME (the request seen in production)', async () => {
       const result = await bare('WELCOME', { category: 'veg_fruits', page: '1' });
@@ -499,6 +508,32 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       expect(result.data.measures.map((m: any) => m.title)).toEqual(['Olonka · GH₵ 25', 'Basket · GH₵ 120', 'Table top · GH₵ 10']);
       expect(result.data.qty_options).toHaveLength(10);
       expect(result.data.photo).toBe(PLACEHOLDER_PHOTO);
+    });
+
+    it('offers "Watch video" only for products with an approved video, and marks them in the catalogue', async () => {
+      expect((await act('open_product', { sku: 'sku_tomatoes' })).data).toMatchObject({ has_video: false, has_video_note: false });
+
+      state.products.find((p) => p.id === 'sku_tomatoes').videoApprovedAt = new Date();
+      expect((await act('open_product', { sku: 'sku_tomatoes' })).data.has_video).toBe(true);
+      const catalogue = await act('open_category');
+      const tomatoes = catalogue.data.products.find((r: any) => r.id === 'sku_tomatoes');
+      expect(tomatoes['main-content'].metadata).toMatch(/^🎥 Video · /);
+    });
+
+    it('sends the video to the chat in the background and says so on the product screen', async () => {
+      state.products.find((p) => p.id === 'sku_tomatoes').videoApprovedAt = new Date();
+      const result = await act('send_video', { sku: 'sku_tomatoes', video: '1' });
+
+      expect(result.screen).toBe('PRODUCT');
+      expect(result.data).toMatchObject({ sku: 'sku_tomatoes', has_video_note: true, video_note: expect.stringContaining('Sending the video to your chat') });
+      expect(productVideos.sendToBuyer).toHaveBeenCalledWith(expect.objectContaining({ id: 'tenant-1' }), 'sku_tomatoes', expect.any(String));
+      expect(state.carts[0]?.lines ?? []).toEqual([]); // nothing added to the basket
+    });
+
+    it('apologises in the chat when the video could not be sent', async () => {
+      productVideos.sendToBuyer.mockResolvedValue('failed');
+      await act('send_video', { sku: 'sku_tomatoes', video: '1' });
+      await vi.waitFor(() => expect(waba.sendTextMessage).toHaveBeenCalledWith(expect.anything(), expect.anything(), expect.stringContaining('couldn’t send that video')));
     });
 
     it("shows the product's own photo when it has one", async () => {

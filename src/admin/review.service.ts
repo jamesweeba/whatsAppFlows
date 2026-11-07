@@ -1,5 +1,5 @@
 import { BadRequestException, ConflictException, Injectable, NotFoundException } from '@nestjs/common';
-import { AuditAction, DocumentType, NumberStatus, Prisma, ReviewDecision, Tenant, TenantStatus, WabaStatus } from '@prisma/client';
+import { AuditAction, DocumentType, NumberStatus, Prisma, ProductVideoStatus, ReviewDecision, Tenant, TenantStatus, WabaStatus } from '@prisma/client';
 import { NotificationService } from '../notification/notification.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { kycCompleteness, kycItems, OnboardingService } from '../tenant/onboarding.service.js';
@@ -10,6 +10,7 @@ import { AuditService } from './audit.service.js';
 import { NumberPoolService } from './number-pool.service.js';
 import { bannerState } from '../tenant/shop-banner.service.js';
 import { withPhotoUrl } from '../product/product-photo.service.js';
+import { videoState } from '../product/product-video.service.js';
 
 /** States a reviewer can decide on. */
 export const REVIEWABLE: TenantStatus[] = [TenantStatus.STOCKED, TenantStatus.UNDER_REVIEW];
@@ -82,14 +83,15 @@ export class ReviewService {
 
   /** Tiles at the top of the review queue. */
   async summary() {
-    const [waiting, moreInfo, freeNumbers, activeShops, pendingBanners] = await Promise.all([
+    const [waiting, moreInfo, freeNumbers, activeShops, pendingBanners, pendingVideos] = await Promise.all([
       this.prisma.tenant.count({ where: { status: { in: REVIEWABLE } } }),
       this.prisma.tenant.count({ where: { status: TenantStatus.MORE_INFO } }),
       this.numberPool.countFree(),
       this.prisma.tenant.count({ where: { status: TenantStatus.ACTIVE } }),
       this.prisma.tenant.count({ where: { bannerPendingAt: { not: null } } }),
+      this.prisma.product.count({ where: { videoStatus: ProductVideoStatus.PENDING } }),
     ]);
-    return { waiting, moreInfo, freeNumbers, activeShops, pendingBanners };
+    return { waiting, moreInfo, freeNumbers, activeShops, pendingBanners, pendingVideos };
   }
 
   /** The review queue: oldest submission first. Defaults to shops waiting for review. */
@@ -184,7 +186,7 @@ export class ReviewService {
     ]);
 
     return {
-      data: products.map(withPhotoUrl),
+      data: products.map((p) => ({ ...withPhotoUrl(p), video: videoState(p, { forAdmin: true }) })),
       meta: { total, page: safePage, limit: safeLimit, totalPages: Math.ceil(total / safeLimit) },
       // Tab badges; they follow `search` but not `stock`.
       counts: { all, in: inStock, out: all - inStock },

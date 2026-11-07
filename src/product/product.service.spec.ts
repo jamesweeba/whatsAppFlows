@@ -36,7 +36,7 @@ describe('ProductService', () => {
       }),
     };
     onboarding = { markStockedIfReady: vi.fn().mockResolvedValue(true) };
-    service = new ProductService(prisma, tenantService, new CategoryService(prisma, tenantService), onboarding, { removeFile: vi.fn() } as any);
+    service = new ProductService(prisma, tenantService, new CategoryService(prisma, tenantService), onboarding, { removeFile: vi.fn() } as any, { removeFiles: vi.fn() } as any);
   });
 
   it('creates a product in a predefined category and moves the shop to STOCKED', async () => {
