@@ -2,6 +2,7 @@ import { Test, TestingModule } from '@nestjs/testing';
 import { BuyerIntent, Fulfillment, MessageSender, PaymentMethod } from '@prisma/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { ReferralService } from '../promoter/referral.service.js';
 import { AiClassifierService } from './ai-classifier.service.js';
 import { ChatService } from './chat.service.js';
 import { parseFlowToText } from './utils/flow-parser.util.js';
@@ -13,6 +14,7 @@ import { InteractiveOrderService } from './interactive-order.service.js';
 import { formatOrderReceipt } from '../order/order-receipt.js';
 
 describe('ChatModule', () => {
+  let mockReferralService: { recordTap: ReturnType<typeof vi.fn> };
   let chatService: ChatService;
   let aiClassifierService: AiClassifierService;
 
@@ -94,6 +96,7 @@ describe('ChatModule', () => {
   });
 
   beforeEach(async () => {
+    mockReferralService = { recordTap: vi.fn().mockResolvedValue(null) };
     const module: TestingModule = await Test.createTestingModule({
       providers: [
         ChatService,
@@ -104,6 +107,7 @@ describe('ChatModule', () => {
         { provide: OrderService, useValue: mockOrderService },
         { provide: InteractiveOrderService, useValue: mockInteractiveOrderService },
         { provide: TenantService, useValue: mockTenantService },
+        { provide: ReferralService, useValue: mockReferralService },
       ],
     }).compile();
 
@@ -210,6 +214,13 @@ describe('ChatModule', () => {
       expect(mockFlowService.dispatchFlow).not.toHaveBeenCalled();
       expect(mockWabaService.sendTextMessage).toHaveBeenCalledWith('phone-number-id', '+233240000000', result.systemResponse!.text);
       expect(result.systemResponse!.text).toContain('already sent you the order form');
+    });
+
+    it("checks each buyer message for a promoter's link code, then replies as usual", async () => {
+      const result = await chatService.processIncomingMessage(buyerMessage("Hi! I'd like to order (ref K7Q2MX)"));
+
+      expect(mockReferralService.recordTap).toHaveBeenCalledWith('tenant-abc', '+233240000000', "Hi! I'd like to order (ref K7Q2MX)");
+      expect(result.systemResponse).not.toBeNull();
     });
 
     it('falls back to welcome buttons for greetings when no Flow is configured', async () => {

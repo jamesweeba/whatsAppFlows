@@ -1302,7 +1302,7 @@ export class FlowService implements OnModuleInit {
 
     let order;
     try {
-      order = await this.orderService.createOrder(tenant.id, orderInput, details);
+      order = await this.orderService.createOrder(tenant.id, orderInput, details, { creditPromoter: true });
     } catch (err) {
       // A concurrent place_order for the same cart won the unique flowCartId race; it
       // owns the MoMo prompt and the fallback, so just show its order.

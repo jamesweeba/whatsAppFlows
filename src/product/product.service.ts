@@ -83,6 +83,7 @@ export class ProductService {
         inStock: dto.inStock ?? true,
         note: dto.note,
         categoryId: dto.categoryId,
+        promoterRate: dto.promoterRate ?? null,
         tenantId: tenant.id,
         ...(dto.measures?.length && { measures: { create: measureRows(dto.measures) } }),
       },
@@ -314,6 +315,7 @@ export class ProductService {
         ...(dto.inStock !== undefined && { inStock: dto.inStock }),
         ...(dto.note !== undefined && { note: dto.note }),
         ...(dto.categoryId !== undefined && { categoryId: dto.categoryId }),
+        ...(dto.promoterRate !== undefined && { promoterRate: dto.promoterRate }),
         ...(dto.measures !== undefined && {
           measures: { deleteMany: {}, create: measureRows(dto.measures) },
         }),

@@ -4,6 +4,7 @@ import * as crypto from 'crypto';
 import { ghCedis } from '../common/money.util.js';
 import { isHiddenNumber, toE164 } from '../common/phone.util.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { ReferralService } from '../promoter/referral.service.js';
 import { TenantService } from '../tenant/tenant.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { PayoutService } from '../payout/payout.service.js';
@@ -89,6 +90,7 @@ export class OrderService {
     private readonly tenantService: TenantService,
     private readonly wabaService: WabaService,
     private readonly payouts: PayoutService,
+    private readonly referrals: ReferralService,
   ) {}
 
   /**
@@ -107,8 +109,10 @@ export class OrderService {
   /**
    * Create an order with line items for a tenant. Totals are computed server-side.
    * Retries with a fresh reference if the generated order number already exists.
+   * `creditPromoter`: the buyer placed it (not the vendor), so it may count for a promoter
+   * whose link the buyer came from.
    */
-  async createOrder(tenantId: string, dto: CreateOrderDto, details: OrderDetails = {}) {
+  async createOrder(tenantId: string, dto: CreateOrderDto, details: OrderDetails = {}, { creditPromoter = false }: { creditPromoter?: boolean } = {}) {
     const items = dto.items.map((item) => {
       const quantity = normalizeQuantity(item.quantity);
       const unitPrice = Number(item.unitPrice || 0);
@@ -126,7 +130,7 @@ export class OrderService {
 
     for (let attempt = 1; ; attempt++) {
       try {
-        return await this.prisma.order.create({
+        const order = await this.prisma.order.create({
           data: {
             tenantId,
             orderNumber: this.generateOrderNumber(),
@@ -146,6 +150,8 @@ export class OrderService {
           },
           include: { items: true, session: true },
         });
+        if (creditPromoter) await this.referrals.attachToOrder(order);
+        return order;
       } catch (err) {
         if (this.isOrderNumberCollision(err) && attempt < MAX_REFERENCE_ATTEMPTS) {
           this.logger.warn(`Order number collision on attempt ${attempt}, retrying.`);

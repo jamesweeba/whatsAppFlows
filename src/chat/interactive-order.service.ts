@@ -333,7 +333,7 @@ export class InteractiveOrderService {
       deliveryAddress: fulfillment === Fulfillment.DELIVERY ? state.deliveryAddress : undefined,
       deliveryFee: fulfillment === Fulfillment.DELIVERY ? Number(tenant.deliveryFee ?? 0) : 0,
       items: state.items,
-    });
+    }, {}, { creditPromoter: true });
   }
 
   private async checkoutWithMomo(c: Conversation) {

@@ -195,6 +195,14 @@ describe('PromoterBotService', () => {
     });
   });
 
+  it('sends nothing when the platform number is not configured', async () => {
+    vi.stubEnv('PLATFORM_PHONE_NUMBER_ID', '');
+    await send('hello');
+    await send(PROMOTER_IDS.START);
+    expect(waba.sendTextMessage).not.toHaveBeenCalled();
+    expect(waba.sendInteractiveButtons).not.toHaveBeenCalled();
+  });
+
   it('asks people with hidden numbers to use a visible one', async () => {
     expect(await send('promote', 'GH.989894404158856')).toContain('hide it');
     expect(prisma.rows.size).toBe(0);

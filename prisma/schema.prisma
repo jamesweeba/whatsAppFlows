@@ -193,6 +193,7 @@ model Tenant {
   promoterRate          Int?
   promoterMemberships   PromoterMembership[]
   promoLinks            PromoLink[]
+  referrals             Referral[]
   documents             VendorDocument[]
   reviews               VendorReview[]
   notes                 VendorNote[]
@@ -454,6 +455,8 @@ model Order {
   notes               String?
   items               OrderItem[]
   ledger              VendorLedgerEntry[]
+  /// The promoter's link that brought this buyer, when this is their first order with the shop.
+  referral            Referral?
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
 
@@ -637,6 +640,7 @@ model Promoter {
   lastInboundMessageId  String?
   memberships           PromoterMembership[]
   links                 PromoLink[]
+  referrals             Referral[]
   createdAt             DateTime                @default(now())
   modifiedAt            DateTime                @updatedAt
 }
@@ -683,8 +687,44 @@ model PromoLink {
   productId    String?
   product      Product?           @relation(fields: [productId], references: [id], onDelete: Cascade)
   active       Boolean            @default(true)
+  referrals    Referral[]
   createdAt    DateTime           @default(now())
   modifiedAt   DateTime           @updatedAt
 
   @@index([promoterId, active])
+}
+
+/// A buyer tapped a promoter's link: their first message to the shop carried "(ref <code>)".
+/// Their first order with the shop within 14 days is credited to the promoter. The link's
+/// code, product and rate are copied in, so the record outlives a deleted link or product.
+model Referral {
+  id               String    @id @default(uuid())
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// E.164, as on Order.buyerPhone.
+  buyerPhone       String
+  promoterId       String
+  promoter         Promoter  @relation(fields: [promoterId], references: [id], onDelete: Cascade)
+  linkId           String?
+  link             PromoLink? @relation(fields: [linkId], references: [id], onDelete: SetNull)
+  linkCode         String
+  /// Null: a whole-shop link.
+  productId        String?
+  productName      String?
+  /// Commission percent, locked when the buyer tapped the link.
+  ratePercent      Int
+  tappedAt         DateTime
+  expiresAt        DateTime
+  /// The order it was credited to. Moves to a later order if this one is cancelled or never paid.
+  orderId          String?   @unique
+  order            Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  attachedAt       DateTime?
+  /// Pesewas, worked out when the order was attached: what the commission is on, and the commission.
+  baseAmount       Int?
+  commissionAmount Int?
+  createdAt        DateTime  @default(now())
+  modifiedAt       DateTime  @updatedAt
+
+  @@index([tenantId, buyerPhone, tappedAt])
+  @@index([promoterId, tappedAt])
 }

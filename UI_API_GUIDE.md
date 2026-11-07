@@ -510,6 +510,67 @@ The checks and the new payout run under a per-shop lock, so two taps at once can
 
 **`GET /payouts?status=all|pending|processing|success|failed&page=&limit=`**: the shop's payouts. `status`: `PENDING` (being sent), `PROCESSING` (Paystack accepted it), `SUCCESS`, `FAILED` (the amount is back in the balance). Each payout has `source`: `VENDOR` (a withdrawal), `ADMIN` (Pay now or Retry) or `AUTOMATIC` (from the old 7 am run).
 
+### 4.12 Promoters
+
+People who share the shop on WhatsApp and earn a commission when a **new** customer's **first** order with the shop comes through their link (within 14 days, paid by MoMo or card, delivered). Promoters use the bot on the platform number; vendors manage them here. Design: `PROMOTERS_SPEC.md`. Orders are credited to promoters (below), but commission is not taken from the vendor's balance or paid to promoters yet.
+
+**`GET /promotions/settings`** / **`PATCH /promotions/settings`** `{ promotionsEnabled?, acceptPromoterRequests?, promoterRate? }`
+
+```json
+{ "promotionsEnabled": true, "acceptPromoterRequests": true, "promoterRate": 10, "platformCommissionPercent": 10, "minRate": 1, "maxRate": 20, "shopLive": true }
+```
+
+- `promoterRate`: whole percent of the items (not delivery), `minRate`–`maxRate`. Turning promotions on without a rate is a 400. The vendor also pays MarketiX's `platformCommissionPercent`, so show what they keep: on GH₵ 100, `100 − platform − rate`.
+- `acceptPromoterRequests: false` hides the shop from new promoters; invites still work.
+- Promoters only see live shops (`shopLive`).
+
+**Per-product rate:** `promoterRate` (1–20, or `null` for the shop rate) on `POST /products` and `PATCH /products/:id`, and returned on every product.
+
+**`GET /promotions/promoters?status=REQUESTED|INVITED|APPROVED|DECLINED|REMOVED`** (no status: all, newest first). Each row:
+
+```json
+{
+  "id": "uuid", "status": "APPROVED", "requestedAt": "…", "decidedAt": "…", "removedAt": null,
+  "promoter": { "id": "uuid", "fullName": "Ama Mensah", "phone": "0244111222", "momoName": "AMA MENSAH", "momoVerified": true },
+  "invite": null,
+  "links": [{ "id": "uuid", "code": "K7Q2MX", "productId": null, "productName": null, "createdAt": "…" }]
+}
+```
+
+- `promoter` is null for an invite nobody has accepted. `momoVerified`: Paystack confirmed the MoMo name.
+- `links` are the active ones; `productId: null` is a whole-shop link.
+- `stats` (null for an unaccepted invite), amounts in pesewas: `{ buyers, orders, sales, commission }`. `buyers`: different buyers who tapped their links; `orders`: first orders credited to them, not cancelled; `sales`: what those orders' commission is on; `commission`: on orders that earn or still may.
+- For `INVITED`: `invite: { phone, code, productIds, joinLink, message }`. `message` is ready for the vendor to send from their own WhatsApp (e.g. `https://wa.me/<invite phone>?text=<message>`). `joinLink` and `message` are null while MarketiX's WhatsApp number isn't set up.
+
+| Action | Request | Notes |
+|---|---|---|
+| Approve a request | `POST /promotions/requests/:id/approve` `{ productIds? }` | Empty or missing: whole shop. The promoter gets their links on WhatsApp. 409 if already answered. |
+| Decline | `POST /promotions/requests/:id/decline` | The promoter is told. |
+| Invite | `POST /promotions/invites` `{ phone, productIds? }` | Returns the row. Inviting the same number again updates the open invite. If that person had already asked to join, they are approved straight away (`status: "APPROVED"`). 409 if they already promote the shop. |
+| Cancel invite | `DELETE /promotions/invites/:id` | 204. |
+| Add a link | `POST /promotions/promoters/:id/links` `{ productId? }` | Approved promoters only; sent to them on WhatsApp. 409 if they already have it. |
+| Turn a link off | `DELETE /promotions/links/:id` | 204. Buyers who already tapped it still count for 14 days. |
+| Remove promoter | `DELETE /promotions/promoters/:id` | Status `REMOVED`, links off; earned commission is still paid. Invite them again to work with them. |
+
+All of these are blocked (403) while the shop is suspended.
+
+**`GET /promotions/sales?page=1&limit=10`** (limit up to 50): orders credited to promoters, newest first, in the usual `{ data, meta }` page. Amounts in pesewas.
+
+```json
+{
+  "id": "uuid",
+  "order": { "id": "uuid", "orderNumber": "MX-ABC123", "status": "DELIVERED", "paymentMethod": "MOMO", "createdAt": "…" },
+  "promoter": { "id": "uuid", "fullName": "Ama Mensah" },
+  "link": { "code": "K7Q2MX", "productId": null, "productName": null },
+  "ratePercent": 10, "baseAmount": 15000, "commissionAmount": 1500,
+  "state": "EARNED", "reason": null
+}
+```
+
+- `state`: `PENDING` (waiting for payment or delivery), `EARNED` (paid by MoMo or card, and delivered), `NO_COMMISSION` with `reason`: `CANCELLED`, `CASH`, `OWN_NUMBER` (the buyer or payer is the promoter), `PRODUCT_NOT_IN_ORDER` (a product link, and the first order didn't have it).
+- `baseAmount`: the items (not delivery); for a product link, that product's lines only. `commissionAmount` = `baseAmount × ratePercent`. Show it struck through for `NO_COMMISSION`.
+- How orders get here: a buyer's first message to the shop carries `(ref <code>)` from the promoter's link; their first paid or confirmed order with the shop within 14 days is credited to the last link they tapped. A cancelled or unpaid first order doesn't use it up. Orders vendors create by hand are never credited.
+
 ## 5. Admin app
 
 Every route below requires a `SUPER_ADMIN` token; vendors get `403`. Base path: `/admin`.

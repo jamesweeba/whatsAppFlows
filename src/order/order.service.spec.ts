@@ -29,7 +29,7 @@ describe('OrderService', () => {
       sendInteractiveList: vi.fn().mockResolvedValue({ messageId: 'wamid-3' }),
     };
     payouts = { settleOrder: vi.fn().mockResolvedValue(null) };
-    service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba, payouts);
+    service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba, payouts, { attachToOrder: vi.fn() } as any);
   });
 
   it('creates an order with line items and calculates total amount including delivery fee', async () => {

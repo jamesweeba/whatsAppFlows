@@ -220,8 +220,10 @@ export class PromoterBotService {
       description: [shop.market, `${shop.promoterRate}% commission`].filter(Boolean).join(' · '),
     }));
     if (hasMore) rows.push({ id: `${PROMOTER_IDS.SHOPS_PAGE}${page + 1}`, title: 'More shops ➡️', description: '' });
+    const from = this.sender();
+    if (!from) return;
     await this.waba.sendInteractiveList({
-      phoneNumberId: PromoterBotService.platformNumberId(),
+      phoneNumberId: from,
       toPhone: toInternationalDigits(promoter.phone),
       bodyText: "Pick a shop to promote. The shop approves you, then I'll send your links.",
       buttonText: 'See shops',
@@ -302,18 +304,29 @@ export class PromoterBotService {
     return this.say(phone, text);
   }
 
+  /** The sending number, or null (logged) when PLATFORM_PHONE_NUMBER_ID isn't set, so nothing is sent. */
+  private sender(): string | null {
+    const id = PromoterBotService.platformNumberId();
+    if (!id) this.logger.warn('Promoter message skipped: PLATFORM_PHONE_NUMBER_ID is not set.');
+    return id || null;
+  }
+
   private async say(phone: string, text: string) {
+    const from = this.sender();
+    if (!from) return;
     try {
-      await this.waba.sendTextMessage(PromoterBotService.platformNumberId(), toInternationalDigits(phone), text);
+      await this.waba.sendTextMessage(from, toInternationalDigits(phone), text);
     } catch (err: any) {
       this.logger.warn(`Promoter reply to ${phone} failed: ${err?.message || err}`);
     }
   }
 
   private async buttons(phone: string, bodyText: string, buttons: { id: string; title: string }[]) {
+    const from = this.sender();
+    if (!from) return;
     try {
       await this.waba.sendInteractiveButtons({
-        phoneNumberId: PromoterBotService.platformNumberId(),
+        phoneNumberId: from,
         toPhone: toInternationalDigits(phone),
         bodyText,
         buttons,

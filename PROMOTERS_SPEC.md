@@ -2,7 +2,7 @@
 
 Promoters share a vendor's shop or products on WhatsApp. When a new buyer orders through their link, the promoter earns a commission that the vendor pays.
 
-*Status: agreed design, 7 Nov 2026. Not built yet.*
+*Status, 7 Nov 2026: phases 1 (bot), 2 (vendor side) and 3 (attribution) built; money and admin to do.*
 
 ---
 
@@ -75,7 +75,6 @@ Amounts are in **pesewas** (`Int`), as in `VendorLedgerEntry`. Rates are whole p
 |---|---|
 | `Tenant` | `promotionsEnabled Boolean @default(false)`, `acceptPromoterRequests Boolean @default(true)`, `promoterRate Int?` (required before promotions can be enabled) |
 | `Product` | `promoterRate Int?`. Null means the shop rate applies. |
-| `Order` | `referralId String? @unique`, the referral that brought this order |
 | `LedgerEntryType` | `PROMOTER_COMMISSION`: a negative amount on the vendor's ledger. The existing `@@unique([orderId, type])` keeps it to one per order. |
 
 ### New models
@@ -92,7 +91,7 @@ Amounts are in **pesewas** (`Int`), as in `VendorLedgerEntry`. Rates are whole p
 Only one active shop link per membership, enforced in code or with a partial unique index.
 
 **`Referral`**: "this buyer tapped this link".
-`id`, `tenantId`, `buyerPhone`, `linkId`, `promoterId`, `productId?`, `ratePercent` (locked), `tappedAt`, `expiresAt` (tappedAt + 14 days), `orderId? @unique`, `outcome` (`PENDING | EARNED | NO_COMMISSION`), `outcomeReason?` (e.g. `COD`, `SELF_REFERRAL`, `CANCELLED`).
+`id`, `tenantId`, `buyerPhone`, `promoterId`, `linkId?`, plus copies of `linkCode`, `productId?` and `productName?` (so it outlives a deleted link or product), `ratePercent` (locked), `tappedAt`, `expiresAt` (tappedAt + 14 days), `orderId? @unique` (Order gets a `referral` back-relation), `attachedAt`, `baseAmount` and `commissionAmount` (pesewas, worked out when the order is attached). Its state (`WAITING`, `EXPIRED`, `PENDING`, `EARNED`, `NO_COMMISSION` with a reason: `CANCELLED`, `CASH`, `OWN_NUMBER`, `PRODUCT_NOT_IN_ORDER`) is worked out from the order each time (`referral-rules.ts`), not stored.
 `@@index([tenantId, buyerPhone, tappedAt])`.
 
 **`PromoterLedgerEntry`**: the promoter's balance, working like `VendorLedgerEntry`.
@@ -146,11 +145,11 @@ Hidden-number buyers have no usable phone number, so they can't be credited in v
 **When an order is created** (Flow place order):
 
 1. If this is the buyer's first order with the shop, find their **latest** referral for the shop that's unexpired and unused.
-2. Attach it by setting `Order.referralId` and `Referral.orderId`.
+2. Attach it by setting `Referral.orderId`. A referral on an order that was cancelled or never paid moves to the new order; cancelled and unpaid orders don't make a buyer "not new".
 
-A cash-on-delivery order still uses up the referral, because the buyer is no longer new. Its outcome is `NO_COMMISSION` (`COD`). Orders that vendors enter by hand in the web app are never attributed.
+A cash-on-delivery order still uses up the referral, because the buyer is no longer new; it shows as `NO_COMMISSION` (`CASH`). A product link whose first order lacks the product earns GH₵ 0 (`PRODUCT_NOT_IN_ORDER`). Orders that vendors enter by hand in the web app are never attributed.
 
-**Fraud check, at settlement:** if the buyer's phone or `paymentPhone` equals the promoter's `phone` or `momoNumber`, the outcome is `NO_COMMISSION` (`SELF_REFERRAL`) and no money moves.
+**Fraud check, at settlement:** if the buyer's phone or `paymentPhone` equals the promoter's `phone` or `momoNumber`, it shows as `NO_COMMISSION` (`OWN_NUMBER`) and no money moves.
 
 ---
 
@@ -167,7 +166,6 @@ commission = round(base × ratePercent / 100), never more than the vendor's shar
 In one transaction:
 - Vendor ledger: `PROMOTER_COMMISSION`, `-commission`, details `{ promoterId, linkCode, ratePercent, base }`
 - Promoter ledger: `COMMISSION`, `+commission`, `availableAt` = delivery + 7 days (or the card hold, if that's later)
-- Referral: outcome `EARNED`
 
 Vendor statements (`payout-report.service.ts`) get a "Promoter commission" line. The admin summary shows total promoter commission and promoter balances owed.
 
@@ -192,7 +190,7 @@ These need the vendor JWT and live under `/promotions`.
 | `POST /promotions/promoters/:id/links` | Body `{ productId? }`. Adds a shop or product link |
 | `DELETE /promotions/links/:id` | Deactivates a link |
 | `DELETE /promotions/promoters/:id` | Removes the promoter and deactivates their links |
-| `GET /promotions/sales?from=&to=` | Attributed orders: order no., promoter, link (shop or product), base, rate, commission, outcome |
+| `GET /promotions/sales?page=&limit=` | Credited orders: order no., promoter, link (shop or product), base, rate, commission, state and reason |
 
 A new request also triggers a WhatsApp alert to the vendor's `ownerPhone` through `NotificationService`, as other vendor alerts do.
 

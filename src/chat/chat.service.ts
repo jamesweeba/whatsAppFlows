@@ -5,6 +5,7 @@ import { isHiddenNumber } from '../common/phone.util.js';
 import { FlowService } from '../flow/flow.service.js';
 import { ORDER_RECEIVED_BUTTON_TITLE, orderRatingTap, orderReceivedTap, OrderService } from '../order/order.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { ReferralService } from '../promoter/referral.service.js';
 import { isLive, TenantService } from '../tenant/tenant.service.js';
 import { WabaService, WELCOME_BODY_TEXT, WELCOME_BUTTON_IDS } from '../waba/waba.service.js';
 import { AiClassifierService, ClassificationResult } from './ai-classifier.service.js';
@@ -71,6 +72,7 @@ export class ChatService implements OnModuleInit {
     private readonly orderService: OrderService,
     private readonly interactiveOrderService: InteractiveOrderService,
     private readonly tenantService: TenantService,
+    private readonly referrals: ReferralService,
   ) {}
 
   onModuleInit() {
@@ -115,6 +117,9 @@ export class ChatService implements OnModuleInit {
     if (dto.incomingMessageId && tenant.whatsappPhoneNumberId) {
       this.wabaService.sendTypingIndicator(tenant.whatsappPhoneNumberId, dto.incomingMessageId).catch(() => {});
     }
+
+    // A buyer arriving from a promoter's link: "Hi! I'd like to order (ref K7Q2MX)".
+    await this.referrals.recordTap(tenant.id, dto.buyerPhone, dto.text);
 
     const session = await this.getOrCreateSession(dto.tenantId, dto.buyerPhone);
     const orderRef = this.flowOrderRef(dto.flowData);
