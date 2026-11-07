@@ -15,6 +15,7 @@ import { MetaSignatureGuard } from '../auth/guards/meta-signature.guard.js';
 import { ChatService } from '../chat/chat.service.js';
 import { FlowService } from '../flow/flow.service.js';
 import { isBsuid, toE164 } from '../common/phone.util.js';
+import { PromoterBotService } from '../promoter/promoter-bot.service.js';
 import { isLive, TenantService } from '../tenant/tenant.service.js';
 import { WabaService, WELCOME_BUTTON_IDS } from './waba.service.js';
 
@@ -33,6 +34,7 @@ export class WabaWebhookController {
     private readonly chatService: ChatService,
     private readonly wabaService: WabaService,
     private readonly flowService: FlowService,
+    private readonly promoterBot: PromoterBotService,
   ) {}
 
   /**
@@ -94,6 +96,15 @@ export class WabaWebhookController {
 
         const phoneNumberId: string | undefined = value.metadata?.phone_number_id;
         const tenant = phoneNumberId ? await this.tenantService.findByPhoneNumberId(phoneNumberId) : null;
+        const toPlatform = Boolean(phoneNumberId) && phoneNumberId === PromoterBotService.platformNumberId();
+        // A shop's own number always reaches the shop, even if PLATFORM_PHONE_NUMBER_ID is set to it by mistake.
+        if (toPlatform && !tenant) {
+          await this.handlePromoterMessages(value);
+          continue;
+        }
+        if (toPlatform) {
+          this.logger.error(`PLATFORM_PHONE_NUMBER_ID is ${tenant!.name}'s number; handling the message as the shop's. Give the platform its own number.`);
+        }
         if (!tenant || !isLive(tenant)) {
           await this.replyShopUnavailable(phoneNumberId, tenant, value);
           continue;
@@ -123,6 +134,18 @@ export class WabaWebhookController {
           }),
         );
       }
+    }
+  }
+
+  /** Messages to the platform number come from promoters (or people who may become one), not buyers. */
+  private async handlePromoterMessages(value: any) {
+    for (const message of value.messages) {
+      const phone = this.extractBuyerPhone(message, value.contacts ?? []);
+      if (!phone) {
+        this.logger.warn(`Dropping promoter message ${message.id}: no sender identifier.`);
+        continue;
+      }
+      await this.promoterBot.handle({ phone, text: this.extractContent(message).text, messageId: message.id });
     }
   }
 

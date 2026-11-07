@@ -472,7 +472,7 @@ The checks and the new payout run under a per-shop lock, so two taps at once can
 {
   "balance": 95000, "available": 47500, "inFlight": 0,
   "onHold": { "amount": 47500, "nextReleaseAt": "2026-11-08T14:30:00.000Z", "days": 3 },
-  "totals": { "earned": 190000, "commissionOnPaidOrders": 20000, "commissionOnCashOrders": 3000, "paidOut": 92000 },
+  "totals": { "earned": 190000, "commissionOnPaidOrders": 20000, "commissionOnCashOrders": 3000, "promoterCommission": 1500, "paidOut": 92000 },
   "awaitingConfirmation": { "count": 1, "amount": 47500, "orders": [{ "id": "uuid", "orderNumber": "MX-ABC123", "vendorShare": 47500, "deliveredAt": "…" }] },
   "lastPayout": { "id": "uuid", "amount": 92000, "status": "SUCCESS", "momoNumber": "0244111222", "paidAt": "…", "failureReason": null, "createdAt": "…" },
   "payouts": { "enabled": true, "paused": false, "pausedReason": null, "nextWithdrawalAt": null },
@@ -488,7 +488,7 @@ The checks and the new payout run under a per-shop lock, so two taps at once can
 - `available`: what can be withdrawn now (`balance` less `onHold.amount`). `onHold.nextReleaseAt` is when the soonest held earning becomes available.
 - The Withdraw button is off when paused, payouts are off, there's no MoMo number, `inFlight > 0`, `nextWithdrawalAt` is set, or `available < minPayout`; the screen says which. The withdraw form allows up to `available`.
 
-**`GET /payouts/statement?page=1&limit=20`**: the ledger, newest first. Each entry: `{ id, type: "ORDER_EARNING" | "CASH_COMMISSION" | "PAYOUT" | "PAYOUT_REVERSAL", amount, orderNumber, details: { items, commission, deliveryFee } | null, availableAt, createdAt, payout: { status, reference, failureReason, paidAt } | null }`. `availableAt` is set on held card earnings (null: available straight away).
+**`GET /payouts/statement?page=1&limit=20`**: the ledger, newest first. Each entry: `{ id, type: "ORDER_EARNING" | "CASH_COMMISSION" | "PROMOTER_COMMISSION" | "PAYOUT" | "PAYOUT_REVERSAL", amount, orderNumber, details: { items, commission, deliveryFee } | { promoterId, promoterName, linkCode, ratePercent, base } | null, availableAt, createdAt, payout: { status, reference, failureReason, paidAt } | null }`. `availableAt` is set on held card earnings (null: available straight away).
 
 **`GET /payouts/sales`** (admins: **`GET /admin/tenants/:id/sales-summary`**): how the shop is selling. Paid and confirmed-cash orders only, not cancelled ones; amounts in pesewas.
 
@@ -509,6 +509,67 @@ The checks and the new payout run under a per-shop lock, so two taps at once can
 **Buyer ratings.** After the buyer taps "I got my order", they get a WhatsApp list ("Rate your order", 5 to 1 stars), once per order. Their pick is stored on the order as `buyerRating` (1–5) and `ratedAt`, and shown in order details. Only the buyer's own, confirmed order can be rated, and only once.
 
 **`GET /payouts?status=all|pending|processing|success|failed&page=&limit=`**: the shop's payouts. `status`: `PENDING` (being sent), `PROCESSING` (Paystack accepted it), `SUCCESS`, `FAILED` (the amount is back in the balance). Each payout has `source`: `VENDOR` (a withdrawal), `ADMIN` (Pay now or Retry) or `AUTOMATIC` (from the old 7 am run).
+
+### 4.12 Promoters
+
+People who share the shop on WhatsApp and earn a commission when a **new** customer's **first** order with the shop comes through their link (within 14 days, paid by MoMo or card, delivered). Promoters use the bot on the platform number; vendors manage them here. Design: `PROMOTERS_SPEC.md`. Orders are credited to promoters (below), but commission is not taken from the vendor's balance or paid to promoters yet.
+
+**`GET /promotions/settings`** / **`PATCH /promotions/settings`** `{ promotionsEnabled?, acceptPromoterRequests?, promoterRate? }`
+
+```json
+{ "promotionsEnabled": true, "acceptPromoterRequests": true, "promoterRate": 10, "platformCommissionPercent": 10, "minRate": 1, "maxRate": 20, "shopLive": true }
+```
+
+- `promoterRate`: whole percent of the items (not delivery), `minRate`–`maxRate`. Turning promotions on without a rate is a 400. The vendor also pays MarketiX's `platformCommissionPercent`, so show what they keep: on GH₵ 100, `100 − platform − rate`.
+- `acceptPromoterRequests: false` hides the shop from new promoters; invites still work.
+- Promoters only see live shops (`shopLive`).
+
+**Per-product rate:** `promoterRate` (1–20, or `null` for the shop rate) on `POST /products` and `PATCH /products/:id`, and returned on every product.
+
+**`GET /promotions/promoters?status=REQUESTED|INVITED|APPROVED|DECLINED|REMOVED`** (no status: all, newest first). Each row:
+
+```json
+{
+  "id": "uuid", "status": "APPROVED", "requestedAt": "…", "decidedAt": "…", "removedAt": null,
+  "promoter": { "id": "uuid", "fullName": "Ama Mensah", "phone": "0244111222", "momoName": "AMA MENSAH", "momoVerified": true },
+  "invite": null,
+  "links": [{ "id": "uuid", "code": "K7Q2MX", "productId": null, "productName": null, "createdAt": "…" }]
+}
+```
+
+- `promoter` is null for an invite nobody has accepted. `momoVerified`: Paystack confirmed the MoMo name.
+- `links` are the active ones; `productId: null` is a whole-shop link.
+- `stats` (null for an unaccepted invite), amounts in pesewas: `{ buyers, orders, sales, commission }`. `buyers`: different buyers who tapped their links; `orders`: first orders credited to them, not cancelled; `sales`: what those orders' commission is on; `commission`: on orders that earn or still may.
+- For `INVITED`: `invite: { phone, code, productIds, joinLink, message }`. `message` is ready for the vendor to send from their own WhatsApp (e.g. `https://wa.me/<invite phone>?text=<message>`). `joinLink` and `message` are null while MarketiX's WhatsApp number isn't set up.
+
+| Action | Request | Notes |
+|---|---|---|
+| Approve a request | `POST /promotions/requests/:id/approve` `{ productIds? }` | Empty or missing: whole shop. The promoter gets their links on WhatsApp. 409 if already answered. |
+| Decline | `POST /promotions/requests/:id/decline` | The promoter is told. |
+| Invite | `POST /promotions/invites` `{ phone, productIds? }` | Returns the row. Inviting the same number again updates the open invite. If that person had already asked to join, they are approved straight away (`status: "APPROVED"`). 409 if they already promote the shop. |
+| Cancel invite | `DELETE /promotions/invites/:id` | 204. |
+| Add a link | `POST /promotions/promoters/:id/links` `{ productId? }` | Approved promoters only; sent to them on WhatsApp. 409 if they already have it. |
+| Turn a link off | `DELETE /promotions/links/:id` | 204. Buyers who already tapped it still count for 14 days. |
+| Remove promoter | `DELETE /promotions/promoters/:id` | Status `REMOVED`, links off; earned commission is still paid. Invite them again to work with them. |
+
+All of these are blocked (403) while the shop is suspended.
+
+**`GET /promotions/sales?page=1&limit=10`** (limit up to 50): orders credited to promoters, newest first, in the usual `{ data, meta }` page. Amounts in pesewas.
+
+```json
+{
+  "id": "uuid",
+  "order": { "id": "uuid", "orderNumber": "MX-ABC123", "status": "DELIVERED", "paymentMethod": "MOMO", "createdAt": "…" },
+  "promoter": { "id": "uuid", "fullName": "Ama Mensah" },
+  "link": { "code": "K7Q2MX", "productId": null, "productName": null },
+  "ratePercent": 10, "baseAmount": 15000, "commissionAmount": 1500,
+  "state": "EARNED", "reason": null
+}
+```
+
+- `state`: `PENDING` (waiting for payment or delivery), `EARNED` (paid by MoMo or card, and delivered), `NO_COMMISSION` with `reason`: `CANCELLED`, `CASH`, `OWN_NUMBER` (the buyer or payer is the promoter), `PRODUCT_NOT_IN_ORDER` (a product link, and the first order didn't have it).
+- `baseAmount`: the items (not delivery); for a product link, that product's lines only. `commissionAmount` = `baseAmount × ratePercent`. Show it struck through for `NO_COMMISSION`.
+- How orders get here: a buyer's first message to the shop carries `(ref <code>)` from the promoter's link; their first paid or confirmed order with the shop within 14 days is credited to the last link they tapped. A cancelled or unpaid first order doesn't use it up. Orders vendors create by hand are never credited.
 
 ## 5. Admin app
 
@@ -920,6 +981,24 @@ Money owed to vendors and the MoMo transfers that pay them (amounts in pesewas; 
 | `POST /admin/orders/:id/release` | Credits the vendor for a delivered, Paystack-paid order the buyer never confirmed (the vendor can then withdraw it, or an admin can Pay now). `409` for cash orders, undelivered or already released. |
 
 `GET /admin/orders/:id` includes `paystackPaidAt` and `settlement: { type, amount, createdAt } | null` (the order's ledger entry), so the order detail can show "credited to the vendor" or offer **Release to vendor**.
+
+### 5.7c Promoters
+
+People who share shops' links and earn commission (vendor side: 4.12; design: `PROMOTERS_SPEC.md`). Amounts in pesewas.
+
+**`GET /admin/promoters/summary`**: `{ promoters: { active, suspended, signingUp }, owedToPromoters, commissionLast30Days, failedPayouts }`. `failedPayouts` counts failures with nothing sent to that promoter since.
+
+**`GET /admin/promoters?search=&status=active|suspended|signing_up&page=&limit=`**: newest first. `search` matches the name, or phone/MoMo digits in any format. Each row: `{ id, fullName, phone, status, suspendedReason, createdAt, momo: { number, name, verified }, shops, buyers, orders, ownNumberOrders, earned, balance, available }`. `shops`: shops that approved them; `ownNumberOrders`: orders placed or paid with the promoter's own number (they earn nothing; worth a look).
+
+**`GET /admin/promoters/:id`**: the profile plus `money: { balance, available, onHold, nextReleaseAt, earned }`, `shops` (each membership with its status and links), `referrals` (20 most recent buyers: shop, link, order, commission, `state` and `reason` as in 4.12, plus `WAITING` and `EXPIRED` for buyers who tapped and never ordered), `payouts` (10 most recent) and `ledger` (20 most recent: `COMMISSION`, `PAYOUT`, `PAYOUT_REVERSAL`).
+
+| Action | Request | Notes |
+|---|---|---|
+| Suspend | `POST /admin/promoters/:id/suspend` `{ reason }` | Their links stop counting, new orders aren't credited to them, they can't withdraw. Earned money stays. They're told on WhatsApp (without the reason). 409 if already suspended. Audit: `PROMOTER_SUSPENDED`. |
+| Reinstate | `POST /admin/promoters/:id/reinstate` | Back to `ACTIVE` (or `SIGNING_UP` if they never finished). Audit: `PROMOTER_REINSTATED`. |
+| Retry a payout | `POST /admin/promoter-payouts/:id/retry` | Only the latest failed payout; sends the whole available balance now (not limited to once a day or GH₵ 20). 409 with the reason if it can't. Audit: `PROMOTER_PAYOUT_RETRIED`. |
+
+**`GET /admin/promoter-payouts?status=all|failed|processing|success&search=&page=&limit=`**: each `{ id, createdAt, amount, status, reference, momoNumber, momoName, failureReason, paidAt, byAdmin, superseded, promoter: { id, fullName, phone } }`. Show Retry only on `FAILED` and not `superseded`.
 
 ### 5.8 Audit log
 

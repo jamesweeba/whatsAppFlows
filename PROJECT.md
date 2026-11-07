@@ -33,6 +33,7 @@ A NestJS + Prisma (PostgreSQL) backend that lets Ghanaian market vendors take gr
 | `product/` | Products, measures, and Excel bulk upload. |
 | `category/` | The platform-wide predefined category list (`GET /categories`). The only code that reads the `Category` table; products, the upload and the Flow use `CategoryService`. |
 | `tenant/` | Vendor shop settings: delivery fee, delivery areas and slots. |
+| `promoter/` | Promoters (see [PROMOTERS_SPEC.md](PROMOTERS_SPEC.md)): the WhatsApp bot on the platform number (`PLATFORM_PHONE_NUMBER_ID`) for sign-up, finding shops, invites and links; shop memberships and links. Messages to the platform number go here instead of `chat/`. |
 | `auth/` | Vendor signup/login (JWT); guards for the Meta signature and the internal webhook secret. |
 | `common/` | Money formatting, Ghana phone helpers, env helpers. |
 

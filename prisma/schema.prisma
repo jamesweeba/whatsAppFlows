@@ -58,6 +58,9 @@ enum AuditAction {
   PAYOUTS_PAUSED
   PAYOUTS_RESUMED
   ORDER_RELEASED
+  PROMOTER_SUSPENDED
+  PROMOTER_REINSTATED
+  PROMOTER_PAYOUT_RETRIED
 }
 
 /// A pool number's state. COOLING numbers count as FREE once released over 7 days ago.
@@ -185,6 +188,15 @@ model Tenant {
   paystackRecipientFor  String?
   /// The reviewer's due-diligence ticks while UNDER_REVIEW; cleared on each decision.
   reviewChecks          Json?
+  /// Promoters: approved promoters can share this shop's links (see PROMOTERS_SPEC.md).
+  promotionsEnabled     Boolean             @default(false)
+  /// Listed under SHOPS on the promoter bot so new promoters can ask to join; invites work either way.
+  acceptPromoterRequests Boolean            @default(true)
+  /// Promoter commission on items, whole percent (1-20). Required before promotions can be enabled.
+  promoterRate          Int?
+  promoterMemberships   PromoterMembership[]
+  promoLinks            PromoLink[]
+  referrals             Referral[]
   documents             VendorDocument[]
   reviews               VendorReview[]
   notes                 VendorNote[]
@@ -262,6 +274,9 @@ model Product {
   categoryId     String?
   category       Category?        @relation(fields: [categoryId], references: [id], onDelete: SetNull)
   measures       ProductMeasure[]
+  /// Promoter commission for this product's links, whole percent (1-20). Null: the shop's rate.
+  promoterRate   Int?
+  promoLinks     PromoLink[]
   tenantId       String
   tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
   orderItems     OrderItem[]
@@ -443,6 +458,8 @@ model Order {
   notes               String?
   items               OrderItem[]
   ledger              VendorLedgerEntry[]
+  /// The promoter's link that brought this buyer, when this is their first order with the shop.
+  referral            Referral?
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
 
@@ -496,6 +513,8 @@ enum LedgerEntryType {
   PAYOUT
   /// A payout that failed or was reversed, credited back (positive).
   PAYOUT_REVERSAL
+  /// A promoter's commission on a paid order they brought in, taken off the vendor's earning (negative).
+  PROMOTER_COMMISSION
 }
 
 /// Money MarketiX owes each vendor, in pesewas: positive entries are owed to the vendor,
@@ -570,4 +589,213 @@ model VendorPayout {
   @@index([tenantId, createdAt])
   @@index([status, createdAt])
   @@index([tenantId, source, createdAt])
+}
+
+// ───────────────────────── Promoters ─────────────────────────
+// People who share shops' links on WhatsApp and earn a commission on new buyers' orders.
+// They use the platform number's bot; there is no promoter login. See PROMOTERS_SPEC.md.
+
+enum PromoterStatus {
+  /// Going through the sign-up chat (see signupStep).
+  SIGNING_UP
+  ACTIVE
+  /// Stopped by an admin: links stop counting and withdrawals are blocked.
+  SUSPENDED
+}
+
+/// Where a promoter is in the sign-up chat.
+enum PromoterSignupStep {
+  ASK_NAME
+  ASK_MOMO
+  CONFIRM_MOMO_NAME
+  ASK_TERMS
+}
+
+enum PromoterMembershipStatus {
+  /// The promoter asked to promote the shop; waiting for the vendor.
+  REQUESTED
+  /// The vendor invited a phone number; waiting for that person to send JOIN <code>.
+  INVITED
+  APPROVED
+  DECLINED
+  /// The vendor removed an approved promoter. Their links are deactivated.
+  REMOVED
+}
+
+/// One per WhatsApp number. A vendor can be a promoter with the same number.
+model Promoter {
+  id                    String                  @id @default(uuid())
+  /// E.164, e.g. +233244111222. Their identity: the bot knows them by it.
+  phone                 String                  @unique
+  fullName              String?
+  /// Ghana local, e.g. 0244111222.
+  momoNumber            String?
+  /// Paystack mobile-money bank code: MTN, VOD or ATL.
+  momoNetwork           String?
+  /// The name Paystack says the MoMo number is registered to. Null if Paystack could not tell us.
+  momoName              String?
+  /// Set when momoName came from Paystack (not just what the promoter typed).
+  momoVerifiedAt        DateTime?
+  termsAcceptedAt       DateTime?
+  status                PromoterStatus          @default(SIGNING_UP)
+  /// Why an admin suspended them (shown to admins). Cleared on reinstatement.
+  suspendedReason       String?
+  signupStep            PromoterSignupStep?     @default(ASK_NAME)
+  /// An invite they started sign-up from (JOIN <code>), accepted once sign-up finishes.
+  pendingInviteCode     String?
+  /// The last inbound WhatsApp message handled, so a webhook Meta retries is not handled twice.
+  lastInboundMessageId  String?
+  /// Paystack transfer recipient for momoNumber, made on the first withdrawal.
+  paystackRecipientCode String?
+  /// The MoMo number the recipient above was made for.
+  paystackRecipientFor  String?
+  ledger                PromoterLedgerEntry[]
+  payouts               PromoterPayout[]
+  memberships           PromoterMembership[]
+  links                 PromoLink[]
+  referrals             Referral[]
+  createdAt             DateTime                @default(now())
+  modifiedAt            DateTime                @updatedAt
+}
+
+/// A promoter's relationship with one shop: requested, invited, approved...
+model PromoterMembership {
+  id               String                   @id @default(uuid())
+  tenantId         String
+  tenant           Tenant                   @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// Null while an invite has not been accepted.
+  promoterId       String?
+  promoter         Promoter?                @relation(fields: [promoterId], references: [id], onDelete: Cascade)
+  status           PromoterMembershipStatus
+  /// Invites: the number the vendor invited (E.164); only that number can accept.
+  invitedPhone     String?
+  /// Invites: the code in the join link (JOIN <code>). Cleared once accepted or cancelled.
+  inviteCode       String?                  @unique
+  /// Invites: products the vendor chose. Empty: the whole shop.
+  inviteProductIds String[]                 @default([])
+  requestedAt      DateTime                 @default(now())
+  decidedAt        DateTime?
+  removedAt        DateTime?
+  links            PromoLink[]
+  createdAt        DateTime                 @default(now())
+  modifiedAt       DateTime                 @updatedAt
+
+  @@unique([tenantId, promoterId])
+  @@index([tenantId, status])
+}
+
+/// One shareable link: the whole shop (productId null) or one product. Buyers' first
+/// message carries "(ref <code>)". At most one active link per membership and product,
+/// enforced by partial unique indexes in the migration.
+model PromoLink {
+  id           String             @id @default(uuid())
+  /// 6 characters without look-alikes, e.g. K7Q2MX.
+  code         String             @unique
+  membershipId String
+  membership   PromoterMembership @relation(fields: [membershipId], references: [id], onDelete: Cascade)
+  tenantId     String
+  tenant       Tenant             @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  promoterId   String
+  promoter     Promoter           @relation(fields: [promoterId], references: [id], onDelete: Cascade)
+  productId    String?
+  product      Product?           @relation(fields: [productId], references: [id], onDelete: Cascade)
+  active       Boolean            @default(true)
+  referrals    Referral[]
+  createdAt    DateTime           @default(now())
+  modifiedAt   DateTime           @updatedAt
+
+  @@index([promoterId, active])
+}
+
+/// A buyer tapped a promoter's link: their first message to the shop carried "(ref <code>)".
+/// Their first order with the shop within 14 days is credited to the promoter. The link's
+/// code, product and rate are copied in, so the record outlives a deleted link or product.
+model Referral {
+  id               String    @id @default(uuid())
+  tenantId         String
+  tenant           Tenant    @relation(fields: [tenantId], references: [id], onDelete: Cascade)
+  /// E.164, as on Order.buyerPhone.
+  buyerPhone       String
+  promoterId       String
+  promoter         Promoter  @relation(fields: [promoterId], references: [id], onDelete: Cascade)
+  linkId           String?
+  link             PromoLink? @relation(fields: [linkId], references: [id], onDelete: SetNull)
+  linkCode         String
+  /// Null: a whole-shop link.
+  productId        String?
+  productName      String?
+  /// Commission percent, locked when the buyer tapped the link.
+  ratePercent      Int
+  tappedAt         DateTime
+  expiresAt        DateTime
+  /// The order it was credited to. Moves to a later order if this one is cancelled or never paid.
+  orderId          String?   @unique
+  order            Order?    @relation(fields: [orderId], references: [id], onDelete: SetNull)
+  attachedAt       DateTime?
+  /// Pesewas, worked out when the order was attached: what the commission is on, and the commission.
+  baseAmount       Int?
+  commissionAmount Int?
+  createdAt        DateTime  @default(now())
+  modifiedAt       DateTime  @updatedAt
+
+  @@index([tenantId, buyerPhone, tappedAt])
+  @@index([promoterId, tappedAt])
+}
+
+enum PromoterLedgerEntryType {
+  /// Commission on an order the promoter brought in (positive), withdrawable from availableAt.
+  COMMISSION
+  /// Money sent to the promoter's MoMo (negative).
+  PAYOUT
+  /// A payout that failed or was reversed, credited back (positive).
+  PAYOUT_REVERSAL
+}
+
+/// Money MarketiX owes each promoter, in pesewas, like VendorLedgerEntry: the balance is the
+/// sum. Rows are never edited or deleted. Order and shop are copied in, not linked, so the
+/// record outlives them.
+model PromoterLedgerEntry {
+  id          String                  @id @default(uuid())
+  promoterId  String
+  promoter    Promoter                @relation(fields: [promoterId], references: [id], onDelete: Restrict)
+  type        PromoterLedgerEntryType
+  amount      Int
+  orderId     String?
+  orderNumber String?
+  tenantId    String?
+  shopName    String?
+  payoutId    String?
+  payout      PromoterPayout?         @relation(fields: [payoutId], references: [id], onDelete: SetNull)
+  /// When the promoter can withdraw it. Null: right away.
+  availableAt DateTime?
+  createdAt   DateTime                @default(now())
+
+  /// An order pays its promoter once.
+  @@unique([orderId, type])
+  @@index([promoterId, createdAt])
+}
+
+/// One Paystack transfer from a promoter's balance to their MoMo, like VendorPayout.
+model PromoterPayout {
+  id            String                @id @default(uuid())
+  promoterId    String
+  promoter      Promoter              @relation(fields: [promoterId], references: [id], onDelete: Restrict)
+  /// Pesewas.
+  amount        Int
+  status        PayoutStatus          @default(PENDING)
+  /// Our transfer reference ("ppayout_..."), sent to Paystack and echoed in its webhooks.
+  reference     String                @unique
+  transferCode  String?
+  momoNumber    String
+  momoName      String?
+  failureReason String?
+  paidAt        DateTime?
+  /// The admin who sent it (a retry). Null: the promoter withdrew it themselves.
+  initiatedById String?
+  entries       PromoterLedgerEntry[]
+  createdAt     DateTime              @default(now())
+  updatedAt     DateTime              @updatedAt
+
+  @@index([promoterId, createdAt])
+  @@index([status, createdAt])
 }

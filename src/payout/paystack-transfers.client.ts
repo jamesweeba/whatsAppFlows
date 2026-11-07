@@ -82,6 +82,20 @@ export class PaystackTransfersClient implements OnModuleInit {
     return { ok: false, reason: this.reason(res, 'Paystack would not accept this MoMo number as a payout recipient.') };
   }
 
+  /**
+   * The name a Ghana MoMo number is registered to, from Paystack's account resolve.
+   * Any failure (unknown number, network, Paystack not resolving MoMo) is `ok: false`;
+   * callers fall back to the name the person gave.
+   */
+  async resolveMomoName(params: { momoNumber: string; network: string }): Promise<{ ok: true; name: string } | { ok: false; reason: string }> {
+    if (this.fakeMode) return { ok: true, name: 'FAKE MOMO NAME' };
+    const query = new URLSearchParams({ account_number: params.momoNumber, bank_code: params.network });
+    const res = await this.request('GET', `/bank/resolve?${query}`);
+    const name = String(res.data?.data?.account_name ?? '').trim();
+    if (res.ok && name) return { ok: true, name };
+    return { ok: false, reason: this.reason(res, 'Paystack could not resolve the name on this MoMo number.') };
+  }
+
   /** Sends `amount` pesewas from the Paystack balance to a recipient. */
   async transfer(params: { amount: number; recipientCode: string; reference: string; reason: string }): Promise<TransferOutcome> {
     const fake = this.fakeMode;

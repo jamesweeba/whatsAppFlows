@@ -4,35 +4,14 @@ import { randomUUID } from 'crypto';
 import { NotificationService } from '../notification/notification.service.js';
 import { DELIVERED_ORDER_STATUSES } from '../order/order-status-groups.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { earningAvailableAt, formatAccra, ghs, MIN_PAYOUT, momoNetworkOf, orderSplit } from './payout-math.js';
+import { earningAvailableAt, formatAccra, type Funds, ghs, IN_FLIGHT, MIN_PAYOUT, momoNetworkOf, orderSplit, payoutsEnabled, STALE_AFTER_MS } from './payout-math.js';
 import { PaystackTransfersClient, type TransferState } from './paystack-transfers.client.js';
+import { PromoterPayoutService } from './promoter-payout.service.js';
 import { nextAccraMidnight, startOfAccraDay } from './withdrawal-day.js';
 
-/** Payouts in flight: at most one per shop, so a balance is never sent twice. */
-export const IN_FLIGHT: PayoutStatus[] = [PayoutStatus.PENDING, PayoutStatus.PROCESSING];
-
-/**
- * A payout still in flight after this long is checked with Paystack before the shop is paid
- * again. Long enough that a transfer request still on its way to Paystack has landed.
- */
-export const STALE_AFTER_MS = 10 * 60 * 1000;
-
-/** Transfers only go out when PAYOUTS_ENABLED=true; otherwise balances just accrue. */
-export const payoutsEnabled = () => process.env.PAYOUTS_ENABLED?.trim().toLowerCase() === 'true';
+export { IN_FLIGHT, payoutsEnabled, STALE_AFTER_MS, type Funds } from './payout-math.js';
 
 type Db = Prisma.TransactionClient;
-
-/** A shop's balance split into what can be withdrawn now and what's held (card earnings). */
-export interface Funds {
-  /** The whole balance (negative: the vendor owes MarketiX). */
-  balance: number;
-  /** What can be withdrawn now. */
-  available: number;
-  /** Card earnings not yet withdrawable. */
-  onHold: number;
-  /** When the next held earning becomes withdrawable, or null. */
-  nextReleaseAt: Date | null;
-}
 
 /**
  * The vendor money ledger and MoMo payouts.
@@ -56,6 +35,7 @@ export class PayoutService {
     private readonly prisma: PrismaService,
     private readonly transfers: PaystackTransfersClient,
     private readonly notifications: NotificationService,
+    private readonly promoterPayouts: PromoterPayoutService,
   ) {}
 
   // ───────────────────────── Orders ─────────────────────────
@@ -88,6 +68,8 @@ export class PayoutService {
       const when = availableAt ? `card payment, withdrawable from ${formatAccra(availableAt)}` : 'ready to withdraw';
       this.logger.log(`${order.orderNumber}: vendor earned ${ghs(split.vendorShare)} (commission ${ghs(split.commission)}); ${when}.`);
     }
+    // A promoter who brought the buyer in gets their commission out of this earning (once).
+    await this.promoterPayouts.creditCommission(order, amount, availableAt);
   }
 
   /** Whether an order's earning or commission has been recorded. */

@@ -18,7 +18,7 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('payouts (real database)', () => {
     verifyTransfer: vi.fn(),
   };
   const notifications = { payoutPaid: vi.fn(), payoutFailed: vi.fn() };
-  const service = new PayoutService(prisma, transfers as any, notifications as any);
+  const service = new PayoutService(prisma, transfers as any, notifications as any, { creditCommission: vi.fn() } as any);
   const reports = new PayoutReportService(prisma, service);
   /** The vendor withdraws `amount` (default: the whole balance). */
   const withdraw = async (amount?: number) => service.withdraw(tenantId, userId, amount ?? (await balance()));

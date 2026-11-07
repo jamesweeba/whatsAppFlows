@@ -762,6 +762,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
           customerName: 'Ama Mensah', deliveryArea: 'KNUST Campus', landmark: 'Unity Hall B12',
           contactPhone: '+233244000000', deliverySlot: 'Now · within 1 hour', flowCartId: 'cart-1',
         }),
+        { creditPromoter: true },
       );
       expect(paystack.initiateMoMoCharge).toHaveBeenCalledWith(
         expect.objectContaining({ amount: 250, momoNumber: '0244111222', reference: 'MX-ABC123' }),
@@ -790,6 +791,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
         'tenant-1',
         expect.objectContaining({ status: OrderStatus.CONFIRMED, paymentMethod: PaymentMethod.COD, paymentPhone: undefined }),
         expect.anything(),
+        { creditPromoter: true },
       );
       expect(result.data.steps.split('\n')[0]).toBe('1. 💵 Have GH₵ 250 ready in cash for the rider');
     });

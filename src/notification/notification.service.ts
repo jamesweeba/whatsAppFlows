@@ -1,5 +1,5 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PayoutSource, Tenant, VendorPayout } from '@prisma/client';
+import { PayoutSource, Promoter, Tenant, VendorPayout } from '@prisma/client';
 import { optionalEnv } from '../common/config.js';
 import { ghCedis } from '../common/money.util.js';
 import { toGhanaLocal, toInternationalDigits } from '../common/phone.util.js';
@@ -75,6 +75,21 @@ export class NotificationService {
       `⚠️ Your ${what} of ${ghCedis(payout.amount / 100)} didn't go through. The money is back in your MarketiX balance ` +
         'and our team has been told. You can withdraw it again from the Money page.',
     );
+  }
+
+  /** Someone asked to promote the shop; the vendor approves or declines in the dashboard. */
+  promoterRequested(tenant: Tenant, promoter: Pick<Promoter, 'fullName' | 'phone'>) {
+    const who = promoter.fullName ? `${promoter.fullName} (${toGhanaLocal(promoter.phone)})` : toGhanaLocal(promoter.phone);
+    return this.fromPlatform(
+      tenant,
+      `🙋 ${who} wants to promote *${tenant.name}* and earn ${tenant.promoterRate ?? '?'}% on new customers' first orders. ` +
+        'Approve or decline on the Promoters page of your dashboard.',
+    );
+  }
+
+  /** A message to a promoter (earnings, payouts), from the platform number. */
+  toPromoter(phone: string, text: string) {
+    return this.send(optionalEnv('PLATFORM_PHONE_NUMBER_ID') || null, phone, text);
   }
 
   private fromPlatform(tenant: Tenant, text: string) {

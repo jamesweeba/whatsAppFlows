@@ -8,6 +8,7 @@ describe('PaymentController', () => {
   let orders: any;
   let waba: any;
   let payouts: any;
+  let promoterPayouts: any;
 
   const webhook = (data: Record<string, any>, event = 'charge.success'): any => ({
     body: { event, data },
@@ -20,7 +21,16 @@ describe('PaymentController', () => {
     waba = { sendTextMessage: vi.fn().mockResolvedValue({ messageId: 'wamid-confirm' }) };
 
     payouts = { handleTransferEvent: vi.fn().mockResolvedValue(true) };
-    controller = new PaymentController(paystack, orders, waba, payouts);
+    promoterPayouts = { handleTransferEvent: vi.fn().mockResolvedValue(false) };
+    controller = new PaymentController(paystack, orders, waba, payouts, promoterPayouts);
+  });
+
+  it("passes a transfer webhook that isn't a vendor payout on to promoter payouts", async () => {
+    payouts.handleTransferEvent.mockResolvedValue(false);
+    promoterPayouts.handleTransferEvent.mockResolvedValue(true);
+    const result = await controller.handlePaystackWebhook(webhook({ reference: 'ppayout_abc' }, 'transfer.success'), 'sig');
+    expect(promoterPayouts.handleTransferEvent).toHaveBeenCalledWith('transfer.success', { reference: 'ppayout_abc' });
+    expect(result).toMatchObject({ status: 'PROCESSED' });
   });
 
   it('updates order status to PAID and sends WhatsApp confirmation on charge.success', async () => {
