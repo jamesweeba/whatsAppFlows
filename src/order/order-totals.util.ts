@@ -11,6 +11,9 @@ export interface OrderTotals {
   total: number;
 }
 
+/** The most of one product a buyer can order at once (the WhatsApp form and the chat bot). */
+export const MAX_ITEM_QUANTITY = 10;
+
 /** Quantities are stored as integers; anything below one becomes one. */
 export function normalizeQuantity(quantity: unknown): number {
   const parsed = Math.round(Number(quantity));

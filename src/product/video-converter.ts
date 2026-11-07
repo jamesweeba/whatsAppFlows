@@ -15,6 +15,14 @@ const SHORT_SIDE = 720;
 /** Conversion gives up after this long, so a strange file can't hold the queue for ever. */
 const CONVERT_TIMEOUT_MS = 5 * 60 * 1000;
 
+/**
+ * Inputs may only be local files in these container formats (ffprobe's format names). Without
+ * this, ffmpeg guesses the format from the content, and a "video" that is really a playlist
+ * (HLS, concat) could make it read other files on the server or fetch URLs.
+ */
+const SAFE_INPUT = ['-protocol_whitelist', 'file', '-format_whitelist', 'mov,mp4,m4a,3gp,3g2,mj2,matroska,webm'];
+const VIDEO_FORMATS = new Set(['mov', 'mp4', 'm4a', '3gp', '3g2', 'mj2', 'matroska', 'webm']);
+
 /** A conversion problem the vendor can act on; the message is shown to them. */
 export class VideoRejected extends Error {}
 
@@ -28,15 +36,18 @@ export async function videoToolsAvailable(): Promise<boolean> {
   }
 }
 
-/** Length in seconds and whether the file has a video stream, read by ffprobe. */
+/** Length in seconds and whether the file is a video we accept (an MP4, MOV, MKV or WebM with a video stream), read by ffprobe. */
 export async function probeVideo(path: string): Promise<{ seconds: number; hasVideo: boolean }> {
   try {
-    const { stdout } = await run('ffprobe', ['-v', 'error', '-show_entries', 'format=duration:stream=codec_type', '-of', 'json', path], {
+    const { stdout } = await run('ffprobe', [...SAFE_INPUT, '-v', 'error', '-show_entries', 'format=duration,format_name:stream=codec_type', '-of', 'json', path], {
       timeout: 30_000,
     });
     const info = JSON.parse(stdout);
     const seconds = Number(info?.format?.duration);
-    const hasVideo = (info?.streams ?? []).some((s: { codec_type?: string }) => s.codec_type === 'video');
+    // e.g. "mov,mp4,m4a,3gp,3g2,mj2" or "matroska,webm": every name must be one we accept.
+    const formats = String(info?.format?.format_name ?? '').split(',');
+    const knownFormat = formats.length > 0 && formats.every((f) => VIDEO_FORMATS.has(f));
+    const hasVideo = knownFormat && (info?.streams ?? []).some((s: { codec_type?: string }) => s.codec_type === 'video');
     return { seconds: Number.isFinite(seconds) ? seconds : 0, hasVideo };
   } catch {
     return { seconds: 0, hasVideo: false };
@@ -74,6 +85,7 @@ async function encode(input: string, output: string, { crf, shortSide }: { crf: 
       'ffmpeg',
       [
         '-y', '-v', 'error',
+        ...SAFE_INPUT,
         '-i', input,
         '-t', String(MAX_VIDEO_SECONDS),
         '-map', '0:v:0', '-map', '0:a:0?',
@@ -93,7 +105,7 @@ async function encode(input: string, output: string, { crf, shortSide }: { crf: 
 }
 
 async function writePoster(video: string, poster: string) {
-  await run('ffmpeg', ['-y', '-v', 'error', '-ss', '0.5', '-i', video, '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '4', poster], {
+  await run('ffmpeg', ['-y', '-v', 'error', ...SAFE_INPUT, '-ss', '0.5', '-i', video, '-frames:v', '1', '-vf', 'scale=640:-2', '-q:v', '4', poster], {
     timeout: 60_000,
   });
 }

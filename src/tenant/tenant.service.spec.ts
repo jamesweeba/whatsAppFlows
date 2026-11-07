@@ -13,7 +13,10 @@ describe('TenantService KYC lock', () => {
       id: 'tenant-1', userId: 'user-1', status: TenantStatus.ACTIVE, whatsappNumber: '0205000000',
       ownerFullName: 'Ama Mensah', momoNumber: '0244111222', momoName: 'Ama Mensah',
     };
-    prisma = { tenant: { findUnique: vi.fn(async () => tenant), update: vi.fn(async ({ data }: any) => ({ ...tenant, ...data })) } };
+    prisma = {
+      tenant: { findUnique: vi.fn(async () => tenant), update: vi.fn(async ({ data }: any) => ({ ...tenant, ...data })) },
+      vendorReview: { count: vi.fn(async () => 0) },
+    };
     service = new TenantService(prisma, { vendorWelcome: vi.fn() } as any);
   });
 
@@ -36,5 +39,13 @@ describe('TenantService KYC lock', () => {
       tenant.status = status;
       await expect(service.update('user-1', { momoName: 'Ama K. Mensah' })).resolves.toBeDefined();
     }
+  });
+
+  it('keeps payout details locked for a shop that was approved before, even back in the queue', async () => {
+    // Reinstated after its number was released: STOCKED again, but its balance is still there.
+    tenant.status = TenantStatus.STOCKED;
+    prisma.vendorReview.count.mockResolvedValue(1);
+    await expect(service.update('user-1', { momoNumber: '0241234567' })).rejects.toThrow('once your shop has been approved');
+    expect(prisma.tenant.update).not.toHaveBeenCalled();
   });
 });

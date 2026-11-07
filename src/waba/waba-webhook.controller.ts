@@ -3,6 +3,7 @@ import {
   Controller,
   ForbiddenException,
   Get,
+  Header,
   HttpCode,
   HttpStatus,
   Logger,
@@ -12,6 +13,7 @@ import {
 } from '@nestjs/common';
 import { MessageSender, Tenant, TenantStatus } from '@prisma/client';
 import { MetaSignatureGuard } from '../auth/guards/meta-signature.guard.js';
+import { safeEqual } from '../common/crypto.util.js';
 import { ChatService } from '../chat/chat.service.js';
 import { FlowService } from '../flow/flow.service.js';
 import { isBsuid, toE164 } from '../common/phone.util.js';
@@ -42,6 +44,7 @@ export class WabaWebhookController {
    * Meta webhook verification challenge.
    */
   @Get()
+  @Header('Content-Type', 'text/plain; charset=utf-8')
   verifyWebhook(
     @Query('hub.mode') mode: string,
     @Query('hub.verify_token') token: string,
@@ -53,7 +56,7 @@ export class WabaWebhookController {
       throw new ForbiddenException('Webhook verification is not configured on this server');
     }
 
-    if (mode === 'subscribe' && token === verifyToken) {
+    if (mode === 'subscribe' && safeEqual(token, verifyToken)) {
       this.logger.log('Meta webhook verified successfully.');
       return challenge;
     }

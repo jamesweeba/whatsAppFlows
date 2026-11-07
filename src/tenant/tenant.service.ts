@@ -5,7 +5,7 @@ import {
   Injectable,
   NotFoundException,
 } from '@nestjs/common';
-import { Prisma, Tenant, TenantStatus, WabaStatus } from '@prisma/client';
+import { Prisma, ReviewDecision, Tenant, TenantStatus, WabaStatus } from '@prisma/client';
 import { optionalEnv } from '../common/config.js';
 import { NotificationService } from '../notification/notification.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -111,13 +111,15 @@ export class TenantService {
   }
 
   /** KYC details and documents cannot change while a shop is under review or approved. */
-  assertKycEditable(tenant: Pick<Tenant, 'status'>, fields: string[] = []) {
-    if (KYC_LOCKED.includes(tenant.status)) {
+  async assertKycEditable(tenant: Pick<Tenant, 'id' | 'status'>, fields: string[] = []) {
+    // Once approved, always locked: a shop reinstated into the queue (or waiting for a new
+    // number) keeps its balance, so changing the MoMo number then would redirect that money.
+    const locked =
+      KYC_LOCKED.includes(tenant.status) || (await this.prisma.vendorReview.count({ where: { tenantId: tenant.id, decision: ReviewDecision.APPROVED } })) > 0;
+    if (locked) {
       const what = fields.length ? fields.join(', ') : 'KYC documents';
-      throw new ForbiddenException(
-        `${what} cannot be changed while your shop is ${isLive(tenant) ? 'live' : 'being reviewed'}. ` +
-          'Contact MarketiX support to update owner or payout details.',
-      );
+      const when = isLive(tenant) ? 'while your shop is live' : tenant.status === TenantStatus.UNDER_REVIEW ? 'while your shop is being reviewed' : 'once your shop has been approved';
+      throw new ForbiddenException(`${what} cannot be changed ${when}. Contact MarketiX support to update owner or payout details.`);
     }
   }
 
@@ -163,7 +165,7 @@ export class TenantService {
     // Re-sending the current value is fine; only actual changes are blocked.
     const kycChanges = KYC_FIELDS.filter((field) => dto[field] !== undefined && dto[field] !== tenant[field]);
     if (kycChanges.length > 0) {
-      this.assertKycEditable(tenant, [...kycChanges]);
+      await this.assertKycEditable(tenant, [...kycChanges]);
     }
 
     if (dto.whatsappNumber !== undefined && !ownNumberOnboardingEnabled()) {

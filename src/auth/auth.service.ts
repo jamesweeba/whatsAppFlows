@@ -11,6 +11,9 @@ import { SignupDto } from './dto/signup.dto.js';
 import { LoginDto } from './dto/login.dto.js';
 import { LoginThrottleService } from './login-throttle.service.js';
 
+/** A bcrypt hash (cost 12) of a random string, compared against when the email is unknown. */
+const DUMMY_HASH = '$2b$12$UGFBl0irLkjE58sFtlp9F.y0LXRIUE0IKheUYWW6dfYC5XgWv1o.K';
+
 @Injectable()
 export class AuthService {
   constructor(
@@ -67,8 +70,9 @@ export class AuthService {
       where: { email: dto.email },
     });
 
-    // Same error, and a failure counted, whether the email or the password was wrong.
-    const isPasswordValid = user ? await compare(dto.password, user.password) : false;
+    // Same error, same work (a bcrypt compare), and a failure counted, whether the email or
+    // the password was wrong, so the response doesn't reveal which emails have accounts.
+    const isPasswordValid = await compare(dto.password, user?.password ?? DUMMY_HASH);
     if (!user || !isPasswordValid) {
       this.throttle.recordFailure(dto.email, ip);
       throw new UnauthorizedException('Invalid email or password');

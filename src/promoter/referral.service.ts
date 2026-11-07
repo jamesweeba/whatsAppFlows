@@ -194,7 +194,14 @@ export class ReferralService {
   /** Whether the buyer already has a paid or confirmed order with the shop (cancelled and unpaid ones don't count). */
   private async hasPlacedOrder(tenantId: string, buyerPhone: string, exceptOrderId?: string): Promise<boolean> {
     const count = await this.prisma.order.count({
-      where: { tenantId, buyerPhone, status: { in: PAID_ORDER_STATUSES }, ...(exceptOrderId && { id: { not: exceptOrderId } }) },
+      where: {
+        tenantId,
+        buyerPhone,
+        status: { in: PAID_ORDER_STATUSES },
+        // A vendor can't use up the buyer's first order by entering one for them.
+        OR: [{ vendorCreated: false }, { paystackPaidAt: { not: null } }],
+        ...(exceptOrderId && { id: { not: exceptOrderId } }),
+      },
     });
     return count > 0;
   }

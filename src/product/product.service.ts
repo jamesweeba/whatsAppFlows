@@ -112,7 +112,8 @@ export class ProductService {
       await this.categoryService.assertExists(defaultCategoryId);
     }
 
-    const workbook = XLSX.read(fileBuffer, { type: 'buffer' });
+    // Read one row past the limit (plus the header), so a longer sheet is reported, not parsed in full.
+    const workbook = XLSX.read(fileBuffer, { type: 'buffer', sheetRows: MAX_UPLOAD_ROWS + 2, cellFormula: false, cellHTML: false });
     const sheetName = workbook.SheetNames[0];
     if (!sheetName) {
       throw new BadRequestException('The uploaded file has no sheets.');

@@ -506,7 +506,7 @@ export class WabaService {
         }
         const reason = code ? `${err.message} (${code})` : err.message;
         this.logger.error(`HTTP request to Meta failed: ${reason}`);
-        throw new InternalServerErrorException(`Failed to communicate with Meta API: ${reason}`);
+        throw new InternalServerErrorException('Could not reach WhatsApp. Please try again.'); // the detail is in the log only
       }
     }
   }
