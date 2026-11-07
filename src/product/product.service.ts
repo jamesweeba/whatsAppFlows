@@ -311,13 +311,13 @@ export class ProductService {
     const product = await this.prisma.product.update({
       where: { id: productId },
       data: {
-        ...(dto.name !== undefined && { name: dto.name }),
-        ...(price !== undefined && { price }),
-        ...(dto.image !== undefined && { image: dto.image }),
-        ...(dto.inStock !== undefined && { inStock: dto.inStock }),
-        ...(dto.note !== undefined && { note: dto.note }),
-        ...(dto.categoryId !== undefined && { categoryId: dto.categoryId }),
-        ...(dto.promoterRate !== undefined && { promoterRate: dto.promoterRate }),
+        name: dto.name,
+        price,
+        image: dto.image,
+        inStock: dto.inStock,
+        note: dto.note,
+        categoryId: dto.categoryId,
+        promoterRate: dto.promoterRate,
         ...(dto.measures !== undefined && {
           measures: { deleteMany: {}, create: measureRows(dto.measures) },
         }),

@@ -4,7 +4,8 @@ import { searchSql, whereSql } from '../common/search-sql.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { formatVendorRef } from '../tenant/vendor-ref.js';
 import { cardHoldDays, COMMISSION_PERCENT, MIN_PAYOUT } from './payout-math.js';
-import { IN_FLIGHT, payoutsEnabled, PayoutService, STALE_AFTER_MS } from './payout.service.js';
+import { IN_FLIGHT, payoutsEnabled, STALE_AFTER_MS } from './payout-math.js';
+import { PayoutService } from './payout.service.js';
 
 export const PAYOUT_STATUS_FILTERS = ['all', 'pending', 'processing', 'success', 'failed'] as const;
 export type PayoutStatusFilter = (typeof PAYOUT_STATUS_FILTERS)[number];

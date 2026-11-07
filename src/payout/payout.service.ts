@@ -1,15 +1,14 @@
-import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException, ServiceUnavailableException } from '@nestjs/common';
-import { LedgerEntryType, OrderStatus, PaymentMethod, PayoutSource, PayoutStatus, Prisma, TenantStatus } from '@prisma/client';
+import { BadRequestException, ConflictException, ForbiddenException, Injectable, Logger, NotFoundException } from '@nestjs/common';
+import { LedgerEntryType, OrderStatus, PaymentMethod, PayoutSource, PayoutStatus, Prisma, TenantStatus, type Tenant, type VendorPayout } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { NotificationService } from '../notification/notification.service.js';
 import { DELIVERED_ORDER_STATUSES } from '../order/order-status-groups.js';
 import { PrismaService } from '../prisma/prisma.service.js';
-import { earningAvailableAt, formatAccra, type Funds, ghs, IN_FLIGHT, MIN_PAYOUT, momoNetworkOf, orderSplit, payoutsEnabled, STALE_AFTER_MS } from './payout-math.js';
-import { PaystackTransfersClient, type TransferState } from './paystack-transfers.client.js';
+import { earningAvailableAt, formatAccra, type Funds, ghs, IN_FLIGHT, MIN_PAYOUT, momoNetworkOf, orderSplit, payoutsEnabled } from './payout-math.js';
+import { PaystackTransfersClient } from './paystack-transfers.client.js';
+import { PayoutSettlement } from './payout-settlement.js';
 import { PromoterPayoutService } from './promoter-payout.service.js';
 import { nextAccraMidnight, startOfAccraDay } from './withdrawal-day.js';
-
-export { IN_FLIGHT, payoutsEnabled, STALE_AFTER_MS, type Funds } from './payout-math.js';
 
 type Db = Prisma.TransactionClient;
 
@@ -30,13 +29,21 @@ type Db = Prisma.TransactionClient;
 @Injectable()
 export class PayoutService {
   private readonly logger = new Logger(PayoutService.name);
+  private readonly settlement: PayoutSettlement<VendorPayout>;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly transfers: PaystackTransfersClient,
     private readonly notifications: NotificationService,
     private readonly promoterPayouts: PromoterPayoutService,
-  ) {}
+  ) {
+    this.settlement = new PayoutSettlement(prisma, transfers, this.logger, {
+      label: 'Payout',
+      table: (db) => db.vendorPayout,
+      addEntry: (db, payout, type, amount) => db.vendorLedgerEntry.create({ data: { tenantId: payout.tenantId, type, amount, payoutId: payout.id } }),
+      tell: (payout, outcome) => this.tellVendor(payout, outcome),
+    });
+  }
 
   // ───────────────────────── Orders ─────────────────────────
 
@@ -145,7 +152,7 @@ export class PayoutService {
   private async startPayout(
     tenantId: string,
     by: { source: PayoutSource; initiatedById: string | null },
-    check: (tenant: Prisma.TenantGetPayload<object>, funds: Funds, tx: Db) => number | string | Promise<number | string>,
+    check: (tenant: Tenant, funds: Funds, tx: Db) => number | string | Promise<number | string>,
   ) {
     await this.reconcileStale(tenantId);
     if (!payoutsEnabled()) {
@@ -186,12 +193,9 @@ export class PayoutService {
     return this.sendTransfer(started.payout, started.tenant);
   }
 
-  private async sendTransfer(
-    payout: Prisma.VendorPayoutGetPayload<object>,
-    tenant: Prisma.TenantGetPayload<object>,
-  ) {
+  private async sendTransfer(payout: VendorPayout, tenant: Tenant) {
     const recipient = await this.recipientFor(tenant);
-    if ('reason' in recipient) return this.fail(payout.id, recipient.reason);
+    if ('reason' in recipient) return this.settlement.fail(payout.id, recipient.reason);
 
     const result = await this.transfers.transfer({
       amount: payout.amount,
@@ -199,26 +203,11 @@ export class PayoutService {
       reference: payout.reference,
       reason: `MarketiX payout to ${tenant.name}`.slice(0, 100),
     });
-    if (!result.ok && result.unknown) {
-      // Paystack may have sent it. Refunding now could pay the vendor twice, so it stays in
-      // flight (blocking further payouts) until a webhook or reconcileStale() settles it.
-      this.logger.warn(`Payout ${payout.reference}: no clear answer from Paystack (${result.reason}); left in flight until Paystack confirms.`);
-      return this.prisma.vendorPayout.update({ where: { id: payout.id }, data: { status: PayoutStatus.PROCESSING } });
-    }
-    if (!result.ok) return this.fail(payout.id, result.reason);
-
-    this.logger.log(`Payout ${payout.reference}: ${ghs(payout.amount)} to ${tenant.name} accepted by Paystack (${result.status}).`);
-    if (result.status !== 'success') {
-      return this.prisma.vendorPayout.update({ where: { id: payout.id }, data: { status: PayoutStatus.PROCESSING, transferCode: result.transferCode } });
-    }
-    // Conditional, like succeed(): a webhook that already settled it wins, and the vendor is told once.
-    await this.prisma.vendorPayout.updateMany({ where: { id: payout.id, status: { in: IN_FLIGHT } }, data: { transferCode: result.transferCode } });
-    await this.succeed(payout.id);
-    return this.prisma.vendorPayout.findUniqueOrThrow({ where: { id: payout.id } });
+    return this.settlement.afterTransfer(payout, result);
   }
 
   /** The shop's Paystack recipient, made once per MoMo number. */
-  private async recipientFor(tenant: Prisma.TenantGetPayload<object>): Promise<{ code: string } | { reason: string }> {
+  private async recipientFor(tenant: Tenant): Promise<{ code: string } | { reason: string }> {
     const momo = tenant.momoNumber!;
     // Fake transfers (local testing): never save the fake recipient, or real payouts would use it later.
     if (this.transfers.fakeMode) return { code: 'RCP_FAKE' };
@@ -233,101 +222,21 @@ export class PayoutService {
     return { code: created.code };
   }
 
-  /** Marks a payout failed and puts its amount back in the balance (once). */
-  private async fail(payoutId: string, reason: string) {
-    const { payout, changed } = await this.prisma.$transaction(async (tx) => {
-      const { count } = await tx.vendorPayout.updateMany({
-        where: { id: payoutId, status: { not: PayoutStatus.FAILED } },
-        data: { status: PayoutStatus.FAILED, failureReason: reason.slice(0, 500) },
-      });
-      const payout = await tx.vendorPayout.findUniqueOrThrow({ where: { id: payoutId } });
-      if (count === 1) {
-        await tx.vendorLedgerEntry.create({
-          data: { tenantId: payout.tenantId, type: LedgerEntryType.PAYOUT_REVERSAL, amount: payout.amount, payoutId },
-        });
-        this.logger.warn(`Payout ${payout.reference} failed: ${reason}`);
-      }
-      return { payout, changed: count === 1 };
-    });
-    if (changed) this.tellVendor(payout, 'failed');
-    return payout;
+  /** Paystack's transfer webhooks for shop payouts. Returns false for a reference that isn't a shop payout. */
+  handleTransferEvent(event: string, data: { reference?: string } | undefined): Promise<boolean> {
+    return this.settlement.handleTransferEvent(event, data);
   }
 
   /**
-   * Paystack's transfer.success / transfer.failed / transfer.reversed webhooks (the
-   * signature is checked by the caller). The event only prompts a check: the payout is
-   * settled on what Paystack's API reports, so a replayed or out-of-order webhook can't
-   * refund a transfer that was paid. Returns false for a reference that isn't ours. Throws
-   * 503 when Paystack can't be asked, so Paystack sends the webhook again later.
+   * Settles this shop's payouts that have been in flight too long. Run before paying the
+   * shop again and when showing its money.
    */
-  async handleTransferEvent(event: string, data: { reference?: string } | undefined): Promise<boolean> {
-    const payout = data?.reference ? await this.prisma.vendorPayout.findUnique({ where: { reference: data.reference } }) : null;
-    if (!payout) return false;
-
-    const state = await this.transfers.verifyTransfer(payout.reference);
-    if (state.state === 'unknown') {
-      this.logger.warn(`Webhook ${event} for ${payout.reference}: couldn't confirm with Paystack (${state.reason}).`);
-      throw new ServiceUnavailableException('Could not confirm the transfer with Paystack. Try again later.');
-    }
-    if (state.state === 'not_found') {
-      this.logger.error(`Webhook ${event} for ${payout.reference}, but Paystack has no such transfer. Ignored.`);
-      return true;
-    }
-    await this.applyState(payout, state);
-    return true;
-  }
-
-  /**
-   * Settles this shop's payouts that have been in flight too long, by asking Paystack. Run
-   * before paying the shop again and when showing its money, so a lost webhook or an
-   * unanswered transfer request doesn't block the shop for ever.
-   */
-  async reconcileStale(tenantId: string): Promise<void> {
-    const stale = await this.prisma.vendorPayout.findMany({
-      where: { tenantId, status: { in: IN_FLIGHT }, updatedAt: { lt: new Date(Date.now() - STALE_AFTER_MS) } },
-    });
-    for (const payout of stale) {
-      const state = await this.transfers.verifyTransfer(payout.reference);
-      // Paystack never got it, long after we asked: it won't go out now, so give the money back.
-      if (state.state === 'not_found') await this.fail(payout.id, 'Paystack never received this transfer.');
-      else if (state.state === 'success' || state.state === 'failed') await this.applyState(payout, state);
-      else await this.prisma.vendorPayout.update({ where: { id: payout.id }, data: { updatedAt: new Date() } }); // check again later
-    }
-  }
-
-  private async applyState(payout: { id: string }, state: Extract<TransferState, { state: 'success' | 'failed' | 'pending' }>) {
-    if (state.state === 'success') await this.succeed(payout.id);
-    else if (state.state === 'failed') await this.fail(payout.id, state.reason);
-  }
-
-  /**
-   * Marks a payout paid. If it had been marked failed (and its amount put back), the money
-   * did go out after all: take it off the balance again, so it can't be withdrawn twice.
-   */
-  private async succeed(payoutId: string) {
-    const landed = await this.prisma.$transaction(async (tx) => {
-      const { count } = await tx.vendorPayout.updateMany({
-        where: { id: payoutId, status: { in: IN_FLIGHT } },
-        data: { status: PayoutStatus.SUCCESS, paidAt: new Date() },
-      });
-      if (count === 1) return tx.vendorPayout.findUniqueOrThrow({ where: { id: payoutId } });
-
-      const reopened = await tx.vendorPayout.updateMany({
-        where: { id: payoutId, status: PayoutStatus.FAILED },
-        data: { status: PayoutStatus.SUCCESS, paidAt: new Date() },
-      });
-      if (reopened.count === 1) {
-        const payout = await tx.vendorPayout.findUniqueOrThrow({ where: { id: payoutId } });
-        await tx.vendorLedgerEntry.create({ data: { tenantId: payout.tenantId, type: LedgerEntryType.PAYOUT, amount: -payout.amount, payoutId } });
-        this.logger.error(`Payout ${payout.reference} was marked failed but Paystack paid it: ${ghs(payout.amount)} taken off the balance again.`);
-      }
-      return null; // the vendor was already told it failed; an admin sorts this one out
-    });
-    if (landed) this.tellVendor(landed, 'paid');
+  reconcileStale(tenantId: string): Promise<void> {
+    return this.settlement.reconcileStale({ tenantId });
   }
 
   /** WhatsApp the vendor that a payout landed or failed. In the background; never fails the payout. */
-  private tellVendor(payout: Prisma.VendorPayoutGetPayload<object>, outcome: 'paid' | 'failed') {
+  private tellVendor(payout: VendorPayout, outcome: 'paid' | 'failed') {
     void this.prisma.tenant
       .findUnique({ where: { id: payout.tenantId } })
       .then((tenant) => tenant && (outcome === 'paid' ? this.notifications.payoutPaid(tenant, payout) : this.notifications.payoutFailed(tenant, payout)))

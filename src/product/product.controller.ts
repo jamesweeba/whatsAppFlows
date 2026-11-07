@@ -25,21 +25,9 @@ import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
 import { ParseExcelFilePipe } from './pipes/parse-excel-file.pipe.js';
 import { BulkUploadDto } from './dto/bulk-upload.dto.js';
 import { MAX_PHOTO_BYTES, ProductPhotoService } from './product-photo.service.js';
-import { ProductVideoService, VIDEO_UPLOAD_DIR, type VideoSlot } from './product-video.service.js';
+import { ProductVideoService, VIDEO_UPLOAD_DIR } from './product-video.service.js';
+import { measureParam, videoSlot } from './video-params.js';
 import { MAX_VIDEO_UPLOAD_BYTES } from './video-converter.js';
-
-/** A measure code from `?measure=` ('' or missing: the whole product). Codes are lowercase letters, digits and _. */
-export function measureParam(value: string | undefined): string {
-  const code = (value ?? '').trim();
-  if (code && !/^[a-z0-9_]{1,40}$/.test(code)) throw new BadRequestException('Unknown measure.');
-  return code;
-}
-
-/** `pending` or `live`, from the URL. */
-export function videoSlot(value: string): VideoSlot {
-  if (value !== 'pending' && value !== 'live') throw new BadRequestException('Use pending or live.');
-  return value;
-}
 
 @Controller('api/v1/products')
 @UseGuards(JwtAuthGuard)

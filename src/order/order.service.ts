@@ -344,8 +344,8 @@ export class OrderService {
       data: {
         status: dto.status,
         ...(dto.notes ? { notes: dto.notes } : {}),
-        ...(dto.riderName !== undefined && { riderName: dto.riderName }),
-        ...(dto.riderPhone !== undefined && { riderPhone: dto.riderPhone }),
+        riderName: dto.riderName,
+        riderPhone: dto.riderPhone,
       },
       include: { items: true, tenant: true },
     });

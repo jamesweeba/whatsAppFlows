@@ -284,8 +284,7 @@ export class ChatService implements OnModuleInit {
   }
 
   private isTrackRequest(messageText: string): boolean {
-    const trimmed = messageText.trim();
-    return trimmed === WELCOME_BUTTON_IDS.TRACK || trimmed === '📦 Track my order';
+    return this.buttonIntent(messageText) === BuyerIntent.ORDER_INTENT;
   }
 
   // ───────────────────────── Location pins ─────────────────────────
@@ -303,27 +302,14 @@ export class ChatService implements OnModuleInit {
     const order = await this.orderService.attachLocation(tenant.id, dto.buyerPhone, dto.location!);
     if (!order) return null;
 
-    const buyerMessage = await this.saveMessage(session.id, {
-      sender: dto.sender || MessageSender.BUYER,
-      source: MessageSource.LOCATION,
-      text: messageText,
-      whatsappMessageId: dto.incomingMessageId,
-    });
-
-    let reply: Reply = {
-      kind: 'text',
-      text: `📍 Thanks! We've saved this pin for order *${order.orderNumber}*. Our rider will use it to find you.`,
-    };
-    if (tenant.whatsappPhoneNumberId) {
-      reply = await this.dispatch(tenant, dto.buyerPhone, reply);
-    }
-    const systemResponse = await this.saveMessage(session.id, {
-      sender: MessageSender.SYSTEM,
-      source: MessageSource.TEXT,
-      text: reply.text,
-    });
-
-    return { duplicate: false, session, message: buyerMessage, classification: null, systemResponse };
+    return this.replyToTap(
+      tenant,
+      session,
+      dto,
+      messageText,
+      async () => `📍 Thanks! We've saved this pin for order *${order.orderNumber}*. Our rider will use it to find you.`,
+      MessageSource.LOCATION,
+    );
   }
 
   /**
@@ -347,11 +333,18 @@ export class ChatService implements OnModuleInit {
     );
   }
 
-  /** Save a button or list tap (as `shown`), answer it with `answer()`, and save the answer. */
-  private async replyToTap(tenant: TenantWithProducts, session: { id: string }, dto: ProcessMessageDto, shown: string, answer: () => Promise<string>) {
+  /** Save a button or list tap or a location pin (as `shown`), answer it with `answer()`, and save the answer. */
+  private async replyToTap(
+    tenant: TenantWithProducts,
+    session: { id: string },
+    dto: ProcessMessageDto,
+    shown: string,
+    answer: () => Promise<string>,
+    source: MessageSource = MessageSource.TEXT,
+  ) {
     const buyerMessage = await this.saveMessage(session.id, {
       sender: dto.sender || MessageSender.BUYER,
-      source: MessageSource.TEXT,
+      source,
       text: shown,
       whatsappMessageId: dto.incomingMessageId,
     });

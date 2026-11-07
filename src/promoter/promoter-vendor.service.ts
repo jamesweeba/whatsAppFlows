@@ -65,9 +65,9 @@ export class PromoterVendorService {
     const updated = await this.prisma.tenant.update({
       where: { id: tenant.id },
       data: {
-        ...(input.promotionsEnabled !== undefined && { promotionsEnabled: input.promotionsEnabled }),
-        ...(input.acceptPromoterRequests !== undefined && { acceptPromoterRequests: input.acceptPromoterRequests }),
-        ...(input.promoterRate !== undefined && { promoterRate: input.promoterRate }),
+        promotionsEnabled: input.promotionsEnabled,
+        acceptPromoterRequests: input.acceptPromoterRequests,
+        promoterRate: input.promoterRate,
       },
     });
     return this.settings(updated);

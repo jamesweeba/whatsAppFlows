@@ -1,13 +1,14 @@
-import { Injectable, Logger, ServiceUnavailableException } from '@nestjs/common';
-import { LedgerEntryType, Order, PayoutStatus, Prisma, PromoterLedgerEntryType as Entry, PromoterStatus } from '@prisma/client';
+import { Injectable, Logger } from '@nestjs/common';
+import { LedgerEntryType, Order, PayoutStatus, Prisma, PromoterLedgerEntryType as Entry, PromoterStatus, type Promoter, type PromoterPayout } from '@prisma/client';
 import { randomUUID } from 'crypto';
 import { toGhanaLocal } from '../common/phone.util.js';
 import { NotificationService } from '../notification/notification.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { COMMISSION_HOLD_DAYS } from '../promoter/promoter-rules.js';
 import { referralState } from '../promoter/referral-rules.js';
-import { formatAccra, type Funds, ghs, IN_FLIGHT, MIN_PAYOUT, momoNetworkOf, payoutsEnabled, STALE_AFTER_MS } from './payout-math.js';
-import { PaystackTransfersClient, type TransferState } from './paystack-transfers.client.js';
+import { formatAccra, type Funds, ghs, IN_FLIGHT, MIN_PAYOUT, momoNetworkOf, payoutsEnabled } from './payout-math.js';
+import { PaystackTransfersClient } from './paystack-transfers.client.js';
+import { PayoutSettlement } from './payout-settlement.js';
 import { startOfAccraDay } from './withdrawal-day.js';
 
 /** The least a promoter can withdraw, in pesewas: GH₵ 20, so transfer fees stay small next to the payout. */
@@ -16,7 +17,6 @@ export const PROMOTER_MIN_WITHDRAWAL = 2000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 
 type Db = Prisma.TransactionClient;
-type Payout = Prisma.PromoterPayoutGetPayload<object>;
 
 /** What happened when a promoter asked to withdraw. */
 export type WithdrawResult =
@@ -40,12 +40,20 @@ class Refusal extends Error {}
 @Injectable()
 export class PromoterPayoutService {
   private readonly logger = new Logger(PromoterPayoutService.name);
+  private readonly settlement: PayoutSettlement<PromoterPayout>;
 
   constructor(
     private readonly prisma: PrismaService,
     private readonly transfers: PaystackTransfersClient,
     private readonly notifications: NotificationService,
-  ) {}
+  ) {
+    this.settlement = new PayoutSettlement(prisma, transfers, this.logger, {
+      label: 'Promoter payout',
+      table: (db) => db.promoterPayout,
+      addEntry: (db, payout, type, amount) => db.promoterLedgerEntry.create({ data: { promoterId: payout.promoterId, type, amount, payoutId: payout.id } }),
+      tell: (payout, outcome) => this.tellPromoter(payout, outcome),
+    });
+  }
 
   // ───────────────────────── Commission ─────────────────────────
 
@@ -158,7 +166,7 @@ export class PromoterPayoutService {
     }
     const minimum = adminId ? MIN_PAYOUT : PROMOTER_MIN_WITHDRAWAL;
 
-    let started: { payout: Payout; promoter: Prisma.PromoterGetPayload<object> };
+    let started: { payout: PromoterPayout; promoter: Promoter };
     try {
       started = await this.prisma.$transaction(async (tx) => {
         await tx.$executeRaw`SELECT pg_advisory_xact_lock(hashtext(${`ppayout:${promoterId}`}))`;
@@ -212,9 +220,9 @@ export class PromoterPayoutService {
     return { kind, amount: payout.amount, momoNumber: payout.momoNumber, payoutId: payout.id };
   }
 
-  private async sendTransfer(payout: Payout, promoter: Prisma.PromoterGetPayload<object>, notify: boolean): Promise<Payout> {
+  private async sendTransfer(payout: PromoterPayout, promoter: Promoter, notify: boolean): Promise<PromoterPayout> {
     const recipient = await this.recipientFor(promoter);
-    if ('reason' in recipient) return this.fail(payout.id, recipient.reason, notify);
+    if ('reason' in recipient) return this.settlement.fail(payout.id, recipient.reason, notify);
 
     const result = await this.transfers.transfer({
       amount: payout.amount,
@@ -222,23 +230,11 @@ export class PromoterPayoutService {
       reference: payout.reference,
       reason: 'MarketiX promoter commission',
     });
-    if (!result.ok && result.unknown) {
-      this.logger.warn(`Promoter payout ${payout.reference}: no clear answer from Paystack (${result.reason}); left in flight until Paystack confirms.`);
-      return this.prisma.promoterPayout.update({ where: { id: payout.id }, data: { status: PayoutStatus.PROCESSING } });
-    }
-    if (!result.ok) return this.fail(payout.id, result.reason, notify);
-
-    this.logger.log(`Promoter payout ${payout.reference}: ${ghs(payout.amount)} accepted by Paystack (${result.status}).`);
-    if (result.status !== 'success') {
-      return this.prisma.promoterPayout.update({ where: { id: payout.id }, data: { status: PayoutStatus.PROCESSING, transferCode: result.transferCode } });
-    }
-    await this.prisma.promoterPayout.updateMany({ where: { id: payout.id, status: { in: IN_FLIGHT } }, data: { transferCode: result.transferCode } });
-    await this.succeed(payout.id, notify);
-    return this.prisma.promoterPayout.findUniqueOrThrow({ where: { id: payout.id } });
+    return this.settlement.afterTransfer(payout, result, notify);
   }
 
   /** The promoter's Paystack recipient, made once per MoMo number. */
-  private async recipientFor(promoter: Prisma.PromoterGetPayload<object>): Promise<{ code: string } | { reason: string }> {
+  private async recipientFor(promoter: Promoter): Promise<{ code: string } | { reason: string }> {
     const momo = promoter.momoNumber!;
     if (this.transfers.fakeMode) return { code: 'RCP_FAKE' };
     if (promoter.paystackRecipientCode && promoter.paystackRecipientFor === momo) return { code: promoter.paystackRecipientCode };
@@ -251,83 +247,17 @@ export class PromoterPayoutService {
     return { code: created.code };
   }
 
-  /** Marks a payout failed and puts its amount back (once). `notify`: message the promoter (not when the bot is replying anyway). */
-  private async fail(payoutId: string, reason: string, notify = true): Promise<Payout> {
-    const { payout, changed } = await this.prisma.$transaction(async (tx) => {
-      const { count } = await tx.promoterPayout.updateMany({
-        where: { id: payoutId, status: { not: PayoutStatus.FAILED } },
-        data: { status: PayoutStatus.FAILED, failureReason: reason.slice(0, 500) },
-      });
-      const payout = await tx.promoterPayout.findUniqueOrThrow({ where: { id: payoutId } });
-      if (count === 1) {
-        await tx.promoterLedgerEntry.create({ data: { promoterId: payout.promoterId, type: Entry.PAYOUT_REVERSAL, amount: payout.amount, payoutId } });
-        this.logger.warn(`Promoter payout ${payout.reference} failed: ${reason}`);
-      }
-      return { payout, changed: count === 1 };
-    });
-    if (changed && notify) this.tellPromoter(payout, 'failed');
-    return payout;
+  /** Paystack's transfer webhooks for promoter payouts. Returns false for a reference that isn't a promoter payout. */
+  handleTransferEvent(event: string, data: { reference?: string } | undefined): Promise<boolean> {
+    return this.settlement.handleTransferEvent(event, data);
   }
 
-  /** Marks a payout paid; if it had been marked failed, takes it off the balance again. */
-  private async succeed(payoutId: string, notify = true) {
-    const landed = await this.prisma.$transaction(async (tx) => {
-      const { count } = await tx.promoterPayout.updateMany({
-        where: { id: payoutId, status: { in: IN_FLIGHT } },
-        data: { status: PayoutStatus.SUCCESS, paidAt: new Date() },
-      });
-      if (count === 1) return tx.promoterPayout.findUniqueOrThrow({ where: { id: payoutId } });
-
-      const reopened = await tx.promoterPayout.updateMany({ where: { id: payoutId, status: PayoutStatus.FAILED }, data: { status: PayoutStatus.SUCCESS, paidAt: new Date() } });
-      if (reopened.count === 1) {
-        const payout = await tx.promoterPayout.findUniqueOrThrow({ where: { id: payoutId } });
-        await tx.promoterLedgerEntry.create({ data: { promoterId: payout.promoterId, type: Entry.PAYOUT, amount: -payout.amount, payoutId } });
-        this.logger.error(`Promoter payout ${payout.reference} was marked failed but Paystack paid it: ${ghs(payout.amount)} taken off the balance again.`);
-      }
-      return null;
-    });
-    if (landed && notify) this.tellPromoter(landed, 'paid');
+  /** Settles this promoter's payouts that have been in flight too long. */
+  reconcileStale(promoterId: string): Promise<void> {
+    return this.settlement.reconcileStale({ promoterId });
   }
 
-  /**
-   * Paystack's transfer webhooks for promoter payouts. Like vendor payouts, the event only
-   * prompts a check with Paystack. Returns false for a reference that isn't a promoter payout.
-   */
-  async handleTransferEvent(event: string, data: { reference?: string } | undefined): Promise<boolean> {
-    const payout = data?.reference ? await this.prisma.promoterPayout.findUnique({ where: { reference: data.reference } }) : null;
-    if (!payout) return false;
-    const state = await this.transfers.verifyTransfer(payout.reference);
-    if (state.state === 'unknown') {
-      this.logger.warn(`Webhook ${event} for ${payout.reference}: couldn't confirm with Paystack (${state.reason}).`);
-      throw new ServiceUnavailableException('Could not confirm the transfer with Paystack. Try again later.');
-    }
-    if (state.state === 'not_found') {
-      this.logger.error(`Webhook ${event} for ${payout.reference}, but Paystack has no such transfer. Ignored.`);
-      return true;
-    }
-    await this.applyState(payout, state);
-    return true;
-  }
-
-  /** Settles this promoter's payouts that have been in flight too long, by asking Paystack. */
-  async reconcileStale(promoterId: string): Promise<void> {
-    const stale = await this.prisma.promoterPayout.findMany({
-      where: { promoterId, status: { in: IN_FLIGHT }, updatedAt: { lt: new Date(Date.now() - STALE_AFTER_MS) } },
-    });
-    for (const payout of stale) {
-      const state = await this.transfers.verifyTransfer(payout.reference);
-      if (state.state === 'not_found') await this.fail(payout.id, 'Paystack never received this transfer.');
-      else if (state.state === 'success' || state.state === 'failed') await this.applyState(payout, state);
-      else await this.prisma.promoterPayout.update({ where: { id: payout.id }, data: { updatedAt: new Date() } });
-    }
-  }
-
-  private async applyState(payout: { id: string }, state: Extract<TransferState, { state: 'success' | 'failed' | 'pending' }>) {
-    if (state.state === 'success') await this.succeed(payout.id);
-    else if (state.state === 'failed') await this.fail(payout.id, state.reason);
-  }
-
-  private tellPromoter(payout: Payout, outcome: 'paid' | 'failed') {
+  private tellPromoter(payout: PromoterPayout, outcome: 'paid' | 'failed') {
     void this.prisma.promoter
       .findUnique({ where: { id: payout.promoterId } })
       .then((promoter) => {

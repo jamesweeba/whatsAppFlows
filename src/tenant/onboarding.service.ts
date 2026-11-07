@@ -6,13 +6,6 @@ import { PrismaService } from '../prisma/prisma.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { isLive, TenantService } from './tenant.service.js';
 
-/** Documents a reviewer needs before approving; BUSINESS_REG is optional. */
-export const REQUIRED_DOCUMENTS: DocumentType[] = [
-  DocumentType.GHANA_CARD_FRONT,
-  DocumentType.GHANA_CARD_BACK,
-  DocumentType.STALL_PHOTO,
-];
-
 export const DOCUMENT_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 
