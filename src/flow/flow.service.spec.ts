@@ -511,7 +511,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     });
 
     it('offers "Watch video" only for products with an approved video, and marks them in the catalogue', async () => {
-      expect((await act('open_product', { sku: 'sku_tomatoes' })).data).toMatchObject({ has_video: false, has_video_note: false });
+      expect((await act('open_product', { sku: 'sku_tomatoes' })).data).toMatchObject({ has_video: false, has_video_note: false, video_link_label: '🎥 Watch video' });
 
       state.products.find((p) => p.id === 'sku_tomatoes').videoApprovedAt = new Date();
       expect((await act('open_product', { sku: 'sku_tomatoes' })).data.has_video).toBe(true);
@@ -525,7 +525,12 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       const result = await act('send_video', { sku: 'sku_tomatoes', video: '1' });
 
       expect(result.screen).toBe('PRODUCT');
-      expect(result.data).toMatchObject({ sku: 'sku_tomatoes', has_video_note: true, video_note: expect.stringContaining('Sending the video to your chat') });
+      expect(result.data).toMatchObject({
+        sku: 'sku_tomatoes',
+        video_link_label: '✅ Sent to your chat',
+        has_video_note: true,
+        video_note: expect.stringContaining('on its way to your chat'),
+      });
       expect(productVideos.sendToBuyer).toHaveBeenCalledWith(expect.objectContaining({ id: 'tenant-1' }), 'sku_tomatoes', expect.any(String));
       expect(state.carts[0]?.lines ?? []).toEqual([]); // nothing added to the basket
     });
