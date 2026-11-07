@@ -61,6 +61,9 @@ enum AuditAction {
   PROMOTER_SUSPENDED
   PROMOTER_REINSTATED
   PROMOTER_PAYOUT_RETRIED
+  VIDEO_APPROVED
+  VIDEO_REJECTED
+  VIDEO_REMOVED
 }
 
 /// A pool number's state. COOLING numbers count as FREE once released over 7 days ago.
@@ -276,6 +279,22 @@ model Product {
   measures       ProductMeasure[]
   /// Promoter commission for this product's links, whole percent (1-20). Null: the shop's rate.
   promoterRate   Int?
+  /// The vendor's latest video upload: being converted, waiting for an admin, turned down... (see VIDEO_SPEC.md).
+  /// The approved, live video is separate: it exists when videoApprovedAt is set.
+  videoStatus         ProductVideoStatus @default(NONE)
+  /// When the pending upload arrived; also tells a finished conversion it is still the latest upload.
+  videoUploadedAt     DateTime?
+  /// Length of the pending video, and whether it was cut to the 30-second limit.
+  pendingVideoSeconds Int?
+  pendingVideoTrimmed Boolean            @default(false)
+  /// Shown to the vendor: why an admin turned the upload down, or why converting it failed.
+  videoMessage        String?
+  /// When an admin approved the live video. Null: no video for buyers.
+  videoApprovedAt     DateTime?
+  liveVideoSeconds    Int?
+  /// Meta's copy of the live video for the shop's number, reused for 25 days.
+  waVideoMediaId      String?
+  waVideoUploadedAt   DateTime?
   promoLinks     PromoLink[]
   tenantId       String
   tenant         Tenant           @relation(fields: [tenantId], references: [id], onDelete: Cascade)
@@ -798,4 +817,18 @@ model PromoterPayout {
 
   @@index([promoterId, createdAt])
   @@index([status, createdAt])
+}
+
+/// Where a product's latest video upload stands. The live (approved) video is tracked separately.
+enum ProductVideoStatus {
+  /// No upload waiting.
+  NONE
+  /// Uploaded; being converted to MP4.
+  PROCESSING
+  /// Converted; waiting for an admin.
+  PENDING
+  /// An admin turned it down (videoMessage says why).
+  REJECTED
+  /// It couldn't be converted (videoMessage says why).
+  FAILED
 }

@@ -9,6 +9,9 @@ import { AdminPayoutsController } from './admin-payouts.controller.js';
 import { AdminPayoutsService } from './admin-payouts.service.js';
 import { AdminPromotersController } from './admin-promoters.controller.js';
 import { AdminPromotersService } from './admin-promoters.service.js';
+import { AdminVideoController } from './admin-video.controller.js';
+import { AdminVideoService } from './admin-video.service.js';
+import { ProductModule } from '../product/product.module.js';
 import { AdminAuditController } from './admin-audit.controller.js';
 import { AdminBannerController } from './admin-banner.controller.js';
 import { AdminBannerService } from './admin-banner.service.js';
@@ -24,10 +27,10 @@ import { ReviewService } from './review.service.js';
 import { VendorDirectoryService } from './vendor-directory.service.js';
 import { VendorNotesService } from './vendor-notes.service.js';
 
-/** Super admin: vendor directory, review queue, decisions, orders, the WhatsApp number pool, vendor notes, shop banners, payouts, promoters, the daily summary and the audit log. */
+/** Super admin: vendor directory, review queue, decisions, orders, the WhatsApp number pool, vendor notes, shop banners, payouts, promoters, product videos, the daily summary and the audit log. */
 @Module({
-  imports: [TenantModule, WabaModule, NotificationModule, PayoutModule],
-  controllers: [AdminTenantsController, AdminVendorsController, AdminNumbersController, AdminOrdersController, AdminAuditController, AdminNotesController, AdminBannerController, AdminPayoutsController, AdminDailySummaryController, AdminPromotersController],
-  providers: [ReviewService, NumberPoolService, VendorDirectoryService, AdminOrdersService, AuditService, VendorNotesService, AdminBannerService, AdminPayoutsService, DailySummaryService, AdminPromotersService],
+  imports: [TenantModule, WabaModule, NotificationModule, PayoutModule, ProductModule],
+  controllers: [AdminTenantsController, AdminVendorsController, AdminNumbersController, AdminOrdersController, AdminAuditController, AdminNotesController, AdminBannerController, AdminPayoutsController, AdminDailySummaryController, AdminPromotersController, AdminVideoController],
+  providers: [ReviewService, NumberPoolService, VendorDirectoryService, AdminOrdersService, AuditService, VendorNotesService, AdminBannerService, AdminPayoutsService, DailySummaryService, AdminPromotersService, AdminVideoService],
 })
 export class AdminModule {}

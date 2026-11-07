@@ -809,6 +809,18 @@
         "button_label": {
           "type": "string",
           "__example__": "Add to basket"
+        },
+        "has_video": {
+          "type": "boolean",
+          "__example__": true
+        },
+        "has_video_note": {
+          "type": "boolean",
+          "__example__": false
+        },
+        "video_note": {
+          "type": "string",
+          "__example__": "🎥 Sending the video to your chat. Close this form to watch it; your basket is saved."
         }
       },
       "layout": {
@@ -830,6 +842,17 @@
             "text": "${data.note}"
           },
           {
+            "type": "If",
+            "condition": "${data.has_video_note}",
+            "then": [
+              {
+                "type": "TextBody",
+                "text": "${data.video_note}",
+                "font-weight": "bold"
+              }
+            ]
+          },
+          {
             "type": "RadioButtonsGroup",
             "name": "measure",
             "label": "Measure",
@@ -844,6 +867,26 @@
             "required": true,
             "init-value": "${data.current_qty}",
             "data-source": "${data.qty_options}"
+          },
+          {
+            "type": "If",
+            "condition": "${data.has_video}",
+            "then": [
+              {
+                "type": "EmbeddedLink",
+                "text": "🎥 Watch video",
+                "on-click-action": {
+                  "name": "data_exchange",
+                  "payload": {
+                    "step": "send_video",
+                    "sku": "${data.sku}",
+                    "category": "${data.category}",
+                    "page": "${data.page}",
+                    "video": "1"
+                  }
+                }
+              }
+            ]
           },
           {
             "type": "EmbeddedLink",

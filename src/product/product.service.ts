@@ -14,6 +14,7 @@ import { CategoryService } from '../category/category.service.js';
 import { RESERVED_MEASURE_CODES } from '../common/measure-codes.js';
 import { OnboardingService } from '../tenant/onboarding.service.js';
 import { ProductPhotoService, withPhotoUrl } from './product-photo.service.js';
+import { ProductVideoService } from './product-video.service.js';
 
 /** Optional measure column pairs in the Excel upload: measure_1/price_1 ... measure_10/price_10. */
 const MAX_SHEET_MEASURES = 10;
@@ -64,6 +65,7 @@ export class ProductService {
     private readonly categoryService: CategoryService,
     private readonly onboardingService: OnboardingService,
     private readonly photoService: ProductPhotoService,
+    private readonly videoService: ProductVideoService,
   ) {}
 
   /**
@@ -373,6 +375,7 @@ export class ProductService {
       where: { id: productId },
     });
     await this.photoService.removeFile(product);
+    await this.videoService.removeFiles(product);
 
     return { message: 'Product deleted successfully.' };
   }

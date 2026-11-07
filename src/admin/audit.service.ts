@@ -34,6 +34,9 @@ export const AUDIT_ACTION_LABELS: Record<AuditAction, string> = {
   PROMOTER_SUSPENDED: 'Promoter suspended',
   PROMOTER_REINSTATED: 'Promoter reinstated',
   PROMOTER_PAYOUT_RETRIED: 'Promoter payout retried',
+  VIDEO_APPROVED: 'Product video approved',
+  VIDEO_REJECTED: 'Product video rejected',
+  VIDEO_REMOVED: 'Product video removed',
 };
 
 /** The most rows one CSV export returns. */
