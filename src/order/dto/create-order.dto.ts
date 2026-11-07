@@ -8,9 +8,11 @@ import {
   IsNumber,
   IsOptional,
   IsString,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
+import { MAX_DELIVERY_FEE } from '../../payout/payout-math.js';
 
 export class CreateOrderItemDto {
   @IsString()
@@ -75,6 +77,7 @@ export class CreateOrderDto {
 
   @IsNumber()
   @Min(0)
+  @Max(MAX_DELIVERY_FEE, { message: `deliveryFee can be at most GH₵ ${MAX_DELIVERY_FEE}.` })
   @IsOptional()
   deliveryFee?: number;
 

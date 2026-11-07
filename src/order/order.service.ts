@@ -5,7 +5,7 @@ import { ghCedis } from '../common/money.util.js';
 import { isHiddenNumber, toE164 } from '../common/phone.util.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ReferralService } from '../promoter/referral.service.js';
-import { TenantService } from '../tenant/tenant.service.js';
+import { isLive, TenantService } from '../tenant/tenant.service.js';
 import { WabaService } from '../waba/waba.service.js';
 import { PayoutService } from '../payout/payout.service.js';
 import { CreateOrderDto } from './dto/create-order.dto.js';
@@ -53,7 +53,7 @@ export function orderRatingTap(text: string): { orderNumber: string; rating: num
 /** Delivery and Flow details that only the server sets, never the vendor-facing DTO. */
 export type OrderDetails = Pick<
   Prisma.OrderUncheckedCreateInput,
-  'customerName' | 'deliveryArea' | 'landmark' | 'contactPhone' | 'deliverySlot' | 'flowCartId'
+  'customerName' | 'deliveryArea' | 'landmark' | 'contactPhone' | 'deliverySlot' | 'flowCartId' | 'vendorCreated'
 >;
 
 export interface DeliveryLocation {
@@ -278,7 +278,20 @@ export class OrderService {
    */
   async createForVendor(userId: string, dto: CreateOrderDto) {
     const tenant = await this.tenantService.findByUser(userId);
-    return this.createOrder(tenant.id, dto);
+    this.tenantService.assertEditable(tenant);
+    await this.assertOwnRecords(tenant.id, dto);
+    return this.createOrder(tenant.id, dto, { vendorCreated: true });
+  }
+
+  /** The chat session and products an order names must be the shop's own. */
+  private async assertOwnRecords(tenantId: string, dto: CreateOrderDto) {
+    if (dto.sessionId && !(await this.prisma.chatSession.count({ where: { id: dto.sessionId, tenantId } }))) {
+      throw new BadRequestException('Unknown chat session.');
+    }
+    const productIds = [...new Set(dto.items.map((item) => item.productId).filter((id): id is string => Boolean(id)))];
+    if (productIds.length && (await this.prisma.product.count({ where: { id: { in: productIds }, tenantId } })) !== productIds.length) {
+      throw new BadRequestException('Unknown product.');
+    }
   }
 
   /**
@@ -337,7 +350,7 @@ export class OrderService {
    * Update order status or notes.
    */
   async updateStatus(userId: string, orderId: string, dto: UpdateOrderStatusDto) {
-    const previous = await this.findOwnedOrder(userId, orderId);
+    const previous = await this.findOwnedOrder(userId, orderId, { editing: true });
     if (!canMarkPaidByHand(previous, dto.status)) throw new BadRequestException(PAYSTACK_ONLY_MESSAGE);
     const order = await this.prisma.order.update({
       where: { id: orderId },
@@ -365,7 +378,8 @@ export class OrderService {
   private async notifyStatusChange(order: Prisma.OrderGetPayload<{ include: { tenant: true } }>) {
     const message = this.statusMessage(order);
     const phoneNumberId = order.tenant.whatsappPhoneNumberId;
-    if (!message || !phoneNumberId || !order.buyerPhone || isHiddenNumber(order.buyerPhone)) return;
+    // Only a live shop messages buyers from its number.
+    if (!isLive(order.tenant) || !message || !phoneNumberId || !order.buyerPhone || isHiddenNumber(order.buyerPhone)) return;
 
     try {
       if (order.status === OrderStatus.OUT_FOR_DELIVERY) {
@@ -509,13 +523,15 @@ export class OrderService {
    * Delete an order by ID.
    */
   async remove(userId: string, orderId: string) {
-    await this.findOwnedOrder(userId, orderId);
+    await this.findOwnedOrder(userId, orderId, { editing: true });
     await this.prisma.order.delete({ where: { id: orderId } });
     return { message: `Order "${orderId}" deleted successfully.` };
   }
 
-  private async findOwnedOrder(userId: string, orderId: string) {
+  /** `editing`: refuse when the shop is suspended (suspended shops are read-only). */
+  private async findOwnedOrder(userId: string, orderId: string, { editing = false } = {}) {
     const tenant = await this.tenantService.findByUser(userId);
+    if (editing) this.tenantService.assertEditable(tenant);
     const order = await this.prisma.order.findFirst({ where: { id: orderId, tenantId: tenant.id } });
     if (!order) {
       throw new NotFoundException(`Order with ID "${orderId}" not found.`);

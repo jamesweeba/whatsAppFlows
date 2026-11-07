@@ -113,3 +113,9 @@ export interface Funds {
   /** When the next held earning becomes withdrawable, or null. */
   nextReleaseAt: Date | null;
 }
+
+/**
+ * The highest delivery fee a shop may charge, in GHS. MarketiX's commission is on items only,
+ * so without a cap a shop could move its prices into the delivery fee and pay almost nothing.
+ */
+export const MAX_DELIVERY_FEE = 50;

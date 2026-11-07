@@ -1,12 +1,18 @@
 import { BadRequestException, Injectable, NotFoundException } from '@nestjs/common';
 import { DocumentType, Tenant, TenantStatus, VendorDocument } from '@prisma/client';
 import { randomUUID } from 'node:crypto';
-import { extname } from 'node:path';
 import { PrismaService } from '../prisma/prisma.service.js';
+import { sniffImageType } from '../product/product-photo.service.js';
 import { StorageService } from '../storage/storage.service.js';
 import { isLive, TenantService } from './tenant.service.js';
 
-export const DOCUMENT_MIME_TYPES = ['image/jpeg', 'image/png', 'image/webp', 'application/pdf'];
+const DOCUMENT_EXTENSIONS = { 'image/jpeg': '.jpg', 'image/png': '.png', 'image/webp': '.webp', 'application/pdf': '.pdf' } as const;
+
+/** What a KYC document really is, from its first bytes: a JPEG, PNG, WebP or PDF, or null. */
+export function sniffDocumentType(data: Buffer): keyof typeof DOCUMENT_EXTENSIONS | null {
+  if (data.length >= 5 && data.toString('latin1', 0, 5) === '%PDF-') return 'application/pdf';
+  return sniffImageType(data);
+}
 export const MAX_DOCUMENT_BYTES = 5 * 1024 * 1024;
 
 /** States in which the shop is waiting on MarketiX, not the vendor. */
@@ -112,22 +118,25 @@ export class OnboardingService {
   async uploadDocument(userId: string, type: DocumentType, file: Express.Multer.File) {
     const tenant = await this.tenantService.findByUser(userId);
     this.tenantService.assertEditable(tenant);
-    this.tenantService.assertKycEditable(tenant);
-    if (!DOCUMENT_MIME_TYPES.includes(file.mimetype)) {
+    await this.tenantService.assertKycEditable(tenant);
+    // The type comes from the file's bytes, never from what the uploader claims, so a file
+    // that is really HTML or SVG can't be stored (and later opened by an admin) as a "PDF".
+    const mimeType = sniffDocumentType(file.buffer);
+    if (!mimeType) {
       throw new BadRequestException('Upload a JPEG, PNG, WebP or PDF file.');
     }
     if (file.size > MAX_DOCUMENT_BYTES) {
       throw new BadRequestException('Documents must be 5 MB or smaller.');
     }
 
-    const storageKey = `kyc/${tenant.id}/${randomUUID()}${extname(file.originalname).toLowerCase()}`;
+    const storageKey = `kyc/${tenant.id}/${randomUUID()}${DOCUMENT_EXTENSIONS[mimeType]}`;
     await this.storage.save(storageKey, file.buffer);
 
     const previous = await this.prisma.vendorDocument.findUnique({ where: { tenantId_type: { tenantId: tenant.id, type } } });
     const document = await this.prisma.vendorDocument.upsert({
       where: { tenantId_type: { tenantId: tenant.id, type } },
-      create: { tenantId: tenant.id, type, storageKey, fileName: file.originalname, mimeType: file.mimetype, size: file.size },
-      update: { storageKey, fileName: file.originalname, mimeType: file.mimetype, size: file.size, uploadedAt: new Date() },
+      create: { tenantId: tenant.id, type, storageKey, fileName: file.originalname.slice(0, 200), mimeType, size: file.size },
+      update: { storageKey, fileName: file.originalname.slice(0, 200), mimeType, size: file.size, uploadedAt: new Date() },
     });
     if (previous) {
       await this.storage.remove(previous.storageKey);

@@ -1,4 +1,4 @@
-import { OrderStatus } from '@prisma/client';
+import { OrderStatus, TenantStatus } from '@prisma/client';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { TenantService } from '../tenant/tenant.service.js';
 import { orderRatingTap, OrderService, orderReceivedTap } from './order.service.js';
@@ -116,8 +116,23 @@ describe('OrderService', () => {
     paymentMethod: 'COD',
     riderName: null,
     riderPhone: null,
-    tenant: { whatsappPhoneNumberId: 'phone-1' },
+    tenant: { whatsappPhoneNumberId: 'phone-1', status: TenantStatus.ACTIVE },
     ...extra,
+  });
+
+  it('refuses order changes from a suspended shop', async () => {
+    prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', userId: 'user-1', status: TenantStatus.SUSPENDED });
+    await expect(service.updateStatus('user-1', 'order-1', { status: OrderStatus.OUT_FOR_DELIVERY })).rejects.toThrow('suspended');
+    await expect(service.remove('user-1', 'order-1')).rejects.toThrow('suspended');
+    expect(prisma.order.update).not.toHaveBeenCalled();
+  });
+
+  it('does not message buyers from a shop that is not live', async () => {
+    prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', userId: 'user-1' });
+    prisma.order.findFirst.mockResolvedValue({ id: 'order-1', tenantId: 'tenant-1', status: OrderStatus.CONFIRMED });
+    prisma.order.update.mockResolvedValue(updatedOrder(OrderStatus.PROCESSING, { tenant: { whatsappPhoneNumberId: 'phone-1', status: TenantStatus.STOCKED } }));
+    await service.updateStatus('user-1', 'order-1', { status: OrderStatus.PROCESSING });
+    expect(waba.sendTextMessage).not.toHaveBeenCalled();
   });
 
   it('updates order status successfully', async () => {

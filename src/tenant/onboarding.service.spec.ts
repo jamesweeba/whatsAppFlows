@@ -9,7 +9,7 @@ describe('OnboardingService', () => {
   let tenant: any;
 
   const file = (overrides: Partial<Express.Multer.File> = {}) =>
-    ({ originalname: 'card.JPG', mimetype: 'image/jpeg', size: 1000, buffer: Buffer.from('x'), ...overrides }) as Express.Multer.File;
+    ({ originalname: 'card.JPG', mimetype: 'image/jpeg', size: 1000, buffer: Buffer.from([0xff, 0xd8, 0xff, 0xe0, 0, 0x10]), ...overrides }) as Express.Multer.File;
 
   beforeEach(() => {
     tenant = {
@@ -91,7 +91,11 @@ describe('OnboardingService', () => {
   });
 
   it('accepts only images and PDFs up to 5 MB', async () => {
-    await expect(service.uploadDocument('user-1', DocumentType.STALL_PHOTO, file({ mimetype: 'text/html' }))).rejects.toThrow('JPEG, PNG');
+    await expect(service.uploadDocument('user-1', DocumentType.STALL_PHOTO, file({ mimetype: 'text/html', buffer: Buffer.from('<html>') }))).rejects.toThrow('JPEG, PNG');
+    // Claiming to be a PDF isn't enough: the bytes decide.
+    await expect(
+      service.uploadDocument('user-1', DocumentType.STALL_PHOTO, file({ mimetype: 'application/pdf', originalname: 'id.pdf', buffer: Buffer.from('<svg onload=alert(1)>') })),
+    ).rejects.toThrow('JPEG, PNG');
     await expect(service.uploadDocument('user-1', DocumentType.STALL_PHOTO, file({ size: 6 * 1024 * 1024 }))).rejects.toThrow('5 MB');
     expect(storage.save).not.toHaveBeenCalled();
   });

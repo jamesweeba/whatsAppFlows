@@ -6,9 +6,11 @@ import {
   IsOptional,
   IsString,
   Matches,
+  Max,
   Min,
   ValidateNested,
 } from 'class-validator';
+import { MAX_DELIVERY_FEE } from '../../payout/payout-math.js';
 import { IsPhone } from '../../common/validators.js';
 import { DeliveryAreaDto, DeliverySlotDto } from './delivery-options.dto.js';
 
@@ -63,6 +65,7 @@ export class CreateTenantDto {
   /** Flat delivery fee in GHS added to delivery orders. */
   @IsNumber()
   @Min(0)
+  @Max(MAX_DELIVERY_FEE, { message: `deliveryFee can be at most GH₵ ${MAX_DELIVERY_FEE}.` })
   @IsOptional()
   deliveryFee?: number;
 

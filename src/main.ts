@@ -4,6 +4,7 @@ import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module.js';
 import { corsOptions } from './common/cors.js';
+import { securityHeaders } from './common/security-headers.js';
 
 async function bootstrap() {
   // rawBody is required so webhook guards can verify HMAC signatures over the exact payload.
@@ -15,7 +16,14 @@ async function bootstrap() {
   if (trustProxy) {
     app.set('trust proxy', /^\d+$/.test(trustProxy) ? Number(trustProxy) : trustProxy);
   }
+  app.disable('x-powered-by');
+  app.use(securityHeaders);
   app.enableCors(corsOptions());
+
+  // A short secret can be guessed offline from any token, and then tokens can be forged.
+  if ((process.env.JWT_SECRET ?? '').length < 32) {
+    console.warn('JWT_SECRET is shorter than 32 characters. Use a long random value, e.g. `openssl rand -hex 32`.');
+  }
 
   app.useGlobalPipes(
     new ValidationPipe({

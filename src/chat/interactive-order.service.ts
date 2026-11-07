@@ -5,7 +5,7 @@ import { toGhanaLocal } from '../common/phone.util.js';
 import { FlowService } from '../flow/flow.service.js';
 import { CreateOrderItemDto } from '../order/dto/create-order.dto.js';
 import { formatOrderReceipt } from '../order/order-receipt.js';
-import { lineTotal, orderTotals } from '../order/order-totals.util.js';
+import { lineTotal, MAX_ITEM_QUANTITY, orderTotals } from '../order/order-totals.util.js';
 import { OrderService } from '../order/order.service.js';
 import { DEFAULT_CUSTOMER_EMAIL, PaystackService } from '../payment/paystack.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
@@ -171,16 +171,18 @@ export class InteractiveOrderService {
 
     if (c.text === 'q:other') {
       state.step = InteractiveStep.AWAITING_CUSTOM_QUANTITY;
-      await this.sendText(c, 'Type the amount (e.g. 2.5)');
+      await this.sendText(c, `Type how many, from 1 to ${MAX_ITEM_QUANTITY}:`);
       return true;
     }
 
     const awaitingQuantity =
       state.step === InteractiveStep.AWAITING_QUANTITY || state.step === InteractiveStep.AWAITING_CUSTOM_QUANTITY;
-    const quantity = c.text.startsWith('q:') ? parseInt(c.text.slice(2), 10) : awaitingQuantity ? parseFloat(c.text) : NaN;
-    if (!Number.isFinite(quantity) || quantity <= 0) {
+    const raw = c.text.startsWith('q:') ? c.text.slice(2) : awaitingQuantity ? c.text.trim() : '';
+    // Whole numbers only, so the total shown is the total charged (orders store whole quantities).
+    const quantity = /^\d+$/.test(raw) ? Number(raw) : NaN;
+    if (!Number.isInteger(quantity) || quantity < 1 || quantity > MAX_ITEM_QUANTITY) {
       if (state.step === InteractiveStep.AWAITING_CUSTOM_QUANTITY) {
-        await this.sendText(c, 'Please enter a valid positive number for the amount (e.g. 3 or 1.5):');
+        await this.sendText(c, `Please type a whole number from 1 to ${MAX_ITEM_QUANTITY}:`);
         return true;
       }
       return false;
@@ -190,7 +192,7 @@ export class InteractiveOrderService {
     const { pendingProduct } = state;
     const existing = state.items.find((i) => i.productId === pendingProduct.id);
     if (existing) {
-      existing.quantity += quantity;
+      existing.quantity = Math.min(MAX_ITEM_QUANTITY, existing.quantity + quantity);
     } else {
       state.items.push({ productId: pendingProduct.id, productName: pendingProduct.name, unitPrice: pendingProduct.price, quantity });
     }

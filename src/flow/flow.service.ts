@@ -26,7 +26,7 @@ import {
 } from '../common/phone.util.js';
 import { truncate } from '../common/text.util.js';
 import { formatOrderReceipt } from '../order/order-receipt.js';
-import { normalizeQuantity, orderTotals } from '../order/order-totals.util.js';
+import { MAX_ITEM_QUANTITY, normalizeQuantity, orderTotals } from '../order/order-totals.util.js';
 import { NotificationService } from '../notification/notification.service.js';
 import { OrderService } from '../order/order.service.js';
 import { DEFAULT_CUSTOMER_EMAIL, PaystackService } from '../payment/paystack.service.js';
@@ -102,7 +102,6 @@ const BASKET_LINES_SHOWN = 20;
 const MAX_WELCOME_OPTIONS = 20;
 /** WELCOME row id of the shop's own logo row (category ids are UUIDs, "all" or "reorder_last"). */
 const SHOP_ROW_ID = 'shop';
-const MAX_QTY = 10;
 
 /** Text caps enforced by the Flow validator (see the endpoint contract). */
 /** The PRODUCT screen's video link, before and after a tap. WhatsApp allows 25 characters. */
@@ -164,7 +163,7 @@ const PAYMENT_METHODS: Option[] = [
   { id: 'cash', title: 'Cash on delivery', description: 'Pay the rider in cash' },
 ];
 
-const QTY_OPTIONS = Array.from({ length: MAX_QTY }, (_, i) => ({ id: String(i + 1), title: String(i + 1) }));
+const QTY_OPTIONS = Array.from({ length: MAX_ITEM_QUANTITY }, (_, i) => ({ id: String(i + 1), title: String(i + 1) }));
 
 /** The vendor's shop name for a screen title bar; long names are cut so the bar stays on one line. */
 function shopName(tenant: Pick<Tenant, 'name'>): string {
@@ -877,9 +876,9 @@ export class FlowService implements OnModuleInit {
       const measure = item.measureCode || EACH_MEASURE;
       const existing = lines.find((l) => l.sku === item.productId && l.measure === measure);
       if (existing) {
-        existing.qty = Math.min(MAX_QTY, existing.qty + item.quantity);
+        existing.qty = Math.min(MAX_ITEM_QUANTITY, existing.qty + item.quantity);
       } else {
-        lines.push({ sku: item.productId, measure, qty: Math.min(MAX_QTY, item.quantity) });
+        lines.push({ sku: item.productId, measure, qty: Math.min(MAX_ITEM_QUANTITY, item.quantity) });
       }
     }
 
@@ -1055,7 +1054,7 @@ export class FlowService implements OnModuleInit {
       measures: options,
       qty_options: QTY_OPTIONS,
       current_measure: currentMeasure,
-      current_qty: String(Math.min(MAX_QTY, line?.qty ?? 1)),
+      current_qty: String(Math.min(MAX_ITEM_QUANTITY, line?.qty ?? 1)),
       button_label: line ? 'Update basket' : 'Add to basket',
       has_video: product.videos.length > 0,
       // After a tap the link itself says it worked (the note below it can be off-screen on small phones).
@@ -1103,7 +1102,7 @@ export class FlowService implements OnModuleInit {
   private async addLine(tenant: Tenant, cart: FlowCart, data: Record<string, any>, category: string, page: number) {
     const sku = text(data.sku);
     const measure = text(data.measure);
-    const qty = Math.min(MAX_QTY, normalizeQuantity(data.qty));
+    const qty = Math.min(MAX_ITEM_QUANTITY, normalizeQuantity(data.qty));
     const editing = this.editingOf(cart);
     const editingThis = editing?.sku === sku ? editing : null;
     let lines = this.linesOf(cart);

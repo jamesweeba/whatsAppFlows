@@ -18,11 +18,12 @@ import {
   UseInterceptors,
 } from '@nestjs/common';
 import { FileInterceptor } from '@nestjs/platform-express';
+import { rm } from 'node:fs/promises';
 import { ProductService } from './product.service.js';
 import { CreateProductDto } from './dto/create-product.dto.js';
 import { UpdateProductDto } from './dto/update-product.dto.js';
 import { JwtAuthGuard } from '../auth/guards/jwt-auth.guard.js';
-import { ParseExcelFilePipe } from './pipes/parse-excel-file.pipe.js';
+import { MAX_EXCEL_BYTES, ParseExcelFilePipe } from './pipes/parse-excel-file.pipe.js';
 import { BulkUploadDto } from './dto/bulk-upload.dto.js';
 import { MAX_PHOTO_BYTES, ProductPhotoService } from './product-photo.service.js';
 import { ProductVideoService, VIDEO_UPLOAD_DIR } from './product-video.service.js';
@@ -54,7 +55,7 @@ export class ProductController {
    * POST /products/upload
    */
   @Post('upload')
-  @UseInterceptors(FileInterceptor('file'))
+  @UseInterceptors(FileInterceptor('file', { limits: { fileSize: MAX_EXCEL_BYTES, files: 1 } }))
   async bulkUpload(
     @Request() req: any,
     @UploadedFile(ParseExcelFilePipe) file: Express.Multer.File,
@@ -146,7 +147,15 @@ export class ProductController {
   @Post(':id/video')
   @UseInterceptors(FileInterceptor('file', { dest: VIDEO_UPLOAD_DIR, limits: { fileSize: MAX_VIDEO_UPLOAD_BYTES } }))
   async uploadVideo(@Request() req: any, @Param('id') id: string, @UploadedFile() file: Express.Multer.File, @Query('measure') measure?: string) {
-    return this.videoService.upload(req.user.id, id, measureParam(measure), file);
+    let code: string;
+    try {
+      code = measureParam(measure);
+    } catch (err) {
+      // Multer has already written the upload to disk; upload() cleans up after itself, this doesn't reach it.
+      if (file?.path) await rm(file.path, { force: true });
+      throw err;
+    }
+    return this.videoService.upload(req.user.id, id, code, file);
   }
 
   /** Every video of the product: `{ product, measures: [{ code, label, video }] }`. GET /products/:id/videos */

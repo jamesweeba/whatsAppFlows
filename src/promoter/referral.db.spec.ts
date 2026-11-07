@@ -44,7 +44,7 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('referrals (real database)', () => {
     for (const l of links) await prisma.promoLink.create({ data: { code: l.code, membershipId: membership.id, tenantId, promoterId, productId: l.productId } });
   };
   /** A buyer's order: GH₵ 100 of rice + GH₵ 50 of oil + GH₵ 10 delivery unless told otherwise. */
-  const placeOrder = async (buyerPhone: string, opts: { tenantId?: string; status?: OrderStatus; paymentMethod?: PaymentMethod; rice?: boolean } = {}) => {
+  const placeOrder = async (buyerPhone: string, opts: { tenantId?: string; status?: OrderStatus; paymentMethod?: PaymentMethod; rice?: boolean; vendorCreated?: boolean } = {}) => {
     const items = [
       ...(opts.rice === false ? [] : [{ productId: riceId, productName: 'Rice', unitPrice: 100, quantity: 1, totalPrice: 100 }]),
       { productId: null, productName: 'Oil', unitPrice: 50, quantity: 1, totalPrice: 50 },
@@ -59,6 +59,7 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('referrals (real database)', () => {
         paymentMethod: opts.paymentMethod ?? PaymentMethod.MOMO,
         totalAmount: total,
         deliveryFee: 10,
+        vendorCreated: opts.vendorCreated ?? false,
         items: { create: items },
       },
       include: { items: true },
@@ -120,6 +121,17 @@ describe.skipIf(!process.env.RUN_DB_TESTS)('referrals (real database)', () => {
     // A second order earns nothing, and a new tap from the same buyer is not recorded.
     expect((await placeOrder(buyer, { status: OrderStatus.PAID })).referral).toBeNull();
     expect(await service.recordTap(shopId, buyer, referralMessage(kofiLink))).toBeNull();
+  });
+
+  it("doesn't let an order the vendor entered use up the buyer's first order", async () => {
+    const buyer = newBuyer();
+    await service.recordTap(shopId, buyer, referralMessage(shopLink));
+    // The vendor records a "confirmed" order for the referred buyer before the buyer orders.
+    await prisma.order.create({
+      data: { tenantId: shopId, orderNumber: `REF-${stamp}-${++n}`, buyerPhone: buyer, status: OrderStatus.CONFIRMED, totalAmount: 1, vendorCreated: true },
+    });
+    const real = await placeOrder(buyer, { status: OrderStatus.PAID });
+    expect(real.referral).toMatchObject({ orderId: real.order.id, commissionAmount: 1500 });
   });
 
   it('gives the order to the last link tapped', async () => {

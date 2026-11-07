@@ -458,6 +458,9 @@ model Order {
   ratedAt             DateTime?
   riderName           String?
   riderPhone          String?
+  /// Entered by the vendor in the dashboard, not placed by the buyer. Doesn't count as the
+  /// buyer's first order for promoter commission unless Paystack took payment for it.
+  vendorCreated       Boolean             @default(false)
   flowCartId          String?             @unique
   flowCart            FlowCart?           @relation(fields: [flowCartId], references: [id], onDelete: SetNull)
   notes               String?

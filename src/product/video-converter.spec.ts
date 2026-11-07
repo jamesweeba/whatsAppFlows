@@ -57,6 +57,26 @@ describe.skipIf(!hasFfmpeg)('video converter (real ffmpeg)', { timeout: 60_000 }
     expect(statSync(poster).size).toBeGreaterThan(1000);
   });
 
+  it('accepts MP4 and WebM as well as MOV', async () => {
+    expect((await probeVideo(clip('a.mp4', 2))).hasVideo).toBe(true);
+    const webm = join(dir, 'a.webm');
+    execFileSync('ffmpeg', ['-y', '-v', 'error', '-f', 'lavfi', '-i', 'testsrc=size=320x240:rate=30:duration=2', '-c:v', 'libvpx', '-b:v', '200k', webm]);
+    expect((await probeVideo(webm)).hasVideo).toBe(true);
+  });
+
+  it('refuses a playlist dressed up as a video, so ffmpeg never opens the files it names', async () => {
+    // An HLS playlist pointing at a real local video: without the whitelist ffmpeg would read it.
+    const target = clip('secret.mp4', 2);
+    const playlist = join(dir, 'upload');
+    writeFileSync(playlist, `#EXTM3U\n#EXT-X-TARGETDURATION:2\n#EXTINF:2.0,\nfile://${target}\n#EXT-X-ENDLIST\n`);
+    expect(await probeVideo(playlist)).toMatchObject({ hasVideo: false });
+    await expect(convertVideo(playlist, join(dir, 'p.mp4'), join(dir, 'p.jpg'))).rejects.toBeInstanceOf(VideoRejected);
+
+    const concat = join(dir, 'upload2');
+    writeFileSync(concat, `ffconcat version 1.0\nfile '${target}'\n`);
+    await expect(convertVideo(concat, join(dir, 'c.mp4'), join(dir, 'c.jpg'))).rejects.toBeInstanceOf(VideoRejected);
+  });
+
   it('keeps only the first 30 seconds of a long clip', async () => {
     const out = join(dir, 'long-out.mp4');
     const result = await convertVideo(clip('long.mp4', 33, '320x240'), out, join(dir, 'long.jpg'));

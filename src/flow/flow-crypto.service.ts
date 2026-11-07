@@ -79,7 +79,7 @@ export class FlowCryptoService {
       };
     } catch (error: any) {
       this.logger.error(`Flow payload decryption failed: ${error.message}`, error.stack);
-      throw new BadRequestException(`Failed to decrypt WhatsApp Flow payload: ${error.message}`);
+      throw new BadRequestException('Failed to decrypt WhatsApp Flow payload.'); // the detail is in the log only
     }
   }
 

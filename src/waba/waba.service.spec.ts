@@ -262,11 +262,11 @@ describe('WabaService', () => {
       vi.useRealTimers();
     });
 
-    it('does not retry when the connection broke after sending (Meta may have the message) and names the cause', async () => {
+    it('does not retry when the connection broke after sending (Meta may have the message), and keeps the cause out of the reply', async () => {
       const mockFetch = vi.fn().mockRejectedValue(fetchFailed('ECONNRESET'));
       vi.stubGlobal('fetch', mockFetch);
 
-      await expect(service.sendTextMessage('1092837465', '+233245655799', 'hello')).rejects.toThrow('fetch failed (ECONNRESET)');
+      await expect(service.sendTextMessage('1092837465', '+233245655799', 'hello')).rejects.toThrow('Could not reach WhatsApp. Please try again.');
       expect(mockFetch).toHaveBeenCalledTimes(1);
     });
   });
