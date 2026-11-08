@@ -10,10 +10,15 @@ import { WabaService } from '../waba/waba.service.js';
  * own number (PLATFORM_PHONE_NUMBER_ID); order alerts come from the shop's number.
  * Everything here is best-effort: a failed message is logged and never fails the caller.
  *
- * Meta only delivers free-form text inside a 24-hour window opened by the recipient.
- * Until approved message templates exist, vendors who have not messaged the platform
- * number recently will not receive these.
+ * Meta only delivers free-form text inside a 24-hour window opened by the recipient, so
+ * messages that must always arrive (new-order alerts) use an approved template instead.
  */
+/** The approved new-order template (WhatsApp Manager); the name and language can be changed in the environment. */
+const VENDOR_ORDER_TEMPLATE = () => ({
+  name: optionalEnv('VENDOR_ORDER_TEMPLATE', 'order'),
+  language: optionalEnv('VENDOR_ORDER_TEMPLATE_LANGUAGE', 'en_US'),
+});
+
 @Injectable()
 export class NotificationService {
   private readonly logger = new Logger(NotificationService.name);
@@ -48,13 +53,17 @@ export class NotificationService {
     return this.fromPlatform(tenant, `⚠️ *${tenant.name}* has been suspended: ${reason}\n\nBuyers will see that your shop is temporarily closed.`);
   }
 
-  /** New order alert, sent from the shop's own number to the owner's phone. */
+  /**
+   * New order alert, from the shop's own number to the owner's phone. Owners rarely write to
+   * their own shop number, so it is sent as the approved template (VENDOR_ORDER_TEMPLATE),
+   * which arrives whatever the 24-hour window: "Hello {{1}}, you have a new order on
+   * MarketiX. Order: {{2}} Customer: {{3}} Total: GH₵ {{4}} ...".
+   */
   orderAlert(tenant: Tenant, order: { orderNumber: string; totalAmount: number; customerName?: string | null }) {
-    const buyer = order.customerName ? ` from ${order.customerName}` : '';
-    return this.send(
-      tenant.whatsappPhoneNumberId,
-      tenant.ownerPhone,
-      `🛒 New order *${order.orderNumber}*${buyer}: ${ghCedis(order.totalAmount)}. Open your dashboard to pack it.`,
+    const owner = tenant.ownerFullName?.trim().split(/\s+/)[0] || tenant.name;
+    const total = order.totalAmount.toLocaleString('en-GH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+    return this.deliver(tenant.whatsappPhoneNumberId, tenant.ownerPhone, (from, to) =>
+      this.wabaService.sendTemplate(from, to, VENDOR_ORDER_TEMPLATE(), [owner, order.orderNumber, order.customerName?.trim() || 'a WhatsApp buyer', total]),
     );
   }
 
@@ -96,13 +105,18 @@ export class NotificationService {
     return this.send(optionalEnv('PLATFORM_PHONE_NUMBER_ID') || null, tenant.ownerPhone, text);
   }
 
-  private async send(fromPhoneNumberId: string | null, toPhone: string | null, text: string): Promise<boolean> {
+  private send(fromPhoneNumberId: string | null, toPhone: string | null, text: string): Promise<boolean> {
+    return this.deliver(fromPhoneNumberId, toPhone, (from, to) => this.wabaService.sendTextMessage(from, to, text));
+  }
+
+  /** Sends one message with `message(from, to)`; logs and returns false instead of throwing. */
+  private async deliver(fromPhoneNumberId: string | null, toPhone: string | null, message: (from: string, to: string) => Promise<unknown>): Promise<boolean> {
     if (!fromPhoneNumberId || !toPhone) {
       this.logger.warn(`Vendor notification skipped (${!fromPhoneNumberId ? 'no sending number' : 'no owner phone'}).`);
       return false;
     }
     try {
-      await this.wabaService.sendTextMessage(fromPhoneNumberId, toInternationalDigits(toPhone), text);
+      await message(fromPhoneNumberId, toInternationalDigits(toPhone));
       return true;
     } catch (err: any) {
       this.logger.warn(`Vendor notification to ${toPhone} failed: ${err?.message || err}`);
