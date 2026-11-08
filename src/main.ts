@@ -1,10 +1,16 @@
 import 'dotenv/config';
+import { setDefaultAutoSelectFamilyAttemptTimeout } from 'node:net';
 import { NestFactory } from '@nestjs/core';
 import type { NestExpressApplication } from '@nestjs/platform-express';
 import { ValidationPipe } from '@nestjs/common';
 import { AppModule } from './app.module.js';
 import { corsOptions } from './common/cors.js';
 import { securityHeaders } from './common/security-headers.js';
+
+// Node tries each of a host's addresses (IPv6, then IPv4) for only 250 ms. On a network
+// without IPv6 and a slow link, the IPv4 attempt is cut off too and every call to Meta or
+// Paystack fails with ETIMEDOUT. 2 s per address costs nothing on a fast server.
+setDefaultAutoSelectFamilyAttemptTimeout(2000);
 
 async function bootstrap() {
   // rawBody is required so webhook guards can verify HMAC signatures over the exact payload.
