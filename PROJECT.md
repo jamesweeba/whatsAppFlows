@@ -184,6 +184,7 @@ Copy `.env.example` to `.env`. The app loads **only `.env`** (`import 'dotenv/co
 | `PAYSTACK_SECRET_KEY` | MoMo charges. |
 | `AI_API_URL`, `AI_API_KEY`, `AI_MODEL` | Intent classification. |
 | `WEBHOOK_SECRET` | Guards `POST /api/v1/chat`. Without it, that endpoint rejects every request. |
+| `VENDOR_ORDER_TEMPLATE`, `VENDOR_ORDER_TEMPLATE_LANGUAGE` | The approved WhatsApp template for new-order alerts to vendors (default `order`, `en_US`). Templates reach vendors outside the 24-hour window. |
 
 ---
 

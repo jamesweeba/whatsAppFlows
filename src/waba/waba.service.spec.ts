@@ -18,6 +18,24 @@ describe('WabaService', () => {
     expect(service).toBeDefined();
   });
 
+  describe('sendTemplate', () => {
+    it('sends the template with its body values, flattened to one line each', async () => {
+      const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ messages: [{ id: 'wamid-t' }] }) });
+      vi.stubGlobal('fetch', mockFetch);
+
+      const result = await service.sendTemplate('1092837465', '+233240000000', { name: 'order', language: 'en_US' }, ['Ama', 'MX-1', 'Kofi\nMensah', '']);
+
+      const body = JSON.parse(mockFetch.mock.calls[0][1].body);
+      expect(result).toEqual({ messageId: 'wamid-t' });
+      expect(body).toMatchObject({ to: '233240000000', type: 'template' });
+      expect(body.template).toEqual({
+        name: 'order',
+        language: { code: 'en_US' },
+        components: [{ type: 'body', parameters: ['Ama', 'MX-1', 'Kofi Mensah', '-'].map((text) => ({ type: 'text', text })) }],
+      });
+    });
+  });
+
   describe('addPhoneNumberToWaba', () => {
     it('should call Meta Graph API to add a phone number and return the phoneNumberId', async () => {
       const mockFetch = vi.fn().mockResolvedValue({
