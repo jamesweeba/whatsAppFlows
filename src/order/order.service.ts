@@ -1,8 +1,9 @@
 import { BadRequestException, Injectable, Logger, NotFoundException } from '@nestjs/common';
-import { OrderStatus, PaymentMethod, Prisma } from '@prisma/client';
+import { Fulfillment, OrderStatus, PaymentMethod, Prisma } from '@prisma/client';
 import * as crypto from 'crypto';
 import { ghCedis } from '../common/money.util.js';
 import { isHiddenNumber, toE164 } from '../common/phone.util.js';
+import { NotificationService } from '../notification/notification.service.js';
 import { PrismaService } from '../prisma/prisma.service.js';
 import { ReferralService } from '../promoter/referral.service.js';
 import { isLive, TenantService } from '../tenant/tenant.service.js';
@@ -91,6 +92,7 @@ export class OrderService {
     private readonly wabaService: WabaService,
     private readonly payouts: PayoutService,
     private readonly referrals: ReferralService,
+    private readonly notifications: NotificationService,
   ) {}
 
   /**
@@ -367,6 +369,10 @@ export class OrderService {
       await this.notifyStatusChange(order);
       if (DELIVERED_ORDER_STATUSES.includes(order.status)) this.settle(order.id);
     }
+    // The rider gets the delivery details when the order goes out, and again if the rider changes.
+    if (order.status === OrderStatus.OUT_FOR_DELIVERY && (previous.status !== order.status || previous.riderPhone !== order.riderPhone)) {
+      this.notifyRider(order);
+    }
     const { tenant: _, ...result } = order;
     return result;
   }
@@ -390,6 +396,12 @@ export class OrderService {
     } catch (err: any) {
       this.logger.warn(`Failed to send ${order.status} update for ${order.orderNumber}: ${err?.message || err}`);
     }
+  }
+
+  /** Sends the rider the delivery details, in the background (best-effort, like the buyer's update). */
+  private notifyRider(order: Prisma.OrderGetPayload<{ include: { items: true; tenant: true } }>) {
+    if (!isLive(order.tenant) || !order.riderPhone || order.fulfillment === Fulfillment.PICKUP) return;
+    void this.notifications.riderDelivery(order.tenant, order);
   }
 
   /**

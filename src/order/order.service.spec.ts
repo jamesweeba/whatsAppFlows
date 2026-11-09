@@ -8,6 +8,7 @@ describe('OrderService', () => {
   let prisma: any;
   let waba: any;
   let payouts: any;
+  let notifications: any;
 
   beforeEach(() => {
     prisma = {
@@ -29,7 +30,8 @@ describe('OrderService', () => {
       sendInteractiveList: vi.fn().mockResolvedValue({ messageId: 'wamid-3' }),
     };
     payouts = { settleOrder: vi.fn().mockResolvedValue(null) };
-    service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba, payouts, { attachToOrder: vi.fn() } as any);
+    notifications = { riderDelivery: vi.fn().mockResolvedValue(true) };
+    service = new OrderService(prisma, new TenantService(prisma, { vendorWelcome: vi.fn() } as any), waba, payouts, { attachToOrder: vi.fn() } as any, notifications);
   });
 
   it('creates an order with line items and calculates total amount including delivery fee', async () => {
@@ -164,6 +166,37 @@ describe('OrderService', () => {
       buttons: [{ id: 'order_received:MX-ABC123', title: '✅ I got my order' }],
     });
     expect(waba.sendTextMessage).not.toHaveBeenCalled();
+  });
+
+  describe('rider delivery details', () => {
+    const dispatch = async (previous: Record<string, any>, updated: Record<string, any>) => {
+      prisma.tenant.findUnique.mockResolvedValue({ id: 'tenant-1', userId: 'user-1' });
+      prisma.order.findFirst.mockResolvedValue({ id: 'order-1', tenantId: 'tenant-1', status: OrderStatus.PROCESSING, riderPhone: null, ...previous });
+      prisma.order.update.mockResolvedValue(updatedOrder(OrderStatus.OUT_FOR_DELIVERY, { riderPhone: '0244000000', items: [], ...updated }));
+      await service.updateStatus('user-1', 'order-1', { status: OrderStatus.OUT_FOR_DELIVERY, riderPhone: '0244000000' });
+    };
+
+    it('go to the rider when the order goes out', async () => {
+      await dispatch({}, {});
+      expect(notifications.riderDelivery).toHaveBeenCalledWith(expect.objectContaining({ status: TenantStatus.ACTIVE }), expect.objectContaining({ riderPhone: '0244000000' }));
+    });
+
+    it('go again when the rider changes on an order already out', async () => {
+      await dispatch({ status: OrderStatus.OUT_FOR_DELIVERY, riderPhone: '0200000000' }, {});
+      expect(notifications.riderDelivery).toHaveBeenCalledTimes(1);
+    });
+
+    it('are not sent twice for the same rider', async () => {
+      await dispatch({ status: OrderStatus.OUT_FOR_DELIVERY, riderPhone: '0244000000' }, {});
+      expect(notifications.riderDelivery).not.toHaveBeenCalled();
+    });
+
+    it('are not sent for pickup orders, without a rider, or from a shop that is not live', async () => {
+      await dispatch({}, { fulfillment: 'PICKUP' });
+      await dispatch({}, { riderPhone: null });
+      await dispatch({}, { tenant: { whatsappPhoneNumberId: 'phone-1', status: TenantStatus.STOCKED } });
+      expect(notifications.riderDelivery).not.toHaveBeenCalled();
+    });
   });
 
   it('falls back to plain text when WhatsApp refuses the button message', async () => {

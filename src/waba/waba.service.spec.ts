@@ -36,6 +36,18 @@ describe('WabaService', () => {
     });
   });
 
+  it('fills the end of the button link when the template has a URL button', async () => {
+    const mockFetch = vi.fn().mockResolvedValue({ ok: true, json: async () => ({ messages: [{ id: 'wamid-t' }] }) });
+    vi.stubGlobal('fetch', mockFetch);
+
+    await service.sendTemplate('1092837465', '+233240000000', { name: 'rider_delivery', language: 'en_US' }, ['Kofi'], { urlButton: '5.6%2C-0.18' });
+
+    expect(JSON.parse(mockFetch.mock.calls[0][1].body).template.components).toEqual([
+      { type: 'body', parameters: [{ type: 'text', text: 'Kofi' }] },
+      { type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: '5.6%2C-0.18' }] },
+    ]);
+  });
+
   describe('addPhoneNumberToWaba', () => {
     it('should call Meta Graph API to add a phone number and return the phoneNumberId', async () => {
       const mockFetch = vi.fn().mockResolvedValue({

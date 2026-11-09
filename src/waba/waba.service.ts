@@ -362,20 +362,27 @@ export class WabaService {
     return String(json.id);
   }
 
-  /** A video message, from media uploaded with uploadMedia(). */
   /**
    * Send an approved message template. Unlike other messages, a template reaches people who
    * haven't written to the number in the last 24 hours. `bodyParams` fill the body's {{1}},
    * {{2}}, ... in order; WhatsApp refuses values with line breaks, so they are flattened.
+   * `urlButton` fills the {{1}} at the end of the first button's link.
    */
-  sendTemplate(phoneNumberId: string, toPhone: string, template: { name: string; language: string }, bodyParams: string[]): Promise<{ messageId: string }> {
+  sendTemplate(
+    phoneNumberId: string,
+    toPhone: string,
+    template: { name: string; language: string },
+    bodyParams: string[],
+    { urlButton }: { urlButton?: string } = {},
+  ): Promise<{ messageId: string }> {
     const parameters = bodyParams.map((value) => ({ type: 'text', text: value.replace(/\s+/g, ' ').trim().slice(0, 1024) || '-' }));
-    return this.sendMessage(phoneNumberId, toPhone, {
-      type: 'template',
-      template: { name: template.name, language: { code: template.language }, components: parameters.length ? [{ type: 'body', parameters }] : [] },
-    });
+    const components: object[] = parameters.length ? [{ type: 'body', parameters }] : [];
+    // The end of the first button's URL, for a template whose button link ends in {{1}}.
+    if (urlButton !== undefined) components.push({ type: 'button', sub_type: 'url', index: '0', parameters: [{ type: 'text', text: urlButton }] });
+    return this.sendMessage(phoneNumberId, toPhone, { type: 'template', template: { name: template.name, language: { code: template.language }, components } });
   }
 
+  /** A video message, from media uploaded with uploadMedia(). */
   sendVideo(phoneNumberId: string, toPhone: string, mediaId: string, caption?: string): Promise<{ messageId: string }> {
     return this.sendMessage(phoneNumberId, toPhone, { type: 'video', video: { id: mediaId, ...(caption && { caption: caption.slice(0, 1024) }) } });
   }
