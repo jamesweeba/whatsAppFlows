@@ -1339,10 +1339,6 @@
           "type": "string",
           "__example__": "Unity Hall, Block C"
         },
-        "init_phone": {
-          "type": "string",
-          "__example__": "0244111222"
-        },
         "init_slot": {
           "type": "string",
           "__example__": "asap"
@@ -1431,15 +1427,6 @@
             "init-value": "${data.init_full_name}"
           },
           {
-            "type": "TextInput",
-            "name": "rider_phone",
-            "label": "Phone for the rider",
-            "input-type": "phone",
-            "required": true,
-            "helper-text": "The rider calls this number when they arrive",
-            "init-value": "${data.init_phone}"
-          },
-          {
             "type": "TextSubheading",
             "text": "3. How will you pay?"
           },
@@ -1479,7 +1466,6 @@
                 "full_name": "${form.full_name}",
                 "delivery_area": "${form.delivery_area}",
                 "landmark": "${form.landmark}",
-                "rider_phone": "${form.rider_phone}",
                 "delivery_slot": "${form.delivery_slot}",
                 "payment": "${form.payment}",
                 "momo_number": "${form.momo_number}"

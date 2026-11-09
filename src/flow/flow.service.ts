@@ -1305,7 +1305,6 @@ export class FlowService implements OnModuleInit {
       // again after a validation error, so they don't have to pick it twice.
       init_area: offered(areas, submitted.delivery_area) ?? '',
       init_landmark: typed('landmark') || last?.landmark || '',
-      init_phone: typed('rider_phone') || (last?.contactPhone ? toGhanaLocal(last.contactPhone) : whatsapp),
       init_slot: offered(slots, submitted.delivery_slot) ?? slots[0].id,
       init_payment: offered(PAYMENT_METHODS, submitted.payment) ?? (lastPaidCash ? 'cash' : 'momo'),
       init_momo: typed('momo_number') || last?.paymentPhone || whatsapp,
@@ -1366,7 +1365,6 @@ export class FlowService implements OnModuleInit {
       customerName: text(data.full_name) || null,
       deliveryArea: areaTitle || null,
       landmark: landmark || null,
-      contactPhone: text(data.rider_phone) ? toE164(text(data.rider_phone)) : null,
       deliverySlot: slot.title,
       flowCartId: cart.id,
     };
