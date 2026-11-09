@@ -185,6 +185,7 @@ Copy `.env.example` to `.env`. The app loads **only `.env`** (`import 'dotenv/co
 | `AI_API_URL`, `AI_API_KEY`, `AI_MODEL` | Intent classification. |
 | `WEBHOOK_SECRET` | Guards `POST /api/v1/chat`. Without it, that endpoint rejects every request. |
 | `VENDOR_ORDER_TEMPLATE`, `VENDOR_ORDER_TEMPLATE_LANGUAGE` | The approved WhatsApp template for new-order alerts to vendors (default `order`, `en_US`). Templates reach vendors outside the 24-hour window. |
+| `RIDER_DELIVERY_TEMPLATE`, `RIDER_DELIVERY_TEMPLATE_LANGUAGE` | The approved WhatsApp template sent to the rider when an order goes On the way (default `rider_delivery`, `en_US`): buyer, area, time, what to collect, items, and an "Open map" button on the buyer's pin (or their area, before they share one). |
 
 ---
 

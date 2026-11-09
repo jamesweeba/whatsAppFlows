@@ -1,8 +1,8 @@
 import { Injectable, Logger } from '@nestjs/common';
-import { PayoutSource, Promoter, Tenant, VendorPayout } from '@prisma/client';
+import { Order, OrderItem, PaymentMethod, PayoutSource, Promoter, Tenant, VendorPayout } from '@prisma/client';
 import { optionalEnv } from '../common/config.js';
 import { ghCedis } from '../common/money.util.js';
-import { toGhanaLocal, toInternationalDigits } from '../common/phone.util.js';
+import { isHiddenNumber, toGhanaLocal, toInternationalDigits } from '../common/phone.util.js';
 import { WabaService } from '../waba/waba.service.js';
 
 /**
@@ -18,6 +18,35 @@ const VENDOR_ORDER_TEMPLATE = () => ({
   name: optionalEnv('VENDOR_ORDER_TEMPLATE', 'order'),
   language: optionalEnv('VENDOR_ORDER_TEMPLATE_LANGUAGE', 'en_US'),
 });
+
+/** The approved delivery template sent to the rider when an order goes out (WhatsApp Manager). */
+const RIDER_DELIVERY_TEMPLATE = () => ({
+  name: optionalEnv('RIDER_DELIVERY_TEMPLATE', 'rider_delivery'),
+  language: optionalEnv('RIDER_DELIVERY_TEMPLATE_LANGUAGE', 'en_US'),
+});
+
+/** How much of the item list fits in the rider template. */
+const MAX_ITEMS_TEXT = 300;
+
+/** What the rider's delivery message needs from an order. */
+export type RiderOrder = Pick<
+  Order,
+  | 'orderNumber'
+  | 'riderName'
+  | 'riderPhone'
+  | 'customerName'
+  | 'contactPhone'
+  | 'buyerPhone'
+  | 'deliveryArea'
+  | 'landmark'
+  | 'deliveryAddress'
+  | 'deliverySlot'
+  | 'locationLatitude'
+  | 'locationLongitude'
+  | 'paymentMethod'
+  | 'paystackPaidAt'
+  | 'totalAmount'
+> & { items: Pick<OrderItem, 'quantity' | 'productName'>[] };
 
 @Injectable()
 export class NotificationService {
@@ -67,6 +96,36 @@ export class NotificationService {
     );
   }
 
+  /**
+   * The delivery details, from the shop's number to the rider, as the approved template
+   * (RIDER_DELIVERY_TEMPLATE), so it arrives even though riders never write to the shop:
+   * "Hello {{1}}, {{2}} has a delivery for you. Order {{3}}, Buyer {{4}}, Phone {{5}},
+   * Area {{6}}, When {{7}}, Collect {{8}}, Items {{9}}, Shop phone {{10}}", with an
+   * "Open map" button. The map shows the buyer's pin, or searches their area without one.
+   */
+  riderDelivery(tenant: Tenant, order: RiderOrder) {
+    const buyerPhone = order.contactPhone ?? (isHiddenNumber(order.buyerPhone) ? null : order.buyerPhone);
+    const area = [order.deliveryArea, order.landmark].filter(Boolean).join(', ') || order.deliveryAddress || '';
+    const pinned = order.locationLatitude != null && order.locationLongitude != null;
+    const items = order.items.map((i) => `${i.quantity} × ${i.productName}`).join(', ');
+    const params = [
+      order.riderName?.trim().split(/\s+/)[0] || 'there',
+      tenant.name,
+      order.orderNumber,
+      order.customerName?.trim() || 'the buyer',
+      buyerPhone ? toGhanaLocal(buyerPhone) : 'not shared',
+      area || 'see the map',
+      order.deliverySlot || 'As soon as possible',
+      collectText(order),
+      items.length > MAX_ITEMS_TEXT ? `${items.slice(0, MAX_ITEMS_TEXT - 1)}…` : items || 'see the shop',
+      toGhanaLocal(tenant.ownerPhone ?? tenant.whatsappNumber ?? '') || 'not shared',
+    ];
+    const mapQuery = pinned ? `${order.locationLatitude},${order.locationLongitude}` : area || `${tenant.name}, Ghana`;
+    return this.deliver(tenant.whatsappPhoneNumberId, order.riderPhone, (from, to) =>
+      this.wabaService.sendTemplate(from, to, RIDER_DELIVERY_TEMPLATE(), params, { urlButton: encodeURIComponent(mapQuery) }),
+    );
+  }
+
   /** A withdrawal (or admin payout) landed in the vendor's MoMo wallet. */
   payoutPaid(tenant: Tenant, payout: Pick<VendorPayout, 'amount' | 'momoNumber' | 'source'>) {
     return this.fromPlatform(
@@ -112,15 +171,22 @@ export class NotificationService {
   /** Sends one message with `message(from, to)`; logs and returns false instead of throwing. */
   private async deliver(fromPhoneNumberId: string | null, toPhone: string | null, message: (from: string, to: string) => Promise<unknown>): Promise<boolean> {
     if (!fromPhoneNumberId || !toPhone) {
-      this.logger.warn(`Vendor notification skipped (${!fromPhoneNumberId ? 'no sending number' : 'no owner phone'}).`);
+      this.logger.warn(`Notification skipped (${!fromPhoneNumberId ? 'no sending number' : 'no owner phone'}).`);
       return false;
     }
     try {
       await message(fromPhoneNumberId, toInternationalDigits(toPhone));
       return true;
     } catch (err: any) {
-      this.logger.warn(`Vendor notification to ${toPhone} failed: ${err?.message || err}`);
+      this.logger.warn(`Notification to ${toPhone} failed: ${err?.message || err}`);
       return false;
     }
   }
+}
+
+/** What the rider collects from the buyer. */
+function collectText(order: Pick<Order, 'paymentMethod' | 'paystackPaidAt' | 'totalAmount'>): string {
+  if (order.paymentMethod === PaymentMethod.COD) return `${ghCedis(order.totalAmount)} in cash`;
+  if (order.paystackPaidAt) return 'Nothing, already paid';
+  return `${ghCedis(order.totalAmount)} (not paid yet, check with the shop)`;
 }
