@@ -756,7 +756,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     it('pre-fills a first-time buyer with their WhatsApp number', async () => {
       const result = await act('build_summary');
       expect(result.data).toMatchObject({
-        init_full_name: '', init_area: '', init_landmark: '', init_phone: '0240000000',
+        init_full_name: '', init_area: '', init_landmark: '',
         init_slot: 'asap', init_payment: 'momo', init_momo: '0240000000',
       });
     });
@@ -769,8 +769,9 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
       const result = await act('build_summary');
       expect(result.data).toMatchObject({
         init_full_name: 'Ama Mensah', init_area: '', init_landmark: 'Unity Hall B12',
-        init_phone: '0244000000', init_payment: 'cash', init_momo: '0240000000',
+        init_payment: 'cash', init_momo: '0240000000',
       });
+      expect(result.data).not.toHaveProperty('init_phone');
     });
 
     it('lists up to 8 basket lines in the summary, newest first, and sums the rest', async () => {
@@ -802,7 +803,7 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
     const placeOrder = (extra: Record<string, any> = {}) =>
       act('place_order', {
         cart_id: 'cart-1', full_name: 'Ama Mensah', delivery_area: 'knust', landmark: 'Unity Hall B12',
-        rider_phone: '0244000000', delivery_slot: 'asap', payment: 'momo', momo_number: '0244111222', ...extra,
+        delivery_slot: 'asap', payment: 'momo', momo_number: '0244111222', ...extra,
       });
 
     it('stays on CHECKOUT with a warning when the MoMo number is invalid', async () => {
@@ -850,10 +851,11 @@ describe('FlowService (WELCOME -> CATALOGUE -> PRODUCT -> BASKET -> CHECKOUT -> 
         }),
         expect.objectContaining({
           customerName: 'Ama Mensah', deliveryArea: 'KNUST Campus', landmark: 'Unity Hall B12',
-          contactPhone: '+233244000000', deliverySlot: 'Now · within 1 hour', flowCartId: 'cart-1',
+          deliverySlot: 'Now · within 1 hour', flowCartId: 'cart-1',
         }),
         { creditPromoter: true },
       );
+      expect(orderService.createOrder.mock.calls[0][2]).not.toHaveProperty('contactPhone');
       expect(paystack.initiateMoMoCharge).toHaveBeenCalledWith(
         expect.objectContaining({ amount: 250, momoNumber: '0244111222', reference: 'MX-ABC123' }),
       );
